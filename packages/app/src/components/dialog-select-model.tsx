@@ -113,7 +113,7 @@ export function ModelSelectorPopover(props: {
   const handleManage = () => {
     close("manage")
     void import("./dialog-manage-models").then((x) => {
-      dialog.show(() => <x.DialogManageModels />)
+      dialog.show(() => <x.DialogManageModels model={props.model} />)
     })
   }
 

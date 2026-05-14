@@ -373,6 +373,113 @@ Notes:
 - `bun --cwd packages/desktop manager:dev` reads that file, starts a local-only browser frontend on `127.0.0.1:17686`, and proxies `/api/*` to the existing sidecar with Basic Auth attached.
 - The classic desktop window remains unchanged; this is only a debugging/inspection frontend.
 
+### 2026-05-14: Add Standalone Manager Frontend Module
+
+Purpose:
+
+- Build the manager UI as an independent sidecar client module instead of coupling it to the classic desktop app shell.
+- Provide a dedicated frontend package that can evolve separately from `packages/app` and desktop window lifecycle code.
+
+Files changed:
+
+- `packages/manager/*`
+- `package.json`
+- `specs/frontend-sidecar-contract.md`
+- `specs/custom-session-flow.md`
+
+Notes:
+
+- `packages/manager` owns its own Vite entry, sidecar proxy, and standalone Electron wrapper, but reuses `@opencode-ai/app` for the actual chat UI.
+- `bun --cwd packages/manager dev` starts the frontend on `127.0.0.1:17687`.
+- `bun --cwd packages/manager desktop:dev` starts or reuses the manager dev server and opens an independent Electron desktop window.
+- The Vite dev server reads `%APPDATA%\ai.opencode.desktop.dev\sidecar.json`, exposes `/connection`, and proxies `/api/*` to the current sidecar with Basic Auth attached.
+- The manager dev proxy attaches `x-opencode-directory` with the repository root so new fixed manager sessions are created under the active worktree context instead of the sidecar process cwd.
+- The module keeps the fixed manager session contract: `ses_manager_agent` / `管理agent`.
+- This module does not require the already-running classic desktop Electron main process to open a window or reload.
+- Existing `ses_manager_agent` records that were already created with `C:\Users\admin` / `global` metadata are not rewritten automatically; migrate them explicitly after inspecting the local database.
+
+### 2026-05-14: Add Manager Settings Sidebar
+
+Purpose:
+
+- Keep the manager chat as the primary surface while making settings always visible.
+- Move model selection near the composer, matching the classic chat interaction more closely.
+- Add first-pass provider credential management without pulling the classic app shell into `packages/manager`.
+
+Files changed:
+
+- `packages/manager/src/main.ts`
+- `packages/manager/src/style.css`
+- `specs/frontend-sidecar-contract.md`
+- `specs/custom-session-flow.md`
+
+Notes:
+
+- The standalone manager UI now has a main chat column and a persistent settings sidebar.
+- The proxy card stores `opencode.manager.proxy` in `localStorage`; sidecar proxy env wiring and restart behavior remain follow-up work.
+- The provider card summarizes connected providers and opens a simplified provider dialog.
+- The provider dialog lists connected and popular providers first, supports API-key connection through `PUT /auth/{providerID}`, and supports disconnect through `DELETE /auth/{providerID}`.
+- On startup, the manager compares the fixed session's stored `directory` with the dev proxy's bound directory and shows a warning when they differ.
+- OAuth provider flows, custom provider creation, and richer classic provider forms are intentionally left for a later shared/provider-specific implementation.
+- `bun typecheck` and `bun run build` pass from `packages/manager`.
+
+### 2026-05-14: Scope Classic Session Rendering Reuse For Manager
+
+Purpose:
+
+- Stop maintaining a second message renderer for manager sessions.
+- Reuse classic turn rendering without redirecting to the classic session route.
+- Keep the manager as an independent sidecar client and desktop window while sharing the mature app UI.
+
+Files changed:
+
+- `packages/manager/src/main.tsx`
+- `packages/manager/tsconfig.json`
+- `packages/app/src/pages/manager.tsx`
+- `packages/app/src/components/titlebar.tsx`
+- `specs/frontend-sidecar-contract.md`
+- `specs/custom-session-flow.md`
+
+Notes:
+
+- `packages/manager/src/main.tsx` renders `@opencode-ai/app` providers and `AppInterface` so the standalone manager can use the app route and shared provider context.
+- The standalone manager root redirects to `/manager`.
+- `packages/app/src/pages/manager.tsx` ensures `ses_manager_agent` exists with title `管理agent`, loads that session's messages, subscribes to sidecar SSE events, and keeps prompts targeted at the fixed session.
+- Manager message turns render through shared `SessionTurn` with manager-local `DataProvider` state, preserving classic text/tool/error/reasoning rendering without importing the full classic session route layout.
+- The manager page keeps its own two-column layout, bottom composer/model selector, and right settings sidebar.
+- The manager route now provides minimal SDK/sync/local model context so classic model selection UI can be used in the manager page without enabling classic route navigation.
+- The manager composer uses shared dock surface primitives and keeps fixed-session submit logic; full classic `PromptInput` remains deferred until its submit boundary can accept an explicit fixed session id.
+- The model selector below the composer uses classic `ModelSelectorPopover`, including provider/model dialogs through shared UI.
+- `packages/manager/src/style.css` was removed because manager styling now comes from `@opencode-ai/app/index.css`.
+- `packages/manager/tsconfig.json` now mirrors app compiler behavior and includes `../app/src/env.d.ts` so app ambient Solid directive types are available when manager typechecks imported app source.
+- `packages/app/src/components/titlebar.tsx` now guards optional `VITE_OPENCODE_CHANNEL` before rendering the channel badge.
+- `bun typecheck` and `bun run build` pass from `packages/manager`.
+
+### 2026-05-14: Restore Default Assemble Discovery
+
+Purpose:
+
+- Ensure fixed session directories can be prepared before their database session records are recreated.
+- Keep `ses_manager_agent` using the same JSON discovery behavior as the validated active chat session.
+- Make new sessions receive a Node/Electron-compatible default discovery template instead of a pass-through-only template.
+
+Files changed:
+
+- `packages/opencode/src/session/assemble-template.ts`
+- `C:\Users\admin\.local\share\opencode\session\ses_manager_agent\assemble.ts`
+- `C:\Users\admin\.local\share\opencode\session\ses_manager_agent\context\manager-agent.json`
+- `specs/custom-session-flow.md`
+
+Notes:
+
+- `ses_manager_agent/assemble.ts` now recursively reads JSON files under its session directory.
+- `metadata.json` is always included as a synthetic `<session-metadata>` message.
+- Other JSON files are included when they contain `{ "assemble": true, "content": "..." }`.
+- Optional JSON fields are `position`, `timestamp`/`time`, `countdown`, and `expired`.
+- The implementation uses dynamic `import("node:fs/promises")` and `import("node:path")`, not `Bun.*`, so it remains compatible with the Electron/Node sidecar script runner.
+- Added `context/manager-agent.json` as the first manager-agent context file.
+- `bun typecheck` passes from `packages/opencode`.
+
 ## Open Design Items
 
 - Define session tool declaration format and permission scope.

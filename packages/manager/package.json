@@ -1,0 +1,23 @@
+{
+  "name": "@opencode-ai/manager",
+  "version": "1.14.46",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 17687",
+    "desktop:dev": "bun ./scripts/desktop-dev.ts",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 17687",
+    "typecheck": "tsgo --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/app": "workspace:*",
+    "@solidjs/router": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "solid-js": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}
