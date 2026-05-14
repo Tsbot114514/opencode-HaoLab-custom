@@ -4,7 +4,7 @@ import path from "path"
 export const filename = "assemble.ts"
 export const schemaFilename = "assemble-schema.md"
 
-export const content = `// Runs before opencode converts messages to provider-specific model messages.
+export const content = String.raw`// Runs before opencode converts messages to provider-specific model messages.
 // Edit this file to customize this session's context; changes apply on the next request.
 //
 // Call contract:
@@ -62,7 +62,112 @@ export const content = `// Runs before opencode converts messages to provider-sp
 //
 export default async function assemble(input) {
   const all = Array.isArray(input.messages) ? input.messages : []
-  return all
+  const fs = await import("node:fs/promises")
+  const path = await import("node:path")
+  const sessionID = typeof input.sessionID === "string" ? input.sessionID : ""
+  const sessionDir = typeof input.sessionDir === "string" ? input.sessionDir : ""
+  const step = typeof input.step === "number" ? input.step : 0
+  const latest = [...all].reverse().find((msg) => msg?.info?.role === "user")
+  const model =
+    latest?.info?.model && typeof latest.info.model === "object"
+      ? latest.info.model
+      : { providerID: input.model?.providerID ?? "", modelID: input.model?.id ?? "" }
+  const agent = typeof latest?.info?.agent === "string" ? latest.info.agent : input.agent?.name ?? "build"
+
+  const readJSON = async (file) => {
+    try {
+      const value = JSON.parse(await fs.readFile(file, "utf8"))
+      if (value && typeof value === "object") return value
+    } catch {}
+  }
+
+  const scanJSON = async (dir) => {
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
+    const nested = await Promise.all(
+      entries.map(async (entry) => {
+        const file = path.join(dir, entry.name)
+        if (entry.isDirectory()) return scanJSON(file)
+        if (entry.isFile() && entry.name.endsWith(".json")) return [file]
+        return []
+      }),
+    )
+    return nested.flat()
+  }
+
+  const makeText = (text, created, index) => {
+    const messageID = "msg_assemble_" + created + "_" + index
+    return {
+      info: {
+        id: messageID,
+        sessionID,
+        role: "user",
+        time: { created },
+        agent,
+        model,
+      },
+      parts: [
+        {
+          id: "prt_assemble_" + created + "_" + index,
+          sessionID,
+          messageID,
+          type: "text",
+          synthetic: true,
+          text,
+        },
+      ],
+    }
+  }
+
+  const discovered = []
+  for (const file of await scanJSON(sessionDir)) {
+    const data = await readJSON(file)
+    if (!data) continue
+    const rel = path.relative(sessionDir, file).replaceAll("\\", "/")
+    const isMetadata = rel === "metadata.json"
+    if (!isMetadata && data.assemble !== true) continue
+
+    const countdown = typeof data.countdown === "number" ? Math.max(0, Math.floor(data.countdown)) : undefined
+    const content = isMetadata
+      ? ["<session-metadata>", JSON.stringify(data, null, 2), "</session-metadata>"].join("\n")
+      : typeof data.content === "string"
+        ? data.content.trim()
+        : ""
+    const expired = typeof data.expired === "string" ? data.expired.trim() : ""
+    const text = countdown === undefined ? content : countdown > 0 ? content : countdown === 0 ? expired : ""
+    if (text) {
+      discovered.push({
+        text,
+        timestamp:
+          typeof data.timestamp === "number" ? data.timestamp : typeof data.time === "number" ? data.time : Date.now(),
+        position: data.position === "inline" || data.position === "suffix" ? data.position : "prefix",
+      })
+    }
+    if (!isMetadata && step === 1 && typeof countdown === "number" && countdown > 0) {
+      await fs.writeFile(file, JSON.stringify({ ...data, countdown: countdown - 1 }, null, 2)).catch(() => {})
+    }
+  }
+
+  const prefix = discovered
+    .filter((item) => item.position === "prefix")
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((item, index) => makeText(item.text, item.timestamp || Date.now(), index))
+  const inline = discovered
+    .filter((item) => item.position === "inline")
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((item, index) => makeText(item.text, item.timestamp || Date.now(), index + 10_000))
+  const suffix = discovered
+    .filter((item) => item.position === "suffix")
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((item, index) => makeText(item.text, item.timestamp || Date.now(), index + 20_000))
+
+  return [
+    ...prefix,
+    ...[...all, ...inline]
+      .map((msg) => ({ msg, time: typeof msg?.info?.time?.created === "number" ? msg.info.time.created : 0 }))
+      .sort((a, b) => a.time - b.time)
+      .map((item) => item.msg),
+    ...suffix,
+  ]
 }
 `
 
@@ -130,6 +235,22 @@ return [{ role: "user", content: "hello" }]
 
 Do not return strings, raw parts, or objects missing \`{ info, parts }\`.
 If the return value is invalid, opencode ignores it, uses the original \`input.messages\`, and adds a temporary reminder telling the agent that \`assemble.ts\` is invalid.
+
+## Default Discovery Behavior
+
+The default template recursively reads JSON files under \`input.sessionDir\`.
+
+Included files:
+
+- \`metadata.json\` is always included as a synthetic \`<session-metadata>\` text message.
+- Other JSON files are included only when they contain \`"assemble": true\` and a string \`content\` field.
+
+Optional JSON fields:
+
+- \`position\`: \`"prefix"\`, \`"inline"\`, or \`"suffix"\`; defaults to \`"prefix"\`.
+- \`timestamp\` or \`time\`: numeric ordering timestamp for the synthetic message.
+- \`countdown\`: when positive, content is included and decremented once per first step of a user turn; when \`0\`, \`expired\` is used instead if present.
+- \`expired\`: optional replacement content for expired countdown files.
 
 ## IDs
 
