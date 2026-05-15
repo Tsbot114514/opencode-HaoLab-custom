@@ -582,6 +582,7 @@ export const dict = {
   "common.moreOptions": "更多選項",
   "common.learnMore": "深入了解",
   "common.rename": "重新命名",
+  "session.configure": "設定 session",
   "common.reset": "重設",
   "common.archive": "封存",
   "common.delete": "刪除",

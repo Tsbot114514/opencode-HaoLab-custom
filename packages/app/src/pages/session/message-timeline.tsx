@@ -25,7 +25,9 @@ import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { useLanguage } from "@/context/language"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { useGlobalSDK } from "@/context/global-sdk"
+import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
+import { useServer } from "@/context/server"
 import { useSettings } from "@/context/settings"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
@@ -234,6 +236,7 @@ export function MessageTimeline(props: {
 
   const navigate = useNavigate()
   const globalSDK = useGlobalSDK()
+  const globalSync = useGlobalSync()
   const sdk = useSDK()
   const sync = useSync()
   const settings = useSettings()
@@ -241,6 +244,7 @@ export function MessageTimeline(props: {
   const language = useLanguage()
   const { params, sessionKey } = useSessionKey()
   const platform = usePlatform()
+  const server = useServer()
 
   const rendered = createMemo(() => props.renderedUserMessages.map((message) => message.id))
   const sessionID = createMemo(() => params.id)
@@ -373,6 +377,27 @@ export function MessageTimeline(props: {
     const url = shareUrl()
     if (!url) return
     platform.openLink(url)
+  }
+
+  const sessionConfigPath = (sessionID: string) => {
+    const data = globalSync.data.path.data
+    if (!data) return
+    const sep = data.includes("\\") ? "\\" : "/"
+    return data.replace(/[\\/]+$/, "") + sep + "session" + sep + sessionID
+  }
+
+  const canOpenSessionConfig = createMemo(() => platform.platform === "desktop" && !!platform.openPath && server.isLocal())
+
+  const openSessionConfig = (sessionID: string) => {
+    if (!canOpenSessionConfig() || !platform.openPath) return
+    const directory = sessionConfigPath(sessionID)
+    if (!directory) return
+    platform.openPath(directory).catch((err: unknown) => {
+      showToast({
+        title: language.t("common.requestFailed"),
+        description: errorMessage(err),
+      })
+    })
   }
 
   const errorMessage = (err: unknown) => {
@@ -876,6 +901,11 @@ export function MessageTimeline(props: {
                                     <DropdownMenu.ItemLabel>
                                       {language.t("session.share.action.share")}
                                     </DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                </Show>
+                                <Show when={canOpenSessionConfig()}>
+                                  <DropdownMenu.Item onSelect={() => openSessionConfig(id)}>
+                                    <DropdownMenu.ItemLabel>{language.t("session.configure")}</DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
                                 </Show>
                                 <DropdownMenu.Item onSelect={() => void archiveSession(id)}>

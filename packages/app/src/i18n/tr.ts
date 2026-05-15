@@ -598,6 +598,7 @@ export const dict = {
   "common.moreOptions": "Daha fazla seçenek",
   "common.learnMore": "Daha fazla bilgi",
   "common.rename": "Yeniden adlandır",
+  "session.configure": "Oturumu yapılandır",
   "common.reset": "Sıfırla",
   "common.archive": "Arşivle",
   "common.delete": "Sil",

@@ -525,6 +525,7 @@ export const dict = {
   "common.moreOptions": "مزيد من الخيارات",
   "common.learnMore": "اعرف المزيد",
   "common.rename": "إعادة تسمية",
+  "session.configure": "تكوين الجلسة",
   "common.reset": "إعادة تعيين",
   "common.archive": "أرشفة",
   "common.delete": "حذف",

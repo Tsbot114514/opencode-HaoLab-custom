@@ -526,6 +526,7 @@ export const dict = {
   "common.moreOptions": "더 많은 옵션",
   "common.learnMore": "더 알아보기",
   "common.rename": "이름 바꾸기",
+  "session.configure": "session 구성",
   "common.reset": "초기화",
   "common.archive": "보관",
   "common.delete": "삭제",
