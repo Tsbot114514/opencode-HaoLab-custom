@@ -1,0 +1,20 @@
+{
+  "schema": "opencode-agent-session/v1",
+  "name": "manager-agent",
+  "title": "管理agent",
+  "description": "Shared agent-session package exported from ses_manager_agent.",
+  "version": "0.1.0",
+  "source_session_id": "ses_manager_agent",
+  "exported_at": "2026-05-15T13:02:35.715Z",
+  "exported_by": "build",
+  "files": [
+    "assemble-schema.md",
+    "assemble.ts",
+    "context/manager-agent.json",
+    "system/instructions.txt",
+    "system/README.md",
+    "tool/manage-session.ts",
+    "tool/README.md",
+    "tool/session-dispatch.ts"
+  ]
+}
