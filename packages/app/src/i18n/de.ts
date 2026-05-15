@@ -540,6 +540,7 @@ export const dict = {
   "common.moreOptions": "Weitere Optionen",
   "common.learnMore": "Mehr erfahren",
   "common.rename": "Umbenennen",
+  "session.configure": "Session konfigurieren",
   "common.reset": "Zurücksetzen",
   "common.archive": "Archivieren",
   "common.delete": "Löschen",

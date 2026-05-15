@@ -588,6 +588,7 @@ export const dict = {
   "common.moreOptions": "Flere muligheder",
   "common.learnMore": "Lær mere",
   "common.rename": "Omdøb",
+  "session.configure": "Konfigurer session",
   "common.reset": "Nulstil",
   "common.archive": "Arkivér",
   "common.delete": "Slet",

@@ -529,6 +529,7 @@ export const dict = {
   "common.moreOptions": "その他のオプション",
   "common.learnMore": "詳細",
   "common.rename": "名前変更",
+  "session.configure": "session を設定",
   "common.reset": "リセット",
   "common.archive": "アーカイブ",
   "common.delete": "削除",

@@ -586,6 +586,7 @@ export const dict = {
   "common.moreOptions": "ตัวเลือกเพิ่มเติม",
   "common.learnMore": "เรียนรู้เพิ่มเติม",
   "common.rename": "เปลี่ยนชื่อ",
+  "session.configure": "กำหนดค่า session",
   "common.reset": "รีเซ็ต",
   "common.archive": "จัดเก็บ",
   "common.delete": "ลบ",

@@ -592,6 +592,7 @@ export const dict = {
   "common.moreOptions": "Дополнительные опции",
   "common.learnMore": "Подробнее",
   "common.rename": "Переименовать",
+  "session.configure": "Настроить session",
   "common.reset": "Сбросить",
   "common.archive": "Архивировать",
   "common.delete": "Удалить",

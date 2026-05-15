@@ -585,6 +585,7 @@ export const dict = {
   "common.moreOptions": "更多选项",
   "common.learnMore": "了解更多",
   "common.rename": "重命名",
+  "session.configure": "配置 session",
   "common.reset": "重置",
   "common.archive": "归档",
   "common.delete": "删除",

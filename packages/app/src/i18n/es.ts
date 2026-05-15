@@ -595,6 +595,7 @@ export const dict = {
   "common.moreOptions": "Más opciones",
   "common.learnMore": "Saber más",
   "common.rename": "Renombrar",
+  "session.configure": "Configurar sesión",
   "common.reset": "Restablecer",
   "common.archive": "Archivar",
   "common.delete": "Eliminar",

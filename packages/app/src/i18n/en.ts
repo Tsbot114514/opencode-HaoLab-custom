@@ -643,6 +643,7 @@ export const dict = {
   "common.moreOptions": "More options",
   "common.learnMore": "Learn more",
   "common.rename": "Rename",
+  "session.configure": "Configure session",
   "common.reset": "Reset",
   "common.archive": "Archive",
   "common.delete": "Delete",

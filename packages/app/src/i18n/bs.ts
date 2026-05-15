@@ -592,6 +592,7 @@ export const dict = {
   "common.moreOptions": "Više opcija",
   "common.learnMore": "Saznaj više",
   "common.rename": "Preimenuj",
+  "session.configure": "Konfiguriši sesiju",
   "common.reset": "Resetuj",
   "common.archive": "Arhiviraj",
   "common.delete": "Izbriši",
