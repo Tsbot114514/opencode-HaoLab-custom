@@ -1,4 +1,4 @@
-import { mkdtemp } from "fs/promises"
+import { mkdir, mkdtemp } from "fs/promises"
 import { tmpdir } from "os"
 import path from "path"
 import { expect, test } from "bun:test"
@@ -57,6 +57,7 @@ test("assemble template ensure creates script and schema without overwriting exi
 test("default assemble template discovers json context and updates countdown", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "opencode-assemble-discovery-"))
   await SessionAssembleTemplate.ensure(dir)
+  await Bun.write(path.join(dir, "metadata.json"), JSON.stringify({ id: "ses_test", title: "Test session" }, null, 2))
   await Bun.write(
     path.join(dir, "context.json"),
     JSON.stringify(
@@ -99,7 +100,8 @@ test("default assemble template discovers json context and updates countdown", a
     ],
   })
 
-  expect(result).toHaveLength(2)
+  expect(result).toHaveLength(3)
+  expect(JSON.stringify(result)).toContain("Session-local context discovery is available")
   expect(result?.at(-1)?.info.id).toStartWith("msg_assemble_")
   expect(result?.at(-1)?.parts[0]).toMatchObject({
     id: expect.stringMatching(/^prt_assemble_/),
@@ -109,4 +111,31 @@ test("default assemble template discovers json context and updates countdown", a
     text: "remember schema contract",
   })
   expect(await Bun.file(path.join(dir, "context.json")).json()).toMatchObject({ countdown: 1 })
+})
+
+test("default assemble template skips llm request logs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "opencode-assemble-discovery-"))
+  await SessionAssembleTemplate.ensure(dir)
+  await Bun.write(path.join(dir, "context.json"), JSON.stringify({ assemble: true, content: "safe context" }, null, 2))
+  await mkdir(path.join(dir, "llm-request"))
+  await Bun.write(
+    path.join(dir, "llm-request", "request.json"),
+    JSON.stringify({ assemble: true, content: "request payload should stay out" }, null, 2),
+  )
+
+  const execute = await loadScriptDefault(path.join(dir, "assemble.ts"))
+  const result = await execute?.({
+    sessionID: "ses_test",
+    sessionDir: dir,
+    workspaceRoot: dir,
+    directory: dir,
+    step: 1,
+    session: {},
+    agent: { name: "build" },
+    model: { id: "model", providerID: "provider" },
+    messages: [],
+  })
+
+  expect(JSON.stringify(result)).toContain("safe context")
+  expect(JSON.stringify(result)).not.toContain("request payload should stay out")
 })

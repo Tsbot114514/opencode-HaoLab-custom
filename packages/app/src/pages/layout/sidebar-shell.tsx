@@ -27,6 +27,8 @@ export const SidebarContent = (props: {
   renderProjectOverlay: () => JSX.Element
   settingsLabel: Accessor<string>
   settingsKeybind: Accessor<string | undefined>
+  managerLabel: Accessor<string>
+  onOpenManager: () => void
   onOpenSettings: () => void
   helpLabel: Accessor<string>
   onOpenHelp: () => void
@@ -90,6 +92,15 @@ export const SidebarContent = (props: {
           </DragDropProvider>
         </div>
         <div class="shrink-0 w-full pt-3 pb-6 flex flex-col items-center gap-2">
+          <Tooltip placement={placement()} value={props.managerLabel()}>
+            <IconButton
+              icon="brain"
+              variant="ghost"
+              size="large"
+              onClick={props.onOpenManager}
+              aria-label={props.managerLabel()}
+            />
+          </Tooltip>
           <TooltipKeybind placement={placement()} title={props.settingsLabel()} keybind={props.settingsKeybind() ?? ""}>
             <IconButton
               icon="settings-gear"

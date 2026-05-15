@@ -12,6 +12,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { NodePath } from "@effect/platform-node"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Global } from "@opencode-ai/core/global"
 
 void Log.init({ print: false })
 
@@ -104,6 +105,21 @@ describe("Project.fromDirectory", () => {
     await using tmp = await tmpdir()
     const { project } = await run((svc) => svc.fromDirectory(tmp.path))
     expect(project.id).toBe(ProjectID.global)
+    expect(project.worktree).toBe("/")
+  })
+
+  test("uses data path as global worktree for opencode data directory", async () => {
+    const { project } = await run((svc) => svc.fromDirectory(Global.Path.data))
+    expect(project.id).toBe(ProjectID.global)
+    expect(project.worktree).toBe(Global.Path.data)
+  })
+
+  test("keeps data path global worktree when opening another non-git directory", async () => {
+    await using tmp = await tmpdir()
+    await run((svc) => svc.fromDirectory(Global.Path.data))
+    const { project } = await run((svc) => svc.fromDirectory(tmp.path))
+    expect(project.id).toBe(ProjectID.global)
+    expect(project.worktree).toBe(Global.Path.data)
   })
 
   test("derives stable project ID from root commit", async () => {

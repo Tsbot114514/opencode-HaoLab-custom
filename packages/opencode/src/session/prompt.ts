@@ -136,7 +136,8 @@ export const layer = Layer.effect(
 
 This folder lets this session add extra tools without changing global config.
 
-Create .ts or .js files in this folder. Each file may export a default tool, or named tools. Tools use the same plugin tool shape as config tools.
+Create .ts or .js files in this folder. Each file may export a default tool, or named tools.
+Tools can use the same plugin tool shape as config tools, or a dependency-free JSON Schema shape.
 
 Example weather.ts:
 
@@ -157,6 +158,29 @@ export default tool({
 File names become tool ids. For example, weather.ts default export becomes weather. A named export named forecast in weather.ts becomes weather_forecast.
 
 Session tools are loaded only for this session. They do not replace built-in, MCP, or structured output tools; conflicting ids are skipped.
+
+Dependency-free example:
+
+\`\`\`ts
+export default {
+  description: "Echo a short message.",
+  args: {
+    type: "object",
+    properties: {
+      message: { type: "string", description: "Message to echo." },
+    },
+    required: ["message"],
+    additionalProperties: false,
+  },
+  async execute(args, ctx) {
+    return {
+      title: "Echo",
+      output: args.message,
+      metadata: { sessionID: ctx.sessionID },
+    }
+  },
+}
+\`\`\`
 `
 
     function fromSessionTool(id: string, def: PluginToolDefinition): Tool.Def {
@@ -195,6 +219,70 @@ Session tools are loaded only for this session. They do not replace built-in, MC
       }
     }
 
+    type PlainSessionToolDefinition = {
+      description: string
+      args?: JSONSchema7
+      inputSchema?: JSONSchema7
+      execute: (args: unknown, context: Parameters<PluginToolDefinition["execute"]>[1]) => Promise<unknown> | unknown
+    }
+
+    type SessionToolDef = Tool.Def & { jsonSchema?: JSONSchema7 }
+
+    function isRecord(input: unknown): input is Record<string, unknown> {
+      return !!input && typeof input === "object" && !Array.isArray(input)
+    }
+
+    function isJsonSchema(input: unknown): input is JSONSchema7 {
+      return isRecord(input) && (typeof input.type === "string" || isRecord(input.properties))
+    }
+
+    function normalizeToolResult(result: unknown) {
+      if (typeof result === "string") return { title: "", output: result, metadata: {} }
+      if (!isRecord(result)) return { title: "", output: String(result), metadata: {} }
+      return {
+        title: typeof result.title === "string" ? result.title : "",
+        output: typeof result.output === "string" ? result.output : JSON.stringify(result.output ?? result),
+        metadata: isRecord(result.metadata) ? result.metadata : {},
+      }
+    }
+
+    function fromPlainSessionTool(id: string, def: PlainSessionToolDefinition): SessionToolDef {
+      const schema = def.inputSchema ?? def.args ?? { type: "object", properties: {}, additionalProperties: false }
+      return {
+        id,
+        parameters: Schema.Unknown,
+        jsonSchema: schema,
+        description: def.description,
+        execute: (args, toolCtx) =>
+          Effect.gen(function* () {
+            const ctx = yield* InstanceState.context
+            return normalizeToolResult(
+              yield* Effect.promise(() =>
+                Promise.resolve(
+                  def.execute(args, {
+                    sessionID: toolCtx.sessionID,
+                    messageID: toolCtx.messageID,
+                    agent: toolCtx.agent,
+                    directory: ctx.directory,
+                    worktree: ctx.worktree,
+                    abort: toolCtx.abort,
+                    metadata: (val) => toolCtx.metadata(val),
+                    ask: (req) => toolCtx.ask(req),
+                  }),
+                ),
+              ),
+            )
+          }),
+      }
+    }
+
+    function fromSessionToolEntry(id: string, def: unknown): SessionToolDef {
+      if (isRecord(def) && isJsonSchema(def.inputSchema ?? def.args)) {
+        return fromPlainSessionTool(id, def as PlainSessionToolDefinition)
+      }
+      return fromSessionTool(id, def as PluginToolDefinition)
+    }
+
     const sessionTools = Effect.fn("SessionPrompt.sessionTools")(function* (sessionID: SessionID) {
       const dir = path.join(Session.folder(sessionID), "tool")
       yield* fsys.ensureDir(dir).pipe(Effect.catch(Effect.die))
@@ -211,14 +299,26 @@ Session tools are loaded only for this session. They do not replace built-in, MC
           .readdir(dir)
           .then((items) => items.filter((item) => /\.(ts|js)$/.test(item)).map((item) => path.join(dir, item))),
       )
-      if (files.length) yield* config.waitForDependencies()
       return yield* Effect.forEach(
         files,
         Effect.fnUntraced(function* (file) {
           const namespace = path.basename(file, path.extname(file))
-          const mod = yield* Effect.promise(() => import(pathToFileURL(file).href))
-          return Object.entries<PluginToolDefinition>(mod).map((entry) =>
-            fromSessionTool(entry[0] === "default" ? namespace : `${namespace}_${entry[0]}`, entry[1]),
+          const mod = yield* Effect.promise(() => import(pathToFileURL(file).href)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                const message = `Session tool failed to load: ${path.basename(file)}\n${Cause.pretty(cause)}`
+                yield* elog.error("failed to load session tool", { sessionID, file, cause })
+                yield* bus.publish(Session.Event.Error, {
+                  sessionID,
+                  error: new NamedError.Unknown({ message }).toObject(),
+                })
+                return undefined
+              }),
+            ),
+          )
+          if (!mod) return []
+          return Object.entries(mod).map((entry) =>
+            fromSessionToolEntry(entry[0] === "default" ? namespace : `${namespace}_${entry[0]}`, entry[1]),
           )
         }),
         { concurrency: "unbounded" },
@@ -557,7 +657,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       for (const item of yield* sessionTools(input.session.id)) {
         if (used.has(item.id)) continue
         used.add(item.id)
-        const schema = ProviderTransform.schema(input.model, EffectZod.toJsonSchema(item.parameters))
+        const schema = ProviderTransform.schema(
+          input.model,
+          "jsonSchema" in item && item.jsonSchema ? item.jsonSchema : EffectZod.toJsonSchema(item.parameters),
+        )
         // Session tools leave the session/tool module format as plugin-style
         // definitions, then become normal AI SDK tools here. The outgoing
         // object is the same format as built-in tools: description,

@@ -21,6 +21,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { zod } from "@opencode-ai/core/effect-zod"
 import { NonNegativeInt, optionalOmitUndefined, withStatics } from "@opencode-ai/core/schema"
 import { serviceUse } from "@/effect/service-use"
+import { Global } from "@opencode-ai/core/global"
 
 const log = Log.create({ service: "project" })
 
@@ -205,10 +206,13 @@ export const layer: Layer.Layer<
         const dotgit = dotgitMatches[0]
 
         if (!dotgit) {
+          const globalData = pathSvc.normalize(Global.Path.data)
+          const directoryPath = pathSvc.normalize(directory)
+
           return {
             id: ProjectID.global,
-            worktree: "/",
-            sandbox: "/",
+            worktree: directoryPath === globalData ? globalData : "/",
+            sandbox: directoryPath === globalData ? globalData : "/",
             vcs: fakeVcs,
           }
         }
@@ -288,16 +292,22 @@ export const layer: Layer.Layer<
             time: { created: Date.now(), updated: Date.now() },
           }
 
+      const preserveGlobalDataWorktree =
+        data.id === ProjectID.global &&
+        data.worktree === "/" &&
+        pathSvc.normalize(existing.worktree) === pathSvc.normalize(Global.Path.data)
+      const worktree = preserveGlobalDataWorktree ? existing.worktree : data.worktree
+      const sandbox = preserveGlobalDataWorktree ? existing.worktree : data.sandbox
+
       if (Flag.OPENCODE_EXPERIMENTAL_ICON_DISCOVERY) yield* discover(existing).pipe(Effect.ignore, Effect.forkIn(scope))
 
       const result: Info = {
         ...existing,
-        worktree: data.worktree,
+        worktree,
         vcs: data.vcs,
         time: { ...existing.time, updated: Date.now() },
       }
-      if (data.sandbox !== result.worktree && !result.sandboxes.includes(data.sandbox))
-        result.sandboxes.push(data.sandbox)
+      if (sandbox !== result.worktree && !result.sandboxes.includes(sandbox)) result.sandboxes.push(sandbox)
       result.sandboxes = yield* Effect.forEach(
         result.sandboxes,
         (s) =>

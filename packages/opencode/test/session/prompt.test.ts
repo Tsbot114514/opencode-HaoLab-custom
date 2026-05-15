@@ -619,6 +619,70 @@ it.live("loads and executes a session-local tool", () =>
   ),
 )
 
+it.live("loads and executes a dependency-free session-local JSON schema tool", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Session JSON schema tool",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(Session.folder(session.id), "tool", "echo.ts"),
+          `export default {
+  description: "Echo a session-local message.",
+  args: {
+    type: "object",
+    properties: {
+      message: { type: "string", description: "Message to echo." },
+    },
+    required: ["message"],
+    additionalProperties: false,
+  },
+  async execute(args, ctx) {
+    return {
+      title: "Echo",
+      output: "echo:" + args.message + ":" + ctx.sessionID,
+      metadata: { sessionID: ctx.sessionID },
+    }
+  },
+}
+`,
+        ),
+      )
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "call echo" }],
+      })
+      yield* llm.tool("echo", { message: "ok" })
+      yield* llm.text("done")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const logs = yield* Effect.promise(() => fs.readdir(path.join(Session.folder(session.id), "llm-request")))
+      const log = yield* Effect.promise(() =>
+        Bun.file(
+          path.join(Session.folder(session.id), "llm-request", logs.find((item) => item.endsWith(".json"))!),
+        ).json(),
+      )
+      expect(log.toolNames).toContain("echo")
+      expect(JSON.stringify(log.assembly.tools.echo.inputSchema)).toContain("Message to echo.")
+      const tool = (yield* MessageV2.filterCompactedEffect(session.id))
+        .flatMap((msg) => msg.parts)
+        .find(
+          (part): part is CompletedToolPart =>
+            part.type === "tool" && part.tool === "echo" && part.state.status === "completed",
+        )
+      expect(tool?.state.output).toBe(`echo:ok:${session.id}`)
+      expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("loop continues when finish is stop but assistant has tool parts", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {

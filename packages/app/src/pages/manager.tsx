@@ -7,6 +7,7 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { SessionTurn } from "@opencode-ai/ui/session-turn"
 import { TextField } from "@opencode-ai/ui/text-field"
+import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { useGlobalSDK } from "@/context/global-sdk"
@@ -49,6 +50,7 @@ function saveProxy(value: string) {
 export default function ManagerPage() {
   const sdk = useGlobalSDK()
   const models = useModels()
+  const navigate = useNavigate()
   const [proxy, setProxy] = createSignal(loadProxy())
   const [draft, setDraft] = createSignal("")
   const [selected, setSelected] = createSignal("")
@@ -453,6 +455,7 @@ export default function ManagerPage() {
       </section>
       <aside class="border-t lg:border-t-0 lg:border-l border-border-weak-base bg-surface-base/60 p-4 overflow-y-auto">
         <div class="flex flex-col gap-4">
+          <Button variant="ghost" size="large" onClick={() => navigate("/classic")}>切换到经典页面</Button>
           <section class="rounded-2xl border border-border-weak-base bg-background-base p-4 shadow-sm">
             <div class="text-12-medium text-text-strong mb-2">代理设置</div>
             <TextField
