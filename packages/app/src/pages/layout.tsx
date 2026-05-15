@@ -2343,6 +2343,8 @@ export default function Layout(props: ParentProps) {
       renderProjectOverlay={projectOverlay}
       settingsLabel={() => language.t("sidebar.settings")}
       settingsKeybind={() => command.keybind("settings.open")}
+      managerLabel={() => "切换到管理页面"}
+      onOpenManager={() => navigate("/manager")}
       onOpenSettings={openSettings}
       helpLabel={() => language.t("sidebar.help")}
       onOpenHelp={() => platform.openLink("https://opencode.ai/desktop-feedback")}

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "type": "frontend.navigate",
+  "sessionID": "ses_1d63748f5ffeOdkZqkmC97D4Wf",
+  "messageID": "msg_e2aa9b9df0014oh6sJXmm2NweO",
+  "agent": "build",
+  "directory": "D:\\llm\\opencode-Haolab-custom",
+  "worktree": "D:\\llm\\opencode-Haolab-custom",
+  "page": "manager",
+  "path": "/manager",
+  "reason": "Verify direct frontend navigation through tool metadata event",
+  "createdAt": "2026-05-15T08:03:50.971Z"
+}

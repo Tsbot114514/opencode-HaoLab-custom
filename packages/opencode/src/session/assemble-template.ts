@@ -86,6 +86,7 @@ export default async function assemble(input) {
     const nested = await Promise.all(
       entries.map(async (entry) => {
         const file = path.join(dir, entry.name)
+        if (entry.isDirectory() && entry.name === "llm-request") return []
         if (entry.isDirectory()) return scanJSON(file)
         if (entry.isFile() && entry.name.endsWith(".json")) return [file]
         return []
@@ -118,6 +119,15 @@ export default async function assemble(input) {
     }
   }
 
+  const sessionContextGuide = [
+    "Session-local context discovery is available in this directory.",
+    "This session directory is Global.Path.data/session/" + sessionID + ". Resolve Global.Path.data at runtime; do not hardcode an expanded absolute path.",
+    "To persist context for future turns, create or update JSON files with assemble: true and a string content field.",
+    "Include metadata fields like name, description, updated_at, and updated_by so future agents know how to edit them.",
+    "Only content is injected into the model; include any metadata the model should see inside content as text.",
+    "See assemble-schema.md in this directory for the full format.",
+  ].join("\n")
+
   const discovered = []
   for (const file of await scanJSON(sessionDir)) {
     const data = await readJSON(file)
@@ -128,7 +138,7 @@ export default async function assemble(input) {
 
     const countdown = typeof data.countdown === "number" ? Math.max(0, Math.floor(data.countdown)) : undefined
     const content = isMetadata
-      ? ["<session-metadata>", JSON.stringify(data, null, 2), "</session-metadata>"].join("\n")
+      ? ["<session-metadata>", JSON.stringify(data, null, 2), "", sessionContextGuide, "</session-metadata>"].join("\n")
       : typeof data.content === "string"
         ? data.content.trim()
         : ""
@@ -239,11 +249,20 @@ If the return value is invalid, opencode ignores it, uses the original \`input.m
 ## Default Discovery Behavior
 
 The default template recursively reads JSON files under \`input.sessionDir\`.
+It skips \`llm-request/\` so request payload logs are never injected by discovery.
 
 Included files:
 
 - \`metadata.json\` is always included as a synthetic \`<session-metadata>\` text message.
 - Other JSON files are included only when they contain \`"assemble": true\` and a string \`content\` field.
+
+The injected \`<session-metadata>\` also tells agents the portable session directory expression:
+
+\`\`\`text
+Global.Path.data/session/<sessionID>
+\`\`\`
+
+Resolve \`Global.Path.data\` at runtime instead of hardcoding an expanded absolute path, because the data directory changes across machines.
 
 Optional JSON fields:
 
@@ -251,6 +270,33 @@ Optional JSON fields:
 - \`timestamp\` or \`time\`: numeric ordering timestamp for the synthetic message.
 - \`countdown\`: when positive, content is included and decremented once per first step of a user turn; when \`0\`, \`expired\` is used instead if present.
 - \`expired\`: optional replacement content for expired countdown files.
+
+Recommended metadata for agent-managed files:
+
+- \`name\`: stable human-readable id for this context file.
+- \`description\`: what this context is for and when an agent should update it.
+- \`updated_at\`: last update time, preferably epoch milliseconds or ISO string.
+- \`updated_by\`: agent, user, or tool that last changed the file.
+- \`reason\`: short explanation for the latest change.
+
+Unknown fields are preserved by the default discovery behavior. Keeping metadata beside \`content\` makes it safer for future agents to decide whether to edit, replace, or delete a context file.
+
+Only \`content\` is injected into the model context. Metadata fields such as \`name\`, \`description\`, \`updated_at\`, \`updated_by\`, and \`reason\` are for file maintenance only unless you also include them as text inside \`content\`.
+
+Example agent-managed context file:
+
+\`\`\`json
+{
+  "assemble": true,
+  "name": "session-goals",
+  "description": "Persistent goals and constraints for this session. Update when the user changes priorities.",
+  "updated_at": 1778817182731,
+  "updated_by": "agent",
+  "reason": "User asked the agent to manage session-local context.",
+  "position": "prefix",
+  "content": "Context file: session-goals\nDescription: Persistent goals and constraints for this session.\nLast updated by: agent\nReason: User asked the agent to manage session-local context.\n\nThe user prefers concise implementation notes and wants session-local context managed with JSON files."
+}
+\`\`\`
 
 ## IDs
 

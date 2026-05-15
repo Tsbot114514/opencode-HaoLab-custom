@@ -13,6 +13,7 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
 
     const defaultPath = {
       home: "",
+      data: "",
       state: "",
       config: "",
       worktree: "",

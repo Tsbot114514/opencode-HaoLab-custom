@@ -1500,6 +1500,7 @@ export type File = {
 
 export type Path = {
   home: string
+  data: string
   state: string
   config: string
   worktree: string

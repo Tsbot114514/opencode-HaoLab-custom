@@ -9,11 +9,12 @@ import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
 import { MetaProvider } from "@solidjs/meta"
-import { type BaseRouterProps, Navigate, Route, Router, useLocation } from "@solidjs/router"
+import { type BaseRouterProps, Navigate, Route, Router, useLocation, useNavigate } from "@solidjs/router"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
 import { Effect } from "effect"
 import {
   type Component,
+  createEffect,
   createMemo,
   createResource,
   createSignal,
@@ -30,8 +31,8 @@ import { Dynamic } from "solid-js/web"
 import { CommandProvider } from "@/context/command"
 import { CommentsProvider } from "@/context/comments"
 import { FileProvider } from "@/context/file"
-import { GlobalSDKProvider } from "@/context/global-sdk"
-import { GlobalSyncProvider } from "@/context/global-sync"
+import { GlobalSDKProvider, useGlobalSDK } from "@/context/global-sdk"
+import { GlobalSyncProvider, useGlobalSync } from "@/context/global-sync"
 import { HighlightsProvider } from "@/context/highlights"
 import { LanguageProvider, type Locale, useLanguage } from "@/context/language"
 import { LayoutProvider } from "@/context/layout"
@@ -41,6 +42,7 @@ import { PermissionProvider } from "@/context/permission"
 import { PromptProvider } from "@/context/prompt"
 import { ServerConnection, ServerProvider, serverName, useServer } from "@/context/server"
 import { SettingsProvider } from "@/context/settings"
+import { SDKProvider } from "@/context/sdk"
 import { TerminalProvider } from "@/context/terminal"
 import DirectoryLayout from "@/pages/directory-layout"
 import Layout from "@/pages/layout"
@@ -65,11 +67,50 @@ const SessionRoute = () => (
 
 const SessionIndexRoute = () => <Navigate href="session" />
 
-const ManagerRoute = () => (
-  <ModelsProvider>
-    <ManagerRoutePage />
-  </ModelsProvider>
-)
+const ManagerRoute = () => {
+  const globalSync = useGlobalSync()
+  const directory = createMemo(() => globalSync.data.path.directory)
+
+  return (
+    <Show when={directory()} fallback={<Loading />} keyed>
+      {(directory) => (
+        <SDKProvider directory={() => directory}>
+          <ModelsProvider>
+            <ManagerRoutePage />
+          </ModelsProvider>
+        </SDKProvider>
+      )}
+    </Show>
+  )
+}
+
+function FrontendDispatchBridge() {
+  const globalSDK = useGlobalSDK()
+  const navigate = useNavigate()
+  const seen = new Set<string>()
+
+  const dispatch = (value: unknown) => {
+    if (!value || typeof value !== "object") return
+    const metadata = value as Record<string, unknown>
+    if (metadata.type !== "frontend.navigate") return
+    if (metadata.path !== "/classic" && metadata.path !== "/manager") return
+    const key = typeof metadata.messageID === "string" ? `${metadata.messageID}:${metadata.path}` : `${metadata.createdAt}:${metadata.path}`
+    if (seen.has(key)) return
+    seen.add(key)
+    navigate(metadata.path)
+  }
+
+  const unsubscribe = globalSDK.event.listen((event) => {
+    if (event.details?.type !== "message.part.updated") return
+    const part = event.details.properties.part
+    if (part.type !== "tool" || part.tool !== "session-dispatch") return
+    if (part.state.status === "running") dispatch(part.state.metadata)
+    if (part.state.status === "completed") dispatch(part.state.metadata)
+  })
+
+  onCleanup(unsubscribe)
+  return null
+}
 
 function UiI18nBridge(props: ParentProps) {
   const language = useLanguage()
@@ -138,9 +179,18 @@ function RouterRoot(props: ParentProps<{ appChildren?: JSX.Element }>) {
   const location = useLocation()
   const minimal = createMemo(() => location.pathname === "/manager")
   return (
-    <Show when={!minimal()} fallback={<>{props.children}</>}>
+    <Show
+      when={!minimal()}
+      fallback={
+        <>
+          <FrontendDispatchBridge />
+          {props.children}
+        </>
+      }
+    >
       <AppShellProviders>
         {/*<Suspense fallback={<Loading />}>*/}
+        <FrontendDispatchBridge />
         {props.appChildren}
         {props.children}
         {/*</Suspense>*/}
