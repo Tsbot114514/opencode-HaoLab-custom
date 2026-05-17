@@ -281,13 +281,11 @@ const main = Effect.gen(function* () {
   const hostname = "127.0.0.1"
   const url = `http://${hostname}:${port}`
   const password = randomUUID()
-  if (!app.isPackaged) {
-    mkdirSync(app.getPath("userData"), { recursive: true })
-    writeFileSync(
-      join(app.getPath("userData"), "sidecar.json"),
-      JSON.stringify({ url, username: "opencode", password }, undefined, 2),
-    )
-  }
+  mkdirSync(app.getPath("userData"), { recursive: true })
+  writeFileSync(
+    join(app.getPath("userData"), "sidecar.json"),
+    JSON.stringify({ url, username: "opencode", password }, undefined, 2),
+  )
 
   const loadingTask = yield* Effect.gen(function* () {
     logger.log("sidecar connection started", { url })
