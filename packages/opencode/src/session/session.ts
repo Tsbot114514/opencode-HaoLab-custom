@@ -247,6 +247,13 @@ function init(info: Info) {
           directory: info.directory,
           path: info.path,
           title: info.title,
+          sidecar_json: {
+            path: path.join(process.env.XDG_STATE_HOME!, "sidecar.json"),
+            description: "Desktop sidecar connection file for the local opencode HTTP API.",
+            contains: "JSON with url, username, and password for Basic Auth.",
+            usage:
+              "Read this file to discover the HTTP API base URL and credentials. Send requests with x-opencode-directory set to the target project directory.",
+          },
           time: info.time,
         },
         undefined,

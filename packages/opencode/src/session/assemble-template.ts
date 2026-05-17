@@ -121,7 +121,7 @@ export default async function assemble(input) {
 
   const sessionContextGuide = [
     "Session-local context discovery is available in this directory.",
-    "This session directory is Global.Path.data/session/" + sessionID + ". Resolve Global.Path.data at runtime; do not hardcode an expanded absolute path.",
+    "This session directory is " + sessionDir + ". This absolute path is machine-specific and may differ on other machines.",
     "To persist context for future turns, create or update JSON files with assemble: true and a string content field.",
     "Include metadata fields like name, description, updated_at, and updated_by so future agents know how to edit them.",
     "Only content is injected into the model; include any metadata the model should see inside content as text.",
@@ -256,13 +256,13 @@ Included files:
 - \`metadata.json\` is always included as a synthetic \`<session-metadata>\` text message.
 - Other JSON files are included only when they contain \`"assemble": true\` and a string \`content\` field.
 
-The injected \`<session-metadata>\` also tells agents the portable session directory expression:
+The injected \`<session-metadata>\` also tells agents the actual expanded session directory path from \`input.sessionDir\`:
 
 \`\`\`text
-Global.Path.data/session/<sessionID>
+<absolute opencode data path>/session/<sessionID>
 \`\`\`
 
-Resolve \`Global.Path.data\` at runtime instead of hardcoding an expanded absolute path, because the data directory changes across machines.
+This absolute path is machine-specific and may differ on other machines.
 
 Optional JSON fields:
 

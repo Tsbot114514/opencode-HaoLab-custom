@@ -33,6 +33,7 @@ import { formatServerError } from "@/utils/server-errors"
 import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/solid-query"
 import { createRefreshQueue } from "./global-sync/queue"
 import { directoryKey } from "./global-sync/utils"
+import { useServer } from "./server"
 
 type GlobalStore = {
   ready: boolean
@@ -69,6 +70,7 @@ export const loadLspQuery = (directory: string, sdk: OpencodeClient) =>
 function createGlobalSync() {
   const globalSDK = useGlobalSDK()
   const language = useLanguage()
+  const server = useServer()
   const owner = getOwner()
   if (!owner) throw new Error("GlobalSync must be created within owner")
 
@@ -330,6 +332,28 @@ function createGlobalSync() {
     return promise
   }
 
+  function openProjectFromEvent(directory: string) {
+    if (!server.isLocal()) return
+    if (!directory || directory === "/") return
+    server.projects.open(directory)
+    void bootstrapInstance(directory)
+    void loadSessions(directory)
+  }
+
+  function openGlobalProjectEvent(event: { type: string; properties?: unknown }) {
+    if (event.type !== "project.updated") return
+    const project = event.properties as Project | undefined
+    if (!project?.worktree) return
+    openProjectFromEvent(project.worktree)
+  }
+
+  function openDirectoryEvent(directory: string, event: { type: string; properties?: unknown }) {
+    if (event.type !== "session.created" && event.type !== "session.updated") return
+    const session = (event.properties as { info?: { directory?: string; time?: { archived?: number } } } | undefined)?.info
+    if (session?.time?.archived) return
+    openProjectFromEvent(session?.directory ?? directory)
+  }
+
   const unsub = globalSDK.event.listen((e) => {
     const directory = e.name
     const key = directoryKey(directory)
@@ -352,11 +376,15 @@ function createGlobalSync() {
           queue.push(directory)
         }
       }
+      openGlobalProjectEvent(event)
       return
     }
 
     const existing = children.children[key]
-    if (!existing) return
+    if (!existing) {
+      openDirectoryEvent(directory, event)
+      return
+    }
     children.mark(key)
     const [store, setStore] = existing
     applyDirectoryEvent({
