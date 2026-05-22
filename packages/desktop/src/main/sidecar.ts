@@ -1,5 +1,7 @@
 import { drizzle } from "drizzle-orm/node-sqlite/driver"
+import { readFile } from "node:fs/promises"
 import * as http from "node:http"
+import * as path from "node:path"
 import * as tls from "node:tls"
 
 type NodeHttpWithEnvProxy = typeof http & {
@@ -55,6 +57,7 @@ async function start(command: StartCommand) {
   try {
     prepareSidecarEnv(command.password, command.userDataPath)
     ensureLoopbackNoProxy()
+    await usePersistedProxy(command.userDataPath)
     useSystemCertificates()
     useEnvProxy()
     const { Database, JsonMigration, Log, Server } = await import("virtual:opencode-server")
@@ -143,6 +146,38 @@ function useEnvProxy() {
     ;(http as NodeHttpWithEnvProxy).setGlobalProxyFromEnv()
   } catch (error) {
     console.warn("failed to load proxy environment", error)
+  }
+}
+
+async function usePersistedProxy(userDataPath: string) {
+  const proxy = await readProxyConfig(userDataPath)
+  if (proxy.enabled && proxy.url.trim()) {
+    process.env.HTTP_PROXY = proxy.url.trim()
+    process.env.HTTPS_PROXY = proxy.url.trim()
+    process.env.http_proxy = proxy.url.trim()
+    process.env.https_proxy = proxy.url.trim()
+    return
+  }
+
+  delete process.env.HTTP_PROXY
+  delete process.env.HTTPS_PROXY
+  delete process.env.http_proxy
+  delete process.env.https_proxy
+}
+
+async function readProxyConfig(userDataPath: string) {
+  const fallback = { enabled: false, url: "" }
+  try {
+    const data = JSON.parse(await readFile(path.join(userDataPath, "opencode", "proxy.json"), "utf8")) as Partial<{
+      enabled: boolean
+      url: string
+    }>
+    return {
+      enabled: data.enabled === true,
+      url: typeof data.url === "string" ? data.url : "",
+    }
+  } catch {
+    return fallback
   }
 }
 

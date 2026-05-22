@@ -12,11 +12,17 @@ import { createEffect, createMemo, createResource, createSignal, For, onCleanup,
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
+import { useServer } from "@/context/server"
 import { Identifier } from "@/utils/id"
+import { authTokenFromCredentials } from "@/utils/server"
 
 const managerSessionID = "ses_manager_agent"
 const managerTitle = "管理agent"
-const proxyStorageKey = "opencode.manager.proxy"
+
+type ProxyConfig = {
+  enabled: boolean
+  url: string
+}
 
 type WithParts = {
   info: Message
@@ -31,27 +37,15 @@ function sortMessages(items: WithParts[]) {
   return items.sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))
 }
 
-function loadProxy() {
-  try {
-    return localStorage.getItem(proxyStorageKey) ?? ""
-  } catch {
-    return ""
-  }
-}
-
-function saveProxy(value: string) {
-  try {
-    localStorage.setItem(proxyStorageKey, value)
-  } catch {
-    return
-  }
-}
-
 export default function ManagerPage() {
   const sdk = useGlobalSDK()
   const models = useModels()
+  const server = useServer()
   const navigate = useNavigate()
-  const [proxy, setProxy] = createSignal(loadProxy())
+  const [proxy, setProxy] = createSignal("")
+  const [proxyEnabled, setProxyEnabled] = createSignal(false)
+  const [proxyMessage, setProxyMessage] = createSignal("")
+  const [proxySaving, setProxySaving] = createSignal(false)
   const [draft, setDraft] = createSignal("")
   const [selected, setSelected] = createSignal("")
   const [error, setError] = createSignal("")
@@ -64,6 +58,35 @@ export default function ManagerPage() {
     models
       .list()
       .filter((model) => models.visible({ providerID: model.provider.id, modelID: model.id }))
+
+  const proxyRequest = async (init?: RequestInit) => {
+    const current = server.current
+    if (!current) throw new Error("当前没有可用的服务器连接")
+    return fetch(`${current.http.url}/global/proxy`, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(current.http.password
+          ? { authorization: `Basic ${authTokenFromCredentials({ username: current.http.username, password: current.http.password })}` }
+          : {}),
+      },
+    })
+  }
+
+  const readProxy = async () => {
+    const response = await proxyRequest()
+    if (!response.ok) throw new Error(await response.text())
+    return (await response.json()) as ProxyConfig
+  }
+
+  const updateProxy = async (input: Partial<ProxyConfig> & { apply: boolean }) => {
+    const response = await proxyRequest({
+      method: "PATCH",
+      body: JSON.stringify(input),
+    })
+    if (!response.ok) throw new Error(await response.text())
+    return (await response.json()) as ProxyConfig
+  }
 
   createEffect(() => {
     if (selectedModel()) return
@@ -115,6 +138,7 @@ export default function ManagerPage() {
   }
 
   const [ready] = createResource(ensureSession)
+  const [proxyConfig, { refetch: refetchProxy }] = createResource(readProxy)
   const [initialMessages] = createResource(
     () => ready(),
     async () => {
@@ -131,6 +155,49 @@ export default function ManagerPage() {
     },
     { initialValue: { type: "idle" } as SessionStatus },
   )
+
+  createEffect(() => {
+    const config = proxyConfig()
+    if (!config) return
+    setProxy(config.url)
+    setProxyEnabled(config.enabled)
+  })
+
+  const saveProxy = async () => {
+    setProxySaving(true)
+    setProxyMessage("")
+    try {
+      const next = await updateProxy({ url: proxy(), apply: false })
+      setProxy(next.url)
+      setProxyEnabled(next.enabled)
+      setProxyMessage("已保存代理地址。")
+    } catch (err) {
+      setProxyMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProxySaving(false)
+    }
+  }
+
+  const toggleProxy = async () => {
+    setProxySaving(true)
+    setProxyMessage("")
+    try {
+      const enabled = !proxyEnabled()
+      if (enabled && !proxy().trim()) {
+        setProxyMessage("请先填写代理地址。")
+        return
+      }
+      const next = await updateProxy({ enabled, url: proxy(), apply: true })
+      setProxy(next.url)
+      setProxyEnabled(next.enabled)
+      setProxyMessage(next.enabled ? "代理已开启，对后续请求生效。" : "代理已关闭，对后续请求生效。")
+      void refetchProxy()
+    } catch (err) {
+      setProxyMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProxySaving(false)
+    }
+  }
 
   createEffect(() => {
     if (initialMessages.loading) return
@@ -461,12 +528,22 @@ export default function ManagerPage() {
             <TextField
               value={proxy()}
               onChange={setProxy}
-              onBlur={() => saveProxy(proxy())}
               placeholder="http://127.0.0.1:7890"
             />
+            <div class="mt-3 flex items-center gap-2">
+              <Button variant="ghost" size="small" disabled={proxySaving()} onClick={() => void saveProxy()}>
+                保存
+              </Button>
+              <Button variant={proxyEnabled() ? "secondary" : "primary"} size="small" disabled={proxySaving()} onClick={() => void toggleProxy()}>
+                {proxyEnabled() ? "关闭代理" : "开启代理"}
+              </Button>
+            </div>
             <p class="mt-2 text-12-regular text-text-weak leading-5">
-              保存到本地设置。当前 sidecar 仍通过环境变量读取代理，重启生效入口待接入。
+              配置保存到本机 proxy.json。开关代理会立即通知 sidecar，对后续新请求生效。
             </p>
+            <Show when={proxyMessage()}>
+              <p class="mt-2 text-12-regular text-text-weak leading-5">{proxyMessage()}</p>
+            </Show>
           </section>
           <section class="rounded-2xl border border-border-weak-base bg-background-base p-4 shadow-sm">
             <div class="text-12-medium text-text-strong mb-2">Provider 状态</div>

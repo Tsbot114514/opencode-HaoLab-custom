@@ -4,6 +4,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { Bus } from "@/bus"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { ProxyConfig } from "@/server/proxy-config"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect, Queue, Schema } from "effect"
@@ -12,7 +13,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
-import { GlobalUpgradeInput } from "../groups/global"
+import { GlobalProxyUpdateInput, GlobalUpgradeInput } from "../groups/global"
 
 const log = Log.create({ service: "server" })
 
@@ -90,6 +91,18 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return result.info
     })
 
+    const proxyGet = Effect.fn("GlobalHttpApi.proxyGet")(function* () {
+      return yield* Effect.promise(() => ProxyConfig.get())
+    })
+
+    const proxyUpdate = Effect.fn("GlobalHttpApi.proxyUpdate")(function* (ctx: {
+      payload: typeof GlobalProxyUpdateInput.Type
+    }) {
+      const result = yield* Effect.promise(() => ProxyConfig.update(ctx.payload))
+      if (ctx.payload.apply) yield* Effect.promise(() => ProxyConfig.apply(result))
+      return result
+    })
+
     const dispose = Effect.fn("GlobalHttpApi.dispose")(function* () {
       yield* disposeAllInstancesAndEmitGlobalDisposed()
       return true
@@ -151,6 +164,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handleRaw("event", event)
       .handle("configGet", configGet)
       .handle("configUpdate", configUpdate)
+      .handle("proxyGet", proxyGet)
+      .handle("proxyUpdate", proxyUpdate)
       .handle("dispose", dispose)
       .handleRaw("upgrade", upgradeRaw)
   }),
