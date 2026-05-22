@@ -6,6 +6,17 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { described } from "./metadata"
 
+const GlobalProxy = Schema.Struct({
+  enabled: Schema.Boolean,
+  url: Schema.String,
+})
+
+export const GlobalProxyUpdateInput = Schema.Struct({
+  enabled: Schema.optional(Schema.Boolean),
+  url: Schema.optional(Schema.String),
+  apply: Schema.optional(Schema.Boolean),
+})
+
 const GlobalHealth = Schema.Struct({
   healthy: Schema.Literal(true),
   version: Schema.String,
@@ -37,6 +48,7 @@ export const GlobalPaths = {
   health: "/global/health",
   event: "/global/event",
   config: "/global/config",
+  proxy: "/global/proxy",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
 } as const
@@ -80,6 +92,26 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.config.update",
           summary: "Update global configuration",
           description: "Update global OpenCode configuration settings and preferences.",
+        }),
+      ),
+      HttpApiEndpoint.get("proxyGet", GlobalPaths.proxy, {
+        success: described(GlobalProxy, "Get proxy configuration"),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.proxy.get",
+          summary: "Get proxy configuration",
+          description: "Retrieve the current persisted proxy configuration.",
+        }),
+      ),
+      HttpApiEndpoint.patch("proxyUpdate", GlobalPaths.proxy, {
+        payload: GlobalProxyUpdateInput,
+        success: described(GlobalProxy, "Successfully updated proxy configuration"),
+        error: HttpApiError.BadRequest,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.proxy.update",
+          summary: "Update proxy configuration",
+          description: "Persist proxy configuration and optionally apply it to future outbound requests.",
         }),
       ),
       HttpApiEndpoint.post("dispose", GlobalPaths.dispose, {
