@@ -17,10 +17,16 @@ export function setupAutoUpdater() {
   autoUpdater.allowDowngrade = true
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  if (import.meta.env.OPENCODE_UPDATE_TOKEN) {
+    autoUpdater.requestHeaders = {
+      Authorization: `Bearer ${import.meta.env.OPENCODE_UPDATE_TOKEN}`,
+    }
+  }
   logger.log("auto updater configured", {
     channel: autoUpdater.channel,
     allowPrerelease: autoUpdater.allowPrerelease,
     allowDowngrade: autoUpdater.allowDowngrade,
+    privateReleaseToken: Boolean(import.meta.env.OPENCODE_UPDATE_TOKEN),
     currentVersion: app.getVersion(),
   })
 }
