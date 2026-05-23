@@ -35,12 +35,14 @@ export async function update(config: Partial<Info>): Promise<Info> {
 
 export async function apply(config?: Info) {
   const next = config ?? (await get())
-  if (next.enabled && next.url.trim()) {
-    process.env.HTTP_PROXY = next.url.trim()
-    process.env.HTTPS_PROXY = next.url.trim()
-    process.env.http_proxy = next.url.trim()
-    process.env.https_proxy = next.url.trim()
+  const url = proxyUrl(next.url)
+  if (next.enabled && url) {
+    process.env.HTTP_PROXY = url
+    process.env.HTTPS_PROXY = url
+    process.env.http_proxy = url
+    process.env.https_proxy = url
   } else {
+    if (next.enabled && next.url.trim()) log.warn("ignoring invalid proxy configuration", { url: next.url })
     delete process.env.HTTP_PROXY
     delete process.env.HTTPS_PROXY
     delete process.env.http_proxy
@@ -68,6 +70,19 @@ function normalize(input: Partial<Info>): Info {
   return {
     enabled: input.enabled === true,
     url: typeof input.url === "string" ? input.url : "",
+  }
+}
+
+function proxyUrl(input: string) {
+  const value = input.trim()
+  if (!value) return
+  try {
+    const url = new URL(value)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return
+    if (!url.hostname || !url.port) return
+    return value
+  } catch {
+    return
   }
 }
 

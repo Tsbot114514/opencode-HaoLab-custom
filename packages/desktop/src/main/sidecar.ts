@@ -87,6 +87,7 @@ async function start(command: StartCommand) {
     })
     parentPort.postMessage({ type: "ready" })
   } catch (error) {
+    console.error("sidecar start failed", error)
     parentPort.postMessage({ type: "error", error: serializeError(error) })
     setImmediate(() => process.exit(1))
   }
@@ -151,14 +152,16 @@ function useEnvProxy() {
 
 async function usePersistedProxy(userDataPath: string) {
   const proxy = await readProxyConfig(userDataPath)
-  if (proxy.enabled && proxy.url.trim()) {
-    process.env.HTTP_PROXY = proxy.url.trim()
-    process.env.HTTPS_PROXY = proxy.url.trim()
-    process.env.http_proxy = proxy.url.trim()
-    process.env.https_proxy = proxy.url.trim()
+  const url = proxyUrl(proxy.url)
+  if (proxy.enabled && url) {
+    process.env.HTTP_PROXY = url
+    process.env.HTTPS_PROXY = url
+    process.env.http_proxy = url
+    process.env.https_proxy = url
     return
   }
 
+  if (proxy.enabled && proxy.url.trim()) console.warn("ignoring invalid proxy configuration", { url: proxy.url })
   delete process.env.HTTP_PROXY
   delete process.env.HTTPS_PROXY
   delete process.env.http_proxy
@@ -178,6 +181,19 @@ async function readProxyConfig(userDataPath: string) {
     }
   } catch {
     return fallback
+  }
+}
+
+function proxyUrl(input: string) {
+  const value = input.trim()
+  if (!value) return
+  try {
+    const url = new URL(value)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return
+    if (!url.hostname || !url.port) return
+    return value
+  } catch {
+    return
   }
 }
 
