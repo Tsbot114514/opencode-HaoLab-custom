@@ -55,14 +55,13 @@ const loadSession = () => import("@/pages/session")
 const Session = lazy(loadSession)
 const Loading = () => <div class="size-full" />
 
-if (typeof location === "object" && /\/session(?:\/|$)/.test(location.pathname)) {
-  void loadSession()
-}
-
-const SessionRoute = () => (
-  <SessionProviders>
-    <Session />
-  </SessionProviders>
+const SessionRoute = Object.assign(
+  () => (
+    <SessionProviders>
+      <Session />
+    </SessionProviders>
+  ),
+  { preload: Session.preload },
 )
 
 const SessionIndexRoute = () => <Navigate href="session" />
@@ -74,7 +73,7 @@ const ManagerRoute = () => {
   return (
     <Show when={directory()} fallback={<Loading />} keyed>
       {(directory) => (
-        <SDKProvider directory={() => directory}>
+        <SDKProvider directory={directory}>
           <ModelsProvider>
             <ManagerRoutePage />
           </ModelsProvider>
@@ -126,6 +125,7 @@ declare global {
     }
     api?: {
       setTitlebar?: (theme: { mode: "light" | "dark" }) => Promise<void>
+      exportDebugLogs?: () => Promise<string>
     }
   }
 }

@@ -18,6 +18,7 @@ import { authTokenFromCredentials } from "@/utils/server"
 
 const managerSessionID = "ses_manager_agent"
 const managerTitle = "管理agent"
+const defaultProxyPrefix = "http://127.0.0.1:"
 
 type ProxyConfig = {
   enabled: boolean
@@ -35,6 +36,24 @@ function sortByID<T extends { id: string }>(items: T[]) {
 
 function sortMessages(items: WithParts[]) {
   return items.sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))
+}
+
+function proxyUrl(input: string) {
+  const value = input.trim()
+  return value === defaultProxyPrefix ? "" : value
+}
+
+function validateProxyUrl(input: string) {
+  const value = proxyUrl(input)
+  if (!value) return ""
+  try {
+    const url = new URL(value)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "代理地址必须以 http:// 或 https:// 开头。"
+    if (!url.hostname || !url.port) return "代理地址必须包含主机和端口，例如 http://127.0.0.1:7890。"
+    return ""
+  } catch {
+    return "代理地址格式不正确，例如 http://127.0.0.1:7890。"
+  }
 }
 
 export default function ManagerPage() {
@@ -159,7 +178,7 @@ export default function ManagerPage() {
   createEffect(() => {
     const config = proxyConfig()
     if (!config) return
-    setProxy(config.url)
+    setProxy(config.url || defaultProxyPrefix)
     setProxyEnabled(config.enabled)
   })
 
@@ -167,8 +186,13 @@ export default function ManagerPage() {
     setProxySaving(true)
     setProxyMessage("")
     try {
-      const next = await updateProxy({ url: proxy(), apply: false })
-      setProxy(next.url)
+      const validation = validateProxyUrl(proxy())
+      if (validation) {
+        setProxyMessage(validation)
+        return
+      }
+      const next = await updateProxy({ url: proxyUrl(proxy()), apply: false })
+      setProxy(next.url || defaultProxyPrefix)
       setProxyEnabled(next.enabled)
       setProxyMessage("已保存代理地址。")
     } catch (err) {
@@ -183,12 +207,17 @@ export default function ManagerPage() {
     setProxyMessage("")
     try {
       const enabled = !proxyEnabled()
-      if (enabled && !proxy().trim()) {
-        setProxyMessage("请先填写代理地址。")
+      if (enabled && !proxyUrl(proxy())) {
+        setProxyMessage("请先填写代理端口或完整代理地址。")
         return
       }
-      const next = await updateProxy({ enabled, url: proxy(), apply: true })
-      setProxy(next.url)
+      const validation = validateProxyUrl(proxy())
+      if (validation) {
+        setProxyMessage(validation)
+        return
+      }
+      const next = await updateProxy({ enabled, url: proxyUrl(proxy()), apply: true })
+      setProxy(next.url || defaultProxyPrefix)
       setProxyEnabled(next.enabled)
       setProxyMessage(next.enabled ? "代理已开启，对后续请求生效。" : "代理已关闭，对后续请求生效。")
       void refetchProxy()
@@ -381,14 +410,14 @@ export default function ManagerPage() {
   }
 
   return (
-    <main class="h-dvh bg-background-base text-text-base grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] overflow-hidden">
-      <section class="min-h-0 min-w-0 flex flex-col bg-background-base">
+    <main class="h-dvh bg-v2-background-bg-base text-v2-text-text-base grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] overflow-hidden">
+      <section class="min-h-0 min-w-0 flex flex-col bg-v2-background-bg-base">
         <div class="flex-1 overflow-y-auto px-6 py-6">
-          <Show when={ready()} fallback={<div class="h-full grid place-items-center text-14-regular text-text-weak">正在加载管理会话...</div>}>
+          <Show when={ready()} fallback={<div class="h-full grid place-items-center text-14-regular text-v2-text-text-muted">正在加载管理会话...</div>}>
             <div class="mx-auto max-w-3xl min-h-full flex flex-col justify-end">
               <Show
                 when={userMessages().length > 0}
-                fallback={<div class="text-center text-14-regular text-text-weak pb-12">开始和管理 agent 对话。</div>}
+                fallback={<div class="text-center text-14-regular text-v2-text-text-muted pb-12">开始和管理 agent 对话。</div>}
               >
                 <DataProvider data={data()} directory="">
                   <div class="flex flex-col gap-12 items-start justify-start py-4">
@@ -413,7 +442,7 @@ export default function ManagerPage() {
             </div>
           </Show>
         </div>
-        <div class="shrink-0 px-6 pb-6 pt-3 border-t border-border-weak-base bg-background-base/95">
+        <div class="shrink-0 px-6 pb-6 pt-3 border-t border-v2-border-border-base bg-v2-background-bg-base">
           <div class="mx-auto max-w-3xl flex flex-col gap-3">
             <Show when={error()}>
               <div class="rounded-lg border border-danger-base/30 bg-danger-base/5 px-3 py-2 text-12-regular text-danger-base">
@@ -426,7 +455,7 @@ export default function ManagerPage() {
                   <div>{status().message}</div>
                   <Show when={status().action}>
                     {(action) => (
-                      <div class="mt-1 text-text-weak">
+                      <div class="mt-1 text-v2-text-text-muted">
                         {action().message}{" "}
                         <Show when={action().link}>
                           {(link) => (
@@ -465,14 +494,14 @@ export default function ManagerPage() {
                   placeholder="输入要管理的事项..."
                   disabled={!ready() || sending()}
                   rows={3}
-                  class="select-text w-full max-h-[240px] resize-none bg-transparent pl-3 pr-13 pt-2 pb-14 text-14-regular leading-6 text-text-strong placeholder:text-text-weak outline-none disabled:opacity-50"
+                  class="select-text w-full max-h-[240px] resize-none bg-transparent pl-3 pr-13 pt-2 pb-14 text-14-regular leading-6 text-v2-text-text-base placeholder:text-v2-text-text-faint outline-none disabled:opacity-50"
                 />
                 <div
                   aria-hidden="true"
                   class="pointer-events-none absolute inset-x-0 bottom-0 h-14"
                   style={{
                     background:
-                      "linear-gradient(to top, var(--surface-raised-stronger-non-alpha) calc(100% - 20px), transparent)",
+                      "linear-gradient(to top, var(--v2-background-bg-base) calc(100% - 20px), transparent)",
                   }}
                 />
                 <div class="pointer-events-none absolute bottom-2 right-2 flex items-center gap-2">
@@ -488,7 +517,7 @@ export default function ManagerPage() {
                     />
                   </div>
                 </div>
-                <div class="pointer-events-none absolute bottom-2 left-3 text-12-regular text-text-weak">
+                <div class="pointer-events-none absolute bottom-2 left-3 text-12-regular text-v2-text-text-muted">
                   Enter 发送，Shift+Enter 换行
                 </div>
               </div>
@@ -501,7 +530,7 @@ export default function ManagerPage() {
                   triggerProps={{
                     variant: "ghost",
                     size: "normal",
-                    class: "min-w-0 max-w-[320px] text-13-regular text-text-base group",
+                    class: "min-w-0 max-w-[320px] text-13-regular text-v2-text-text-base group",
                     "data-action": "prompt-model",
                   }}
                 >
@@ -520,15 +549,15 @@ export default function ManagerPage() {
           </div>
         </div>
       </section>
-      <aside class="border-t lg:border-t-0 lg:border-l border-border-weak-base bg-surface-base/60 p-4 overflow-y-auto">
+      <aside class="border-t lg:border-t-0 lg:border-l border-v2-border-border-base bg-v2-background-bg-deep p-4 overflow-y-auto">
         <div class="flex flex-col gap-4">
           <Button variant="ghost" size="large" onClick={() => navigate("/classic")}>切换到经典页面</Button>
-          <section class="rounded-2xl border border-border-weak-base bg-background-base p-4 shadow-sm">
-            <div class="text-12-medium text-text-strong mb-2">代理设置</div>
+          <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+            <div class="text-12-medium text-v2-text-text-base mb-2">代理设置</div>
             <TextField
               value={proxy()}
               onChange={setProxy}
-              placeholder="http://127.0.0.1:7890"
+              placeholder={`${defaultProxyPrefix}7890`}
             />
             <div class="mt-3 flex items-center gap-2">
               <Button variant="ghost" size="small" disabled={proxySaving()} onClick={() => void saveProxy()}>
@@ -538,20 +567,20 @@ export default function ManagerPage() {
                 {proxyEnabled() ? "关闭代理" : "开启代理"}
               </Button>
             </div>
-            <p class="mt-2 text-12-regular text-text-weak leading-5">
+            <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5">
               配置保存到本机 proxy.json。开关代理会立即通知 sidecar，对后续新请求生效。
             </p>
             <Show when={proxyMessage()}>
-              <p class="mt-2 text-12-regular text-text-weak leading-5">{proxyMessage()}</p>
+              <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5">{proxyMessage()}</p>
             </Show>
           </section>
-          <section class="rounded-2xl border border-border-weak-base bg-background-base p-4 shadow-sm">
-            <div class="text-12-medium text-text-strong mb-2">Provider 状态</div>
-            <p class="text-12-regular text-text-weak leading-5">后续复用 classic provider/model 连接状态。</p>
+          <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+            <div class="text-12-medium text-v2-text-text-base mb-2">Provider 状态</div>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">后续复用 classic provider/model 连接状态。</p>
           </section>
-          <section class="rounded-2xl border border-border-weak-base bg-background-base p-4 shadow-sm">
-            <div class="text-12-medium text-text-strong mb-2">Session 信息</div>
-            <div class="text-12-regular text-text-weak leading-5 break-all">{managerSessionID}</div>
+          <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+            <div class="text-12-medium text-v2-text-text-base mb-2">Session 信息</div>
+            <div class="text-12-regular text-v2-text-text-muted leading-5 break-all">{managerSessionID}</div>
           </section>
         </div>
       </aside>

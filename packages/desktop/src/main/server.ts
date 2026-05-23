@@ -70,10 +70,8 @@ export async function spawnLocalServer(
   hostname: string,
   port: number,
   password: string,
-  configureEnv: () => void,
   options: SpawnLocalServerOptions,
 ) {
-  configureEnv?.()
   const sidecar = join(dirname(fileURLToPath(import.meta.url)), "sidecar.js")
   const child = utilityProcess.fork(sidecar, [], {
     cwd: process.cwd(),
@@ -133,6 +131,7 @@ export async function spawnLocalServer(
         return
       }
       if (message.type === "error") {
+        options.onStderr?.(`sidecar error: ${message.error.message}${message.error.stack ? `\n${message.error.stack}` : ""}`)
         fail(Object.assign(new Error(message.error.message), { stack: message.error.stack }))
       }
     }

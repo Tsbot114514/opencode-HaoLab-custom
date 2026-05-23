@@ -1,5 +1,6 @@
 import { OpenApi } from "effect/unstable/httpapi"
 import { OpenCodeHttpApi } from "./api"
+import { QueryBooleanOpenApi } from "./groups/query"
 
 type OpenApiParameter = {
   name: string
@@ -54,27 +55,21 @@ type OpenApiResponse = {
 // Query schemas describe decoded Effect values, but the generated SDK needs the
 // public call shape. These keep SDK callers passing numbers/booleans while the
 // server still decodes string query params at runtime.
-const QueryBooleanParameters = new Set(["roots", "archived"])
 const QueryParameterSchemas: Record<string, OpenApiSchema> = {
   "GET /experimental/session start": { type: "number" },
+  "GET /experimental/session roots": QueryBooleanOpenApi,
+  "GET /experimental/session archived": QueryBooleanOpenApi,
   "GET /find/file limit": { type: "integer", minimum: 1, maximum: 200 },
   "GET /experimental/session cursor": { type: "number" },
   "GET /experimental/session limit": { type: "number" },
   "GET /session start": { type: "number" },
+  "GET /session roots": QueryBooleanOpenApi,
   "GET /session limit": { type: "number" },
-  "GET /session/{sessionID}/diff messageID": { type: "string", pattern: "^msg.*" },
   "GET /session/{sessionID}/message limit": { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
   "GET /api/session limit": { type: "number" },
   "GET /api/session start": { type: "number" },
+  "GET /api/session roots": QueryBooleanOpenApi,
   "GET /api/session/{sessionID}/message limit": { type: "number" },
-}
-
-const PathParameterSchemas: Record<string, OpenApiSchema> = {
-  sessionID: { type: "string", pattern: "^ses.*" },
-  messageID: { type: "string", pattern: "^msg.*" },
-  partID: { type: "string", pattern: "^prt.*" },
-  permissionID: { type: "string", pattern: "^per.*" },
-  ptyID: { type: "string", pattern: "^pty.*" },
 }
 
 const LegacyComponentDescriptions: Record<string, string> = {
@@ -104,20 +99,16 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
   applyLegacySchemaOverrides(spec)
   normalizeComponentDescriptions(spec)
   addLegacyErrorSchemas(spec)
-  delete spec.components?.schemas?.Unauthorized
-  delete spec.components?.schemas?.EffectHttpApiErrorBadRequest
-  delete spec.components?.schemas?.EffectHttpApiErrorNotFound
-  delete spec.components?.schemas?.effect_HttpApiError_BadRequest
-  delete spec.components?.schemas?.effect_HttpApiError_NotFound
   delete spec.components?.securitySchemes
 
   for (const [path, item] of Object.entries(spec.paths ?? {})) {
     for (const method of ["get", "post", "put", "delete", "patch"] as const) {
       const operation = item[method]
       if (!operation) continue
+      const isV2Api = isV2ApiPath(path)
       if (operation.requestBody) {
-        // Hono's generated OpenAPI never marked request bodies as required. Keep
-        // that SDK surface stable during the HttpApi migration.
+        // The legacy OpenAPI surface never marked request bodies as required.
+        // Keep that SDK surface stable while the HttpApi spec is tightened.
         delete operation.requestBody.required
         const body = operation.requestBody.content?.["application/json"]
         if (body?.schema) body.schema = stripOptionalNull(structuredClone(body.schema))
@@ -151,11 +142,14 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
           if (content.schema) content.schema = stripOptionalNull(structuredClone(content.schema))
         }
       }
-      // Hono applied auth as runtime middleware outside OpenAPI metadata, so the
-      // legacy SDK did not expose auth schemes or generated 401 error unions.
-      delete operation.security
-      delete operation.responses?.["401"]
-      normalizeLegacyErrorResponses(operation)
+      if (!isV2Api) {
+        // Auth is still runtime middleware outside the legacy public OpenAPI
+        // metadata, so the legacy SDK should not expose auth schemes or
+        // generated 401 error unions.
+        delete operation.security
+        delete operation.responses?.["401"]
+        normalizeLegacyErrorResponses(operation)
+      }
       normalizeLegacyOperation(operation, path, method)
       if ((path === "/event" || path === "/global/event") && method === "get") {
         // HttpApi has no first-class SSE response schema, and these handlers are
@@ -176,24 +170,32 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
       for (const param of operation.parameters ?? []) normalizeParameter(param, route)
     }
   }
+  deleteUnusedLegacyErrorComponents(spec)
   return input
+}
+
+function isV2ApiPath(path: string) {
+  return path === "/api" || path.startsWith("/api/")
 }
 
 function addLegacyErrorSchemas(spec: OpenApiSpec) {
   if (!spec.components?.schemas) return
   spec.components.schemas.BadRequestError = {
     type: "object",
-    required: ["data", "errors", "success"],
+    required: ["name", "data"],
     properties: {
-      data: {},
-      errors: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: {},
+      name: { type: "string", enum: ["BadRequest"] },
+      data: {
+        type: "object",
+        required: ["message"],
+        properties: {
+          message: { type: "string" },
+          kind: {
+            type: "string",
+            enum: ["Params", "Headers", "Query", "Body", "Payload"],
+          },
         },
       },
-      success: { type: "boolean", enum: [false] },
     },
   }
   spec.components.schemas.NotFoundError = {
@@ -339,12 +341,32 @@ function rewriteRefs(input: unknown, from: string, to: string): void {
 }
 
 function normalizeLegacyErrorResponses(operation: OpenApiOperation) {
-  if (operation.responses?.["400"] && isBuiltInErrorResponse(operation.responses["400"], "BadRequest")) {
+  if (operation.responses?.["400"] && isLegacyBadRequestResponse(operation.responses["400"])) {
     operation.responses["400"] = legacyErrorResponse("Bad request", "BadRequestError")
   }
   if (operation.responses?.["404"] && isBuiltInErrorResponse(operation.responses["404"], "NotFound")) {
     operation.responses["404"] = legacyErrorResponse("Not found", "NotFoundError")
   }
+}
+
+function deleteUnusedLegacyErrorComponents(spec: OpenApiSpec) {
+  for (const name of [
+    "Unauthorized",
+    "EffectHttpApiErrorBadRequest",
+    "EffectHttpApiErrorNotFound",
+    "effect_HttpApiError_BadRequest",
+    "effect_HttpApiError_NotFound",
+  ]) {
+    if (referencesComponent(spec.paths, name)) continue
+    delete spec.components?.schemas?.[name]
+  }
+}
+
+function referencesComponent(input: unknown, name: string): boolean {
+  if (Array.isArray(input)) return input.some((item) => referencesComponent(item, name))
+  if (!input || typeof input !== "object") return false
+  if ((input as OpenApiSchema).$ref === `#/components/schemas/${name}`) return true
+  return Object.values(input).some((value) => referencesComponent(value, name))
 }
 
 function normalizeLegacyOperation(operation: OpenApiOperation, path: string, method: string) {
@@ -372,6 +394,10 @@ function isRefResponse(response: OpenApiResponse, name: string) {
 
 function isBuiltInErrorResponse(response: OpenApiResponse, name: "BadRequest" | "NotFound") {
   return response.description === name || isRefResponse(response, `EffectHttpApiError${name}`)
+}
+
+function isLegacyBadRequestResponse(response: OpenApiResponse) {
+  return isBuiltInErrorResponse(response, "BadRequest") || isRefResponse(response, "InvalidRequestError")
 }
 
 function legacyErrorResponse(description: string, name: "BadRequestError" | "NotFoundError"): OpenApiResponse {
@@ -486,7 +512,7 @@ function flattenOptions(options: OpenApiSchema[] | undefined): OpenApiSchema[] |
 function normalizeParameter(param: OpenApiParameter, route: string) {
   if (!param.schema || typeof param.schema !== "object") return
   if (param.in === "path") {
-    param.schema = pathParameterSchema(route, param.name) ?? stripOptionalNull(param.schema)
+    param.schema = stripOptionalNull(param.schema)
     return
   }
   if (param.in === "query") {
@@ -495,23 +521,8 @@ function normalizeParameter(param: OpenApiParameter, route: string) {
       param.schema = override
       return
     }
-    if (QueryBooleanParameters.has(param.name)) {
-      param.schema = {
-        anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
-      }
-      return
-    }
   }
   param.schema = stripOptionalNull(param.schema)
-}
-
-function pathParameterSchema(route: string, name: string) {
-  if (name in PathParameterSchemas) return PathParameterSchemas[name]
-  if (name === "id" && route.startsWith("DELETE /experimental/workspace/")) return { type: "string", pattern: "^wrk.*" }
-  if (name === "id" && route.startsWith("POST /experimental/workspace/")) return { type: "string", pattern: "^wrk.*" }
-  if (name === "requestID" && route.startsWith("POST /permission/")) return { type: "string", pattern: "^per.*" }
-  if (name === "requestID" && route.startsWith("POST /question/")) return { type: "string", pattern: "^que.*" }
-  return undefined
 }
 
 export const PublicApi = OpenCodeHttpApi.annotateMerge(
