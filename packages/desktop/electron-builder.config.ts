@@ -32,7 +32,14 @@ const getBase = (): Configuration => ({
     output: "dist",
     buildResources: "resources",
   },
-  files: ["out/**/*", "resources/**/*"],
+  files: [
+    "out/**/*",
+    "resources/**/*",
+    {
+      from: path.join(rootDir, "node_modules", "typescript"),
+      to: "node_modules/typescript",
+    },
+  ],
   extraResources: [
     {
       from: "native/",
