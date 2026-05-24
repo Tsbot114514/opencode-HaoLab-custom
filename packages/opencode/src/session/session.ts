@@ -41,6 +41,7 @@ import { Global } from "@opencode-ai/core/global"
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optionalOmitUndefined } from "@opencode-ai/core/schema"
 import { SessionAssembleTemplate } from "./assemble-template"
+import { ManagerSessionTemplate } from "./manager-template"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const log = Log.create({ service: "session" })
@@ -277,7 +278,18 @@ function init(info: Info) {
         2,
       ),
     )
+    if (info.id === ManagerSessionTemplate.id) await installManagerSessionTemplate(dir)
   })
+}
+
+async function installManagerSessionTemplate(dir: string) {
+  await Promise.all(
+    (await ManagerSessionTemplate.files()).map(async (file) => {
+      const target = path.join(dir, file.path)
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      await fs.writeFile(target, file.content)
+    }),
+  )
 }
 
 const Summary = Schema.Struct({
@@ -574,6 +586,7 @@ export type NotFound = NotFoundError
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly create: (input?: {
+    id?: SessionID
     parentID?: SessionID
     title?: string
     agent?: string

@@ -1,10 +1,11 @@
 import { describe, expect } from "bun:test"
+import path from "node:path"
 import { Deferred, Effect, Exit, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
 import * as Log from "@opencode-ai/core/util/log"
 import { MessageV2 } from "../../src/session/message-v2"
-import { MessageID, PartID, type SessionID } from "../../src/session/schema"
+import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -171,6 +172,23 @@ describe("step-finish token propagation via Bus event", () => {
 })
 
 describe("Session", () => {
+  it.instance("installs manager template for the fixed manager session", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const info = yield* session.create({ id: SessionID.descending("ses_manager_agent"), title: "管理agent", agent: "build" })
+      const dir = SessionNs.folder(info.id)
+
+      yield* Effect.promise(async () => {
+        expect(await Bun.file(path.join(dir, "context", "manager-agent.json")).exists()).toBe(true)
+        expect(await Bun.file(path.join(dir, "system", "instructions.txt")).exists()).toBe(true)
+        expect(await Bun.file(path.join(dir, "tool", "manage-session.ts")).exists()).toBe(true)
+        expect(await Bun.file(path.join(dir, "tool", "session-dispatch.ts")).exists()).toBe(true)
+      })
+
+      yield* session.remove(info.id)
+    }),
+  )
+
   it.live("remove works without an instance", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
