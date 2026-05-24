@@ -4,6 +4,7 @@ import "@opencode-ai/app/index.css"
 import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { Progress } from "@opencode-ai/ui/progress"
+import haolabLoadingIcon from "./haolab-loading.png"
 import "./styles.css"
 import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import type { InitStep, SqliteMigrationProgress } from "../preload/types"
@@ -11,6 +12,7 @@ import type { InitStep, SqliteMigrationProgress } from "../preload/types"
 const root = document.getElementById("root")!
 const lines = ["Just a moment...", "Migrating your database", "This may take a couple of minutes"]
 const delays = [3000, 9000]
+const haolabBranding = import.meta.env.OPENCODE_BRANDING === "haolab"
 
 render(() => {
   const [step, setStep] = createSignal<InitStep | null>(null)
@@ -64,7 +66,11 @@ render(() => {
       <div class="w-screen h-screen bg-background-base flex items-center justify-center">
         <Font />
         <div class="flex flex-col items-center gap-11">
-          <Splash class="w-20 h-25 opacity-15" />
+          {haolabBranding ? (
+            <img src={haolabLoadingIcon} alt="HaoLab" class="size-24 object-contain opacity-90" />
+          ) : (
+            <Splash class="w-20 h-25 opacity-15" />
+          )}
           <div class="w-60 flex flex-col items-center gap-4" aria-live="polite">
             <span class="w-full overflow-hidden text-center text-ellipsis whitespace-nowrap text-text-strong text-14-normal">
               {status()}

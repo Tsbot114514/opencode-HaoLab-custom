@@ -8,6 +8,7 @@ import { File } from "@opencode-ai/ui/file"
 import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
+import haolabLoadingIcon from "./assets/haolab-loading.png"
 import { MetaProvider } from "@solidjs/meta"
 import { type BaseRouterProps, Navigate, Route, Router, useLocation, useNavigate } from "@solidjs/router"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
@@ -54,6 +55,12 @@ const ManagerRoutePage = lazy(() => import("@/pages/manager"))
 const loadSession = () => import("@/pages/session")
 const Session = lazy(loadSession)
 const Loading = () => <div class="size-full" />
+const haolabBranding = import.meta.env.OPENCODE_BRANDING === "haolab"
+
+function BrandedSplash(props: { class?: string }) {
+  if (haolabBranding) return <img src={haolabLoadingIcon} alt="HaoLab" class={props.class} />
+  return <Splash class={props.class} />
+}
 
 const SessionRoute = Object.assign(
   () => (
@@ -262,7 +269,7 @@ function ConnectionGate(props: ParentProps<{ disableHealthCheck?: boolean }>) {
     <Suspense
       fallback={
         <div class="h-dvh w-screen flex flex-col items-center justify-center bg-background-base">
-          <Splash class="w-16 h-20 opacity-50 animate-pulse" />
+          <BrandedSplash class="w-20 h-20 object-contain opacity-80 animate-pulse" />
         </div>
       }
     >
@@ -270,7 +277,7 @@ function ConnectionGate(props: ParentProps<{ disableHealthCheck?: boolean }>) {
         when={checkMode() === "blocking" ? !startupHealthCheck.loading : startupHealthCheck.state !== "pending"}
         fallback={
           <div class="h-dvh w-screen flex flex-col items-center justify-center bg-background-base">
-            <Splash class="w-16 h-20 opacity-50 animate-pulse" />
+            <BrandedSplash class="w-20 h-20 object-contain opacity-80 animate-pulse" />
           </div>
         }
       >*/}
@@ -311,7 +318,7 @@ function ConnectionError(props: { onRetry?: () => void; onServerSelected?: (key:
   return (
     <div class="h-dvh w-screen flex flex-col items-center justify-center bg-background-base gap-6 p-6">
       <div class="flex flex-col items-center max-w-md text-center">
-        <Splash class="w-12 h-15 mb-4" />
+        <BrandedSplash class="w-16 h-16 object-contain mb-4" />
         <p class="text-14-regular text-text-base">
           {unreachable()[0]}
           <span class="text-text-strong font-medium">{name()}</span>

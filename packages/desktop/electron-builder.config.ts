@@ -25,9 +25,10 @@ const channel = (() => {
   if (raw === "dev" || raw === "beta" || raw === "prod") return raw
   return "dev"
 })()
+const branding = process.env.OPENCODE_BRANDING === "haolab" ? "haolab" : undefined
 
 const getBase = (): Configuration => ({
-  artifactName: "opencode-desktop-${os}-${arch}.${ext}",
+  artifactName: branding === "haolab" ? "HaoLab OpenCode-${os}-${arch}.${ext}" : "opencode-desktop-${os}-${arch}.${ext}",
   directories: {
     output: "dist",
     buildResources: "resources",
@@ -111,8 +112,8 @@ function getConfig() {
       return {
         ...base,
         appId: "ai.opencode.desktop",
-        productName: "OpenCode",
-        protocols: { name: "OpenCode", schemes: ["opencode"] },
+        productName: branding === "haolab" ? "HaoLab OpenCode" : "OpenCode",
+        protocols: { name: branding === "haolab" ? "HaoLab OpenCode" : "OpenCode", schemes: ["opencode"] },
         publish: { provider: "github", owner: "ts18006786422-cmyk", repo: "opencode-HaoLab-custom", channel: "latest" },
         rpm: { packageName: "opencode" },
       }

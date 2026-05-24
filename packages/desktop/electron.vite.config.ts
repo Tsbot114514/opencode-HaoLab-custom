@@ -35,6 +35,7 @@ export default defineConfig({
   main: {
     define: {
       "import.meta.env.OPENCODE_CHANNEL": JSON.stringify(channel),
+      "import.meta.env.OPENCODE_BRANDING": JSON.stringify(process.env.OPENCODE_BRANDING ?? ""),
       "import.meta.env.OPENCODE_UPDATE_TOKEN": JSON.stringify(process.env.OPENCODE_UPDATE_TOKEN ?? ""),
     },
     build: {
@@ -81,6 +82,9 @@ export default defineConfig({
     },
   },
   renderer: {
+    define: {
+      "import.meta.env.OPENCODE_BRANDING": JSON.stringify(process.env.OPENCODE_BRANDING ?? ""),
+    },
     plugins: [appPlugin, sentry],
     publicDir: "../../../app/public",
     root: "src/renderer",
