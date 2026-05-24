@@ -47,6 +47,15 @@ const migrations = await Promise.all(
 )
 console.log(`Loaded ${migrations.length} migrations`)
 
+const managerTemplateDir = path.resolve(dir, "../../agents/manager-agent")
+const managerTemplateManifest = (await Bun.file(path.join(managerTemplateDir, "agent.json")).json()) as { files: string[] }
+const managerTemplate = await Promise.all(
+  managerTemplateManifest.files.map(async (file) => ({
+    path: file,
+    content: await Bun.file(path.join(managerTemplateDir, file)).text(),
+  })),
+)
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
@@ -218,6 +227,7 @@ for (const item of targets) {
     define: {
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),
+      OPENCODE_MANAGER_TEMPLATE: JSON.stringify(managerTemplate),
       OPENCODE_MODELS_DEV: generated.modelsData,
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
