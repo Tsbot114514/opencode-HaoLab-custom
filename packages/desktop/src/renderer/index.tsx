@@ -16,7 +16,7 @@ import {
 } from "@opencode-ai/app"
 import * as Sentry from "@sentry/solid"
 import type { AsyncStorage } from "@solid-primitives/storage"
-import { MemoryRouter } from "@solidjs/router"
+import { MemoryRouter, createMemoryHistory } from "@solidjs/router"
 import { createEffect, createResource, onCleanup, onMount, Show } from "solid-js"
 import { render } from "solid-js/web"
 import pkg from "../../package.json"
@@ -26,6 +26,10 @@ import "./styles.css"
 import { useTheme } from "@opencode-ai/ui/theme"
 
 const root = document.getElementById("root")
+const haolabBranding = import.meta.env.OPENCODE_BRANDING === "haolab"
+const routerHistory = createMemoryHistory()
+if (haolabBranding) routerHistory.set({ value: "/manager", replace: true })
+
 if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
   throw new Error(t("error.dev.rootNotFound"))
 }
@@ -394,7 +398,7 @@ render(() => {
               <AppInterface
                 defaultServer={defaultServer.latest ?? ServerConnection.Key.make("sidecar")}
                 servers={servers()}
-                router={MemoryRouter}
+                router={(props) => <MemoryRouter {...props} history={routerHistory} />}
               >
                 <Inner />
               </AppInterface>

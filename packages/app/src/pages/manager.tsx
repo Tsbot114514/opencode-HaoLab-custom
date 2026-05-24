@@ -1,6 +1,7 @@
 import type { Event, Message, Part, Session, SessionStatus, UserMessage } from "@opencode-ai/sdk/v2/client"
 import { Button } from "@opencode-ai/ui/button"
 import { DataProvider } from "@opencode-ai/ui/context"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { DockShellForm, DockTray } from "@opencode-ai/ui/dock-surface"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
@@ -10,9 +11,11 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
+import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
 import { useServer } from "@/context/server"
+import { useProviders } from "@/hooks/use-providers"
 import { Identifier } from "@/utils/id"
 import { authTokenFromCredentials } from "@/utils/server"
 
@@ -59,7 +62,9 @@ function validateProxyUrl(input: string) {
 export default function ManagerPage() {
   const sdk = useGlobalSDK()
   const models = useModels()
+  const providers = useProviders()
   const server = useServer()
+  const dialog = useDialog()
   const navigate = useNavigate()
   const [proxy, setProxy] = createSignal("")
   const [proxyEnabled, setProxyEnabled] = createSignal(false)
@@ -77,6 +82,8 @@ export default function ManagerPage() {
     models
       .list()
       .filter((model) => models.visible({ providerID: model.provider.id, modelID: model.id }))
+
+  const openProviderConfig = () => dialog.show(() => <DialogSelectProvider />)
 
   const proxyRequest = async (init?: RequestInit) => {
     const current = server.current
@@ -551,7 +558,6 @@ export default function ManagerPage() {
       </section>
       <aside class="border-t lg:border-t-0 lg:border-l border-v2-border-border-base bg-v2-background-bg-deep p-4 overflow-y-auto">
         <div class="flex flex-col gap-4">
-          <Button variant="ghost" size="large" onClick={() => navigate("/classic")}>切换到经典页面</Button>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">代理设置</div>
             <TextField
@@ -575,12 +581,33 @@ export default function ManagerPage() {
             </Show>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
-            <div class="text-12-medium text-v2-text-text-base mb-2">Provider 状态</div>
-            <p class="text-12-regular text-v2-text-text-muted leading-5">后续复用 classic provider/model 连接状态。</p>
+            <div class="text-12-medium text-v2-text-text-base mb-2">Provider 配置</div>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">使用现有 Provider 配置流程连接模型服务。</p>
+            <Show
+              when={providers.connected().length > 0}
+              fallback={<p class="mt-3 text-12-regular text-v2-text-text-muted leading-5">还没有已连接的 Provider。</p>}
+            >
+              <div class="mt-3 flex flex-col gap-2">
+                <For each={providers.connected()}>
+                  {(provider) => (
+                    <div class="flex items-center gap-2 rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep px-2.5 py-2">
+                      <ProviderIcon id={provider.id} class="size-4 shrink-0" />
+                      <div class="min-w-0 truncate text-12-regular text-v2-text-text-base">{provider.name}</div>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <Button variant="primary" size="small" class="mt-3" onClick={openProviderConfig}>
+              配置 Provider
+            </Button>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
-            <div class="text-12-medium text-v2-text-text-base mb-2">Session 信息</div>
-            <div class="text-12-regular text-v2-text-text-muted leading-5 break-all">{managerSessionID}</div>
+            <div class="text-12-medium text-v2-text-text-base mb-2">配置完毕</div>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">代理和 Provider 配置完成后，进入正式页面继续使用。</p>
+            <Button variant="primary" size="large" class="mt-3 w-full" onClick={() => navigate("/classic")}>
+              进入正式页面
+            </Button>
           </section>
         </div>
       </aside>

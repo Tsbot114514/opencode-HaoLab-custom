@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
   readonly OPENCODE_CHANNEL: string
+  readonly OPENCODE_BRANDING: string
   readonly OPENCODE_UPDATE_TOKEN: string
 }
 

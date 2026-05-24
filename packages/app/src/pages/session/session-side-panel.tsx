@@ -65,8 +65,8 @@ export function SessionSidePanel(props: {
       settings.general.showFileTree(),
   )
 
-  const reviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
-  const fileOpen = createMemo(() => isDesktop() && shown() && layout.fileTree.opened())
+  const reviewOpen = createMemo(() => isDesktop() && !!params.id && view().reviewPanel.opened())
+  const fileOpen = createMemo(() => isDesktop() && !!params.id && shown() && layout.fileTree.opened())
   const open = createMemo(() => reviewOpen() || fileOpen())
   const reviewTab = createMemo(() => isDesktop())
   const panelWidth = createMemo(() => {
