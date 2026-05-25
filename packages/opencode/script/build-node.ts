@@ -43,6 +43,18 @@ const migrations = await Promise.all(
 )
 console.log(`Loaded ${migrations.length} migrations`)
 
+const managerTemplateRoot = path.resolve(dir, "../../agents/manager-agent")
+const managerTemplateManifest = JSON.parse(await Bun.file(path.join(managerTemplateRoot, "agent.json")).text()) as {
+  files: string[]
+}
+const managerTemplate = await Promise.all(
+  managerTemplateManifest.files.map(async (file) => ({
+    path: file,
+    content: await Bun.file(path.join(managerTemplateRoot, file)).text(),
+  })),
+)
+console.log(`Loaded ${managerTemplate.length} manager template files`)
+
 await Bun.build({
   target: "node",
   entrypoints: ["./src/node.ts"],
@@ -54,6 +66,7 @@ await Bun.build({
     OPENCODE_MIGRATIONS: JSON.stringify(migrations),
     OPENCODE_MODELS_DEV: generated.modelsData,
     OPENCODE_CHANNEL: `'${Script.channel}'`,
+    OPENCODE_MANAGER_TEMPLATE: JSON.stringify(managerTemplate),
   },
   files: {
     "opencode-web-ui.gen.ts": "",
