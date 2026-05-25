@@ -41,6 +41,7 @@ Rules:
 - `required` controls required parameters.
 - `additionalProperties: false` is recommended to prevent unexpected arguments.
 - `execute(args, ctx)` runs when the model calls the tool.
+- Call session-local tools with schema properties as top-level arguments. Do not wrap arguments in a `properties` object, even if an external rendering displays that wrapper.
 - Return either a string or `{ title?: string, output: string, metadata?: object }`.
 
 The execution context `ctx` includes:

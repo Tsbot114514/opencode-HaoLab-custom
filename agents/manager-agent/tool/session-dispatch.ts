@@ -5,7 +5,7 @@ const pagePath = {
 
 export default {
   description:
-    "Dispatch a session-scoped frontend navigation request. Use this when the user asks to switch the visible desktop page between classic and manager.",
+    "Dispatch a session-scoped frontend navigation request. Use this when the user asks to switch the visible desktop page between classic and manager. Pass arguments as top-level fields, for example {\"page\":\"manager\"}; do not wrap them in a properties object.",
   args: {
     type: "object",
     properties: {

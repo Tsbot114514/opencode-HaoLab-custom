@@ -15,6 +15,7 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import * as Log from "@opencode-ai/core/util/log"
 import { Discovery } from "./discovery"
 import CUSTOMIZE_OPENCODE_SKILL_BODY from "./prompt/customize-opencode.md" with { type: "text" }
+import SESSION_SANDBOX_TEST_SKILL_BODY from "./prompt/session-sandbox-test.md" with { type: "text" }
 import { isRecord } from "@/util/record"
 
 const log = Log.create({ service: "skill" })
@@ -32,6 +33,9 @@ const SKILL_PATTERN = "**/SKILL.md"
 const CUSTOMIZE_OPENCODE_SKILL_NAME = "customize-opencode"
 const CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION =
   "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself."
+const SESSION_SANDBOX_TEST_SKILL_NAME = "session-sandbox-test"
+const SESSION_SANDBOX_TEST_SKILL_DESCRIPTION =
+  "Use ONLY when the user edited session-local files such as prompts, local tools, local skills, or assemble context and asks to create a subagent/subtask with a migrated session folder to test the effect in isolation."
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -266,6 +270,12 @@ export const layer = Layer.effect(
           description: CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION,
           location: "<built-in>",
           content: CUSTOMIZE_OPENCODE_SKILL_BODY,
+        }
+        s.skills[SESSION_SANDBOX_TEST_SKILL_NAME] = {
+          name: SESSION_SANDBOX_TEST_SKILL_NAME,
+          description: SESSION_SANDBOX_TEST_SKILL_DESCRIPTION,
+          location: "<built-in>",
+          content: SESSION_SANDBOX_TEST_SKILL_BODY,
         }
         yield* loadSkills(s, yield* InstanceState.get(discovered), bus)
         return s

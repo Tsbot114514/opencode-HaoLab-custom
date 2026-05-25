@@ -556,6 +556,7 @@ export function MessageTimeline(props: {
   let listFrame: number | undefined
   let contentFrame: number | undefined
   let bottomAnchorFrame: number | undefined
+  let finalAnchorFrame: number | undefined
   let bottomAnchorFrames = 0
   let measuredBottomAnchored = true
   const [scrollRoot, setScrollRoot] = createSignal<HTMLDivElement>()
@@ -579,8 +580,23 @@ export function MessageTimeline(props: {
   function scheduleMeasuredBottomAnchor() {
     // Workaround for virtua issue #301: virtua does not expose a synchronous item-resize hook for
     // "stay at bottom if already at bottom". Tool rows can briefly outgrow the measured virtual
-    // height, so keep the scroll container bottom-locked for a few frames while measurement settles.
-    bottomAnchorFrames = 90
+    // height, so keep the scroll container bottom-locked while streaming, then let virtua settle.
+    if (!working()) {
+      bottomAnchorFrames = 0
+      if (bottomAnchorFrame !== undefined) {
+        cancelAnimationFrame(bottomAnchorFrame)
+        bottomAnchorFrame = undefined
+      }
+      scheduleFinalBottomAnchor()
+      return
+    }
+
+    if (finalAnchorFrame !== undefined) {
+      cancelAnimationFrame(finalAnchorFrame)
+      finalAnchorFrame = undefined
+    }
+
+    bottomAnchorFrames = 12
     if (bottomAnchorFrame !== undefined) return
 
     const tick = () => {
@@ -596,6 +612,26 @@ export function MessageTimeline(props: {
     }
 
     bottomAnchorFrame = requestAnimationFrame(tick)
+  }
+
+  function scheduleFinalBottomAnchor(attempt = 0, previousHeight?: number) {
+    if (!measuredBottomAnchored) return
+    if (finalAnchorFrame !== undefined) cancelAnimationFrame(finalAnchorFrame)
+
+    finalAnchorFrame = requestAnimationFrame(() => {
+      finalAnchorFrame = undefined
+      if (!listRoot || !virtualizer) return
+      if (!props.shouldAnchorBottom()) return
+
+      const height = listRoot.scrollHeight
+      if (attempt < 5 && height !== previousHeight) {
+        scheduleFinalBottomAnchor(attempt + 1, height)
+        return
+      }
+
+      const index = lastContentRowIndex()
+      if (index >= 0) virtualizer.scrollToIndex(index, { align: "end" })
+    })
   }
 
   const bindContentRoot = (root: HTMLDivElement) => {
@@ -693,6 +729,7 @@ export function MessageTimeline(props: {
     if (listFrame !== undefined) cancelAnimationFrame(listFrame)
     if (contentFrame !== undefined) cancelAnimationFrame(contentFrame)
     if (bottomAnchorFrame !== undefined) cancelAnimationFrame(bottomAnchorFrame)
+    if (finalAnchorFrame !== undefined) cancelAnimationFrame(finalAnchorFrame)
     setScrollRoot(undefined)
     props.setScrollRef(undefined)
   })

@@ -11,10 +11,12 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { useNavigate } from "@solidjs/router"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
+import { createStore } from "solid-js/store"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
+import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { useProviders } from "@/hooks/use-providers"
@@ -66,9 +68,17 @@ export default function ManagerPage() {
   const directory = useSDK().directory
   const models = useModels()
   const providers = useProviders()
+  const platform = usePlatform()
   const server = useServer()
   const dialog = useDialog()
   const navigate = useNavigate()
+  const [update, setUpdate] = createStore({
+    available: false,
+    checking: false,
+    installing: false,
+    message: undefined as string | undefined,
+    version: undefined as string | undefined,
+  })
   const [proxy, setProxy] = createSignal("")
   const [proxyEnabled, setProxyEnabled] = createSignal(false)
   const [proxyMessage, setProxyMessage] = createSignal("")
@@ -87,6 +97,44 @@ export default function ManagerPage() {
       .filter((model) => models.visible({ providerID: model.provider.id, modelID: model.id }))
 
   const openProviderConfig = () => dialog.show(() => <DialogSelectProvider />)
+
+  const checkUpdate = async () => {
+    if (!platform.checkUpdate) {
+      setUpdate("message", "当前环境不支持检查更新。")
+      return
+    }
+
+    setUpdate({ available: false, checking: true, message: undefined, version: undefined })
+    await platform
+      .checkUpdate()
+      .then((result) => {
+        if (!result.updateAvailable) {
+          setUpdate("message", `当前已是最新版本${platform.version ? `（${platform.version}）` : ""}。`)
+          return
+        }
+
+        setUpdate({
+          available: true,
+          message: result.version ? `发现新版本 ${result.version}，可立即安装并重启。` : "发现可用更新，可立即安装并重启。",
+          version: result.version ?? "",
+        })
+      })
+      .catch((err: unknown) => {
+        setUpdate("message", err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => setUpdate("checking", false))
+  }
+
+  const installUpdate = async () => {
+    if (!platform.updateAndRestart) return
+    setUpdate("installing", true)
+    await platform.updateAndRestart().catch((err: unknown) => {
+      setUpdate({
+        installing: false,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    })
+  }
 
   const proxyRequest = async (init?: RequestInit) => {
     const current = server.current
@@ -604,6 +652,23 @@ export default function ManagerPage() {
             <Button variant="primary" size="small" class="mt-3" onClick={openProviderConfig}>
               配置 Provider
             </Button>
+          </section>
+          <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+            <div class="text-12-medium text-v2-text-text-base mb-2">检查更新</div>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">检查桌面端是否有新版本，并在发现更新时安装重启。</p>
+            <div class="mt-3 flex items-center gap-2">
+              <Button variant="secondary" size="small" disabled={update.checking || update.installing} onClick={() => void checkUpdate()}>
+                {update.checking ? "检查中..." : "检查更新"}
+              </Button>
+              <Show when={update.available && platform.updateAndRestart}>
+                <Button variant="primary" size="small" disabled={update.installing} onClick={() => void installUpdate()}>
+                  {update.installing ? "正在安装..." : "安装并重启"}
+                </Button>
+              </Show>
+            </div>
+            <Show when={update.message}>
+              <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5">{update.message}</p>
+            </Show>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">配置完毕</div>

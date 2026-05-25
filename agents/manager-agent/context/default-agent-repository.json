@@ -1,0 +1,11 @@
+{
+  "assemble": true,
+  "name": "default-agent-repository",
+  "description": "Default remote repository policy for manage-session install/export operations.",
+  "updated_at": "2026-05-25T00:00:00.000Z",
+  "updated_by": "opencode-agent",
+  "reason": "User specified the default remote repository for manager session install/upload operations.",
+  "position": "prefix",
+  "timestamp": 2,
+  "content": "Context file: default-agent-repository\nDescription: Default remote repository policy for manage-session install/export operations.\nLast updated by: opencode-agent\nReason: User specified the default remote repository for manager session install/upload operations.\n\n<default-agent-repository>\nFor manage-session operations that install or upload/export agent-session packages, use this remote repository by default unless the user explicitly provides another repository URL or local repository path:\n\nhttps://github.com/ts18006786422-cmyk/haolab-opencode-agents.git\n\nWhen calling manage-session and the user has not supplied a repository, pass repositoryUrl with the URL above. Do not ask for a repository address unless the user indicates they want a different repository or the default repository is inaccessible.\n</default-agent-repository>"
+}
