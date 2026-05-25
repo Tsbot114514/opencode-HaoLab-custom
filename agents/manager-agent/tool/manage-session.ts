@@ -80,10 +80,20 @@ async function removeManagedPackageFiles(target: string) {
 }
 
 async function run(command: string[], cwd: string) {
-  const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" })
-  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-  if (code !== 0) throw new Error(`${command.join(" ")} failed\n${stdout}${stderr}`.trim())
-  return `${stdout}${stderr}`.trim()
+  const childProcess = await import("node:child_process")
+  return await new Promise<string>((resolve, reject) => {
+    const child = childProcess.spawn(command[0], command.slice(1), { cwd })
+    let stdout = ""
+    let stderr = ""
+    child.stdout?.on("data", (chunk) => (stdout += String(chunk)))
+    child.stderr?.on("data", (chunk) => (stderr += String(chunk)))
+    child.on("error", reject)
+    child.on("close", (code) => {
+      const output = `${stdout}${stderr}`.trim()
+      if (code !== 0) reject(new Error(`${command.join(" ")} failed\n${output}`.trim()))
+      else resolve(output)
+    })
+  })
 }
 
 async function resolveInside(root: string, rel: string) {
@@ -240,7 +250,7 @@ async function diffSession(args: Args, ctx: { directory: string }) {
 
 export default {
   description:
-    "Manage shareable opencode agent-session packages. Export a session folder to a Git repository, install a package into a session folder, or diff a package against a session.",
+    "Manage shareable opencode agent-session packages. Export a session folder to a Git repository, install a package into a session folder, or diff a package against a session. Pass arguments as top-level fields, for example {\"action\":\"diff\",\"sessionID\":\"ses_manager_agent\",\"repositoryPath\":\"...\"}; do not wrap them in a properties object.",
   args: {
     type: "object",
     properties: {
