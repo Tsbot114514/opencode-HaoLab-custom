@@ -1288,6 +1288,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     ],
   }))
 
+  createEffect(() => {
+    const agents = agentsQuery.data
+    if (!agents) return
+    if (sync.data.agent.length > 0) return
+    sync.set("agent", agents)
+  })
+
   const agentsLoading = () => agentsQuery.isLoading
   const agentsShouldFadeIn = createMemo((prev) => prev ?? agentsLoading())
   const providersLoading = () => agentsLoading() || providersQuery.isLoading || globalProvidersQuery.isLoading

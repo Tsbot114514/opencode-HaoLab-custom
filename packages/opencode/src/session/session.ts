@@ -272,6 +272,10 @@ function init(info: Info) {
             usage:
               "Read this file to discover the HTTP API base URL and credentials. Send requests with x-opencode-directory set to the target project directory.",
           },
+          session_local_tools: {
+            path: path.join(dir, "tool", "README.md"),
+            usage: "Before creating or editing session-local tools, read this README for the supported tool shape and schema contract.",
+          },
           time: info.time,
         },
         undefined,

@@ -9,11 +9,13 @@ import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { SessionTurn } from "@opencode-ai/ui/session-turn"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { useNavigate } from "@solidjs/router"
+import { base64Encode } from "@opencode-ai/core/util/encode"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
+import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { useProviders } from "@/hooks/use-providers"
 import { Identifier } from "@/utils/id"
@@ -61,6 +63,7 @@ function validateProxyUrl(input: string) {
 
 export default function ManagerPage() {
   const sdk = useGlobalSDK()
+  const directory = useSDK().directory
   const models = useModels()
   const providers = useProviders()
   const server = useServer()
@@ -605,7 +608,12 @@ export default function ManagerPage() {
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">配置完毕</div>
             <p class="text-12-regular text-v2-text-text-muted leading-5">代理和 Provider 配置完成后，进入正式页面继续使用。</p>
-            <Button variant="primary" size="large" class="mt-3 w-full" onClick={() => navigate("/classic")}>
+            <Button
+              variant="primary"
+              size="large"
+              class="mt-3 w-full"
+              onClick={() => navigate(`/${base64Encode(directory)}/session/${managerSessionID}`)}
+            >
               进入正式页面
             </Button>
           </section>

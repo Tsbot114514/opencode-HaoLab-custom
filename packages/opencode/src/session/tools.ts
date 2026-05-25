@@ -11,7 +11,7 @@ import { ModelID } from "@/provider/schema"
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
 import type { ToolContext as PluginToolContext, ToolDefinition } from "@opencode-ai/plugin"
-import type { JSONSchema7, JSONSchema7Definition } from "@ai-sdk/provider"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
 import { Effect } from "effect"
 import { MessageV2 } from "./message-v2"
@@ -228,10 +228,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       if (!isSessionTool(def)) continue
       const id = name === "default" ? namespace : `${namespace}_${name}`
       if (id === "StructuredOutput" || tools[id]) continue
-      const entries = Object.entries(def.args ?? {})
-      const allZod = entries.every((entry) => isZodType(entry[1]))
-      const zodParams = allZod ? z.object(def.args ?? {}) : undefined
-      const inputSchema = jsonSchema(zodParams ? zodJsonSchema(zodParams) : legacyJsonSchema(entries))
+      const inputSchema = jsonSchema(sessionToolJsonSchema(def.args ?? {}))
       tools[id] = tool({
         description: def.description,
         inputSchema,
@@ -300,19 +297,23 @@ function isZodType(value: unknown): value is z.ZodType {
   return typeof value === "object" && value !== null && "_zod" in value
 }
 
-function isJsonSchemaDefinition(value: unknown): value is JSONSchema7Definition {
-  return typeof value === "boolean" || (typeof value === "object" && value !== null && !Array.isArray(value))
+function sessionToolJsonSchema(args: unknown): JSONSchema7 {
+  if (isJsonSchema(args)) return args
+  const entries = Object.entries(isJsonSchemaObject(args) ? args : {})
+  if (entries.every((entry) => isZodType(entry[1]))) return zodJsonSchema(z.object(args as z.ZodRawShape))
+  throw new Error("session tool args must be a Zod raw shape or a JSON Schema object")
 }
 
-function legacyJsonSchema(entries: [string, unknown][]): JSONSchema7 {
-  const properties = Object.fromEntries(
-    entries.filter((entry): entry is [string, JSONSchema7Definition] => isJsonSchemaDefinition(entry[1])),
+function isJsonSchema(value: unknown): value is JSONSchema7 {
+  if (typeof value === "boolean") return true
+  if (!isJsonSchemaObject(value)) return false
+  return (
+    typeof value.type === "string" ||
+    Array.isArray(value.type) ||
+    isJsonSchemaObject(value.properties) ||
+    Array.isArray(value.required) ||
+    typeof value.$schema === "string"
   )
-  return {
-    type: "object",
-    properties,
-    required: Object.keys(properties),
-  }
 }
 
 function zodJsonSchema(schema: z.ZodType): JSONSchema7 {

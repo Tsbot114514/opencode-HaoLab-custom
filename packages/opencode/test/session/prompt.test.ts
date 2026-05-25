@@ -471,7 +471,12 @@ noLLMServer.instance(
         `export default {
           description: "Echo from a session-local tool.",
           args: {
-            message: { type: "string", description: "Message to echo." },
+            type: "object",
+            properties: {
+              message: { type: "string", description: "Message to echo." },
+            },
+            required: ["message"],
+            additionalProperties: false,
           },
           execute(args, ctx) {
             return { title: "Echo", output: args.message, metadata: { sessionID: ctx.sessionID } }
@@ -514,6 +519,84 @@ noLLMServer.instance(
       ).pipe(Effect.map((value) => value as { output: string; metadata: { sessionID: string } }))
       expect(result.output).toBe("hello")
       expect(result.metadata.sessionID).toBe(chat.id)
+    }),
+  { config: cfg },
+)
+
+noLLMServer.instance(
+  "uses session-local JSON Schema args as the tool input schema",
+  () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const provider = yield* ProviderSvc.Service
+      const chat = yield* sessions.create({ title: "Session schema tools" })
+      const model = yield* provider.getModel(ref.providerID, ref.modelID)
+      const parent = yield* user(chat.id, "hello")
+      const assistant: MessageV2.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: parent.id,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: chat.directory, root: chat.directory },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+      }
+
+      yield* writeText(
+        path.join(Session.folder(chat.id), "tool", "session_schema.ts"),
+        `export default {
+          description: "Tool with full JSON Schema args.",
+          args: {
+            type: "object",
+            properties: {
+              message: { type: "string", description: "Message to echo." },
+            },
+            required: ["message"],
+            additionalProperties: false,
+          },
+          execute(args) {
+            return { title: "Schema", output: args.message }
+          },
+        }`,
+      )
+
+      const tools = yield* SessionTools.resolve({
+        agent: {
+          name: "build",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        },
+        session: chat,
+        model,
+        processor: {
+          message: assistant,
+          updateToolCall: () => Effect.succeed(undefined),
+          completeToolCall: () => Effect.void,
+        },
+        bypassAgentCheck: false,
+        messages: [],
+        promptOps: {
+          cancel: () => Effect.void,
+          resolvePromptParts: () => Effect.succeed([]),
+          prompt: () => Effect.die("unexpected prompt call"),
+          loop: () => Effect.die("unexpected loop call"),
+        },
+      })
+
+      const schema = tools.session_schema.inputSchema as {
+        jsonSchema?: { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean }
+      }
+      expect(schema.jsonSchema?.properties?.message).toEqual({ type: "string", description: "Message to echo." })
+      expect(schema.jsonSchema?.properties?.type).toBeUndefined()
+      expect(schema.jsonSchema?.properties?.properties).toBeUndefined()
+      expect(schema.jsonSchema?.required).toEqual(["message"])
+      expect(schema.jsonSchema?.additionalProperties).toBe(false)
     }),
   { config: cfg },
 )
