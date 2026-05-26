@@ -231,6 +231,23 @@ const main = Effect.gen(function* () {
         try {
           logger.log("awaiting server ready")
           const res = yield* Deferred.await(serverReady)
+          if (initStep.phase !== "done") {
+            yield* Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  if (initStep.phase === "done") {
+                    resolve()
+                    return
+                  }
+                  const done = (step: InitStep) => {
+                    if (step.phase !== "done") return
+                    initEmitter.off("step", done)
+                    resolve()
+                  }
+                  initEmitter.on("step", done)
+                }),
+            )
+          }
           logger.log("server ready", { url: res.url })
           return res
         } finally {
