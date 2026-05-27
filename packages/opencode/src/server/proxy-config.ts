@@ -3,6 +3,7 @@ import * as Log from "@opencode-ai/core/util/log"
 import fs from "fs/promises"
 import * as http from "node:http"
 import path from "path"
+import { Agent, EnvHttpProxyAgent, setGlobalDispatcher } from "undici"
 
 const log = Log.create({ service: "proxy-config" })
 
@@ -55,6 +56,7 @@ export async function apply(config?: Info) {
   } catch (error) {
     log.warn("failed to apply proxy environment", { error })
   }
+  applyFetchProxy()
 }
 
 function parse(input: string | undefined) {
@@ -103,6 +105,18 @@ function ensureLoopbackNoProxy() {
 
   upsert("NO_PROXY")
   upsert("no_proxy")
+}
+
+function applyFetchProxy() {
+  try {
+    setGlobalDispatcher(proxyConfigured() ? new EnvHttpProxyAgent() : new Agent())
+  } catch (error) {
+    log.warn("failed to apply fetch proxy environment", { error })
+  }
+}
+
+function proxyConfigured() {
+  return Boolean(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy)
 }
 
 export * as ProxyConfig from "./proxy-config"

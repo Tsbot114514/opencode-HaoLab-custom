@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 import * as http from "node:http"
 import * as path from "node:path"
 import * as tls from "node:tls"
+import { Agent, EnvHttpProxyAgent, setGlobalDispatcher } from "undici"
 
 type NodeHttpWithEnvProxy = typeof http & {
   setGlobalProxyFromEnv: () => void
@@ -148,6 +149,15 @@ function useEnvProxy() {
   } catch (error) {
     console.warn("failed to load proxy environment", error)
   }
+  useFetchProxy()
+}
+
+function useFetchProxy() {
+  try {
+    setGlobalDispatcher(proxyConfigured() ? new EnvHttpProxyAgent() : new Agent())
+  } catch (error) {
+    console.warn("failed to load fetch proxy environment", error)
+  }
 }
 
 async function usePersistedProxy(userDataPath: string) {
@@ -195,6 +205,10 @@ function proxyUrl(input: string) {
   } catch {
     return
   }
+}
+
+function proxyConfigured() {
+  return Boolean(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy)
 }
 
 function parseCommand(value: unknown): SidecarCommand | undefined {
