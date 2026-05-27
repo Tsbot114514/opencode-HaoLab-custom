@@ -34,7 +34,8 @@
     "electron-window-state": "^5.0.3",
     "drizzle-orm": "catalog:",
     "marked": "^15",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "undici": "7.25.0"
   },
   "devDependencies": {
     "@actions/artifact": "4.0.0",

@@ -255,7 +255,7 @@
     },
     "packages/desktop": {
       "name": "@opencode-ai/desktop",
-      "version": "1.15.7",
+      "version": "1.15.10",
       "dependencies": {
         "@zip.js/zip.js": "2.7.62",
         "drizzle-orm": "catalog:",
@@ -267,6 +267,7 @@
         "electron-window-state": "^5.0.3",
         "marked": "^15",
         "typescript": "catalog:",
+        "undici": "7.25.0",
       },
       "devDependencies": {
         "@actions/artifact": "4.0.0",
@@ -510,6 +511,7 @@
         "tree-sitter-powershell": "0.25.10",
         "turndown": "7.2.0",
         "ulid": "catalog:",
+        "undici": "7.25.0",
         "venice-ai-sdk-provider": "2.0.1",
         "vscode-jsonrpc": "8.2.1",
         "web-tree-sitter": "0.25.10",
