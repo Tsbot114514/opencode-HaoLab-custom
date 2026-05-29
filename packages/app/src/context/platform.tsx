@@ -8,7 +8,24 @@ type PickerPaths = string | string[] | null
 type OpenDirectoryPickerOptions = { title?: string; multiple?: boolean }
 type OpenFilePickerOptions = { title?: string; multiple?: boolean; accept?: string[]; extensions?: string[] }
 type SaveFilePickerOptions = { title?: string; defaultPath?: string }
-type UpdateInfo = { updateAvailable: boolean; version?: string }
+type UpdateInfo = {
+  updateAvailable: boolean
+  version?: string
+  downloaded?: boolean
+  failed?: boolean
+  error?: string
+  releaseName?: string
+  releaseDate?: string
+  releaseNotes?: string
+}
+export type UpdateDownloadProgress = {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+  downloaded?: boolean
+  version?: string
+}
 type PlatformName = "web" | "desktop"
 type DesktopOS = "macos" | "windows" | "linux"
 
@@ -65,6 +82,9 @@ export type Platform = {
 
   /** Install the downloaded update using the platform restart flow */
   updateAndRestart?(): Promise<void>
+
+  /** Subscribe to desktop update download progress */
+  onUpdateDownloadProgress?(cb: (progress: UpdateDownloadProgress) => void): () => void
 
   /** Fetch override */
   fetch?: typeof fetch

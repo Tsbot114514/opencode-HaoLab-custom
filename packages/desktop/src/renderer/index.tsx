@@ -28,7 +28,10 @@ import { useTheme } from "@opencode-ai/ui/theme"
 const root = document.getElementById("root")
 const haolabBranding = import.meta.env.OPENCODE_BRANDING === "haolab"
 const routerHistory = createMemoryHistory()
-if (haolabBranding) routerHistory.set({ value: "/manager", replace: true })
+if (haolabBranding) {
+  const startupPage = await window.api.storeGet("opencode.global.dat", "haolab.startupPage").catch(() => null)
+  routerHistory.set({ value: startupPage === "classic" ? "/classic-manager" : "/manager", replace: true })
+}
 
 if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
   throw new Error(t("error.dev.rootNotFound"))
@@ -219,6 +222,8 @@ const createPlatform = (): Platform => {
       if (!config.updaterEnabled) return
       await window.api.installUpdate()
     },
+
+    onUpdateDownloadProgress: (cb) => window.api.onUpdateDownloadProgress(cb),
 
     exportDebugLogs: () => window.api.exportDebugLogs(),
 

@@ -78,6 +78,11 @@ const api: ElectronAPI = {
   runUpdater: (alertOnFail) => ipcRenderer.invoke("run-updater", alertOnFail),
   checkUpdate: () => ipcRenderer.invoke("check-update"),
   installUpdate: () => ipcRenderer.invoke("install-update"),
+  onUpdateDownloadProgress: (cb) => {
+    const handler = (_: unknown, progress: Parameters<typeof cb>[0]) => cb(progress)
+    ipcRenderer.on("update-download-progress", handler)
+    return () => ipcRenderer.removeListener("update-download-progress", handler)
+  },
   setBackgroundColor: (color: string) => ipcRenderer.invoke("set-background-color", color),
   exportDebugLogs: () => ipcRenderer.invoke("export-debug-logs"),
   recordFatalRendererError: (error) => ipcRenderer.invoke("record-fatal-renderer-error", error),

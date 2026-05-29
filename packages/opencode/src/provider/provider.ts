@@ -30,6 +30,8 @@ import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const log = Log.create({ service: "provider" })
+const DEFAULT_REQUEST_TIMEOUT = 300_000
+const DEFAULT_CHUNK_TIMEOUT = 20_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -1585,7 +1587,9 @@ export const layer = Layer.effect(
         if (existing) return existing
 
         const customFetch = options["fetch"]
-        const chunkTimeout = options["chunkTimeout"]
+        const requestTimeout = options["timeout"] === undefined ? DEFAULT_REQUEST_TIMEOUT : options["timeout"]
+        const chunkTimeout =
+          options["chunkTimeout"] === undefined && requestTimeout !== false ? DEFAULT_CHUNK_TIMEOUT : options["chunkTimeout"]
         delete options["chunkTimeout"]
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
@@ -1596,8 +1600,8 @@ export const layer = Layer.effect(
 
           if (opts.signal) signals.push(opts.signal)
           if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
-          if (options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false)
-            signals.push(AbortSignal.timeout(options["timeout"]))
+          if (requestTimeout !== undefined && requestTimeout !== null && requestTimeout !== false)
+            signals.push(AbortSignal.timeout(requestTimeout))
 
           const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
           if (combined) opts.signal = combined

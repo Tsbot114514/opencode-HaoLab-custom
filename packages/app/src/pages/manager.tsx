@@ -2,6 +2,7 @@ import type { Event, Message, Part, Session, SessionStatus, UserMessage } from "
 import { Button } from "@opencode-ai/ui/button"
 import { DataProvider } from "@opencode-ai/ui/context"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Dialog } from "@opencode-ai/ui/dialog"
 import { DockShellForm, DockTray } from "@opencode-ai/ui/dock-surface"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
@@ -10,7 +11,7 @@ import { SessionTurn } from "@opencode-ai/ui/session-turn"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { useNavigate } from "@solidjs/router"
 import { base64Encode } from "@opencode-ai/core/util/encode"
-import { createEffect, createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { DialogSelectProvider } from "@/components/dialog-select-provider"
@@ -22,6 +23,7 @@ import { useServer } from "@/context/server"
 import { useProviders } from "@/hooks/use-providers"
 import { Identifier } from "@/utils/id"
 import { authTokenFromCredentials } from "@/utils/server"
+import type { UpdateDownloadProgress } from "@/context/platform"
 
 const managerSessionID = "ses_manager_agent"
 const managerTitle = "管理agent"
@@ -36,6 +38,8 @@ type WithParts = {
   info: Message
   parts: Part[]
 }
+
+type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "latest" | "error" | "installing" | "unsupported"
 
 function sortByID<T extends { id: string }>(items: T[]) {
   return items.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -63,6 +67,18 @@ function validateProxyUrl(input: string) {
   }
 }
 
+function formatBytes(value: number | undefined) {
+  if (!value || value <= 0) return "0 B"
+  const units = ["B", "KB", "MB", "GB"]
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
+}
+
+function formatSpeed(value: number | undefined) {
+  if (!value || value <= 0) return ""
+  return `${formatBytes(value)}/s`
+}
+
 export default function ManagerPage() {
   const sdk = useGlobalSDK()
   const directory = useSDK().directory
@@ -77,12 +93,20 @@ export default function ManagerPage() {
     checking: false,
     installing: false,
     message: undefined as string | undefined,
+    phase: "idle" as UpdatePhase,
+    progress: undefined as UpdateDownloadProgress | undefined,
+    releaseDate: undefined as string | undefined,
+    releaseName: undefined as string | undefined,
+    releaseNotes: undefined as string | undefined,
     version: undefined as string | undefined,
   })
   const [proxy, setProxy] = createSignal("")
   const [proxyEnabled, setProxyEnabled] = createSignal(false)
   const [proxyMessage, setProxyMessage] = createSignal("")
   const [proxySaving, setProxySaving] = createSignal(false)
+  const [startupPage, setStartupPage] = createSignal<"manager" | "classic">("manager")
+  const [startupSaving, setStartupSaving] = createSignal(false)
+  const [startupMessage, setStartupMessage] = createSignal("")
   const [draft, setDraft] = createSignal("")
   const [selected, setSelected] = createSignal("")
   const [error, setError] = createSignal("")
@@ -98,43 +122,137 @@ export default function ManagerPage() {
 
   const openProviderConfig = () => dialog.show(() => <DialogSelectProvider />)
 
+  const saveStartupPage = async (value: "manager" | "classic") => {
+    const storage = platform.storage?.("opencode.global.dat")
+    if (!storage) {
+      setStartupMessage("当前环境不支持保存启动页面。")
+      return
+    }
+    setStartupSaving(true)
+    setStartupMessage("")
+    try {
+      await Promise.resolve(storage.setItem("haolab.startupPage", value))
+      setStartupPage(value)
+      setStartupMessage(value === "manager" ? "启动时将进入管理页面。" : "启动时将进入正式页面。")
+    } catch (err) {
+      setStartupMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setStartupSaving(false)
+    }
+  }
+
   const checkUpdate = async () => {
     if (!platform.checkUpdate) {
-      setUpdate("message", "当前环境不支持检查更新。")
+      setUpdate({ message: "当前环境不支持检查更新。", phase: "unsupported" })
       return
     }
 
-    setUpdate({ available: false, checking: true, message: undefined, version: undefined })
+    setUpdate({
+      available: false,
+      checking: true,
+      message: "正在检查更新...",
+      phase: "checking",
+      progress: undefined,
+      releaseDate: undefined,
+      releaseName: undefined,
+      releaseNotes: undefined,
+      version: undefined,
+    })
     await platform
       .checkUpdate()
       .then((result) => {
+        if (result.failed) {
+          setUpdate({ message: result.error ?? "无法获取更新信息，请稍后重试或检查网络/代理设置。", phase: "error" })
+          return
+        }
+
         if (!result.updateAvailable) {
-          setUpdate("message", `当前已是最新版本${platform.version ? `（${platform.version}）` : ""}。`)
+          setUpdate({ message: `当前已是最新版本${platform.version ? `（${platform.version}）` : ""}。`, phase: "latest" })
           return
         }
 
         setUpdate({
           available: true,
-          message: result.version ? `发现新版本 ${result.version}，可立即安装并重启。` : "发现可用更新，可立即安装并重启。",
+          checking: !result.downloaded,
+          message: result.downloaded
+            ? result.version
+              ? `更新 ${result.version} 已下载完成，重启后完成安装。`
+              : "更新已下载完成，重启后完成安装。"
+            : result.version
+              ? `发现更新 ${result.version}，正在后台下载。`
+              : "发现更新，正在后台下载。",
+          phase: result.downloaded ? "ready" : "downloading",
+          releaseDate: result.releaseDate,
+          releaseName: result.releaseName,
+          releaseNotes: result.releaseNotes,
+          progress: result.downloaded ? undefined : update.progress,
           version: result.version ?? "",
         })
       })
       .catch((err: unknown) => {
-        setUpdate("message", err instanceof Error ? err.message : String(err))
+        setUpdate({ message: err instanceof Error ? err.message : String(err), phase: "error" })
       })
       .finally(() => setUpdate("checking", false))
   }
 
   const installUpdate = async () => {
     if (!platform.updateAndRestart) return
-    setUpdate("installing", true)
+    setUpdate({ installing: true, phase: "installing", message: "正在准备重启并安装更新..." })
     await platform.updateAndRestart().catch((err: unknown) => {
       setUpdate({
         installing: false,
+        phase: "error",
         message: err instanceof Error ? err.message : String(err),
       })
     })
   }
+
+  const showUpdateNotes = () => {
+    dialog.show(() => (
+      <Dialog title={update.releaseName || (update.version ? `版本 ${update.version}` : "版本更新内容")} size="large" fit>
+        <div class="max-h-[min(60vh,520px)] w-[min(calc(100vw-48px),720px)] overflow-y-auto px-1 pb-1">
+          <Show when={update.releaseDate || update.version}>
+            <div class="mb-3 text-12-regular text-v2-text-text-muted leading-5">
+              <Show when={update.version}>版本：{update.version}</Show>
+              <Show when={update.releaseDate}> · 发布时间：{new Date(update.releaseDate!).toLocaleString()}</Show>
+            </div>
+          </Show>
+          <pre class="whitespace-pre-wrap break-words font-sans text-13-regular leading-6 text-v2-text-text-base">
+            {update.releaseNotes || "远端没有提供版本更新说明。"}
+          </pre>
+        </div>
+      </Dialog>
+    ))
+  }
+
+  const unsubscribeUpdateProgress = platform.onUpdateDownloadProgress?.((progress) => {
+    if (progress.downloaded) {
+      setUpdate({
+        available: true,
+        checking: false,
+        message: progress.version ? `更新 ${progress.version} 已下载完成，重启后完成安装。` : "更新已下载完成，重启后完成安装。",
+        phase: "ready",
+        progress: undefined,
+        version: progress.version ?? update.version,
+      })
+      return
+    }
+    setUpdate({
+      checking: true,
+      message: `正在下载更新 ${Math.round(progress.percent)}%。`,
+      phase: "downloading",
+      progress,
+    })
+  })
+
+  onMount(() => {
+    const storage = platform.storage?.("opencode.global.dat")
+    void Promise.resolve(storage?.getItem("haolab.startupPage"))
+      .then((value) => setStartupPage(value === "classic" ? "classic" : "manager"))
+      .catch(() => undefined)
+    if (!platform.checkUpdate) return
+    void checkUpdate()
+  })
 
   const proxyRequest = async (init?: RequestInit) => {
     const current = server.current
@@ -304,6 +422,17 @@ export default function ManagerPage() {
     if (status.type !== "retry") return
     return status
   })
+  const updateProgressPercent = createMemo(() => Math.max(0, Math.min(100, update.progress?.percent ?? 0)))
+  const updateStatusLabel = createMemo(() => {
+    if (update.phase === "checking") return "正在检查"
+    if (update.phase === "downloading") return "正在下载"
+    if (update.phase === "ready") return "更新已准备好"
+    if (update.phase === "latest") return "已是最新"
+    if (update.phase === "error") return "检查失败"
+    if (update.phase === "installing") return "正在安装"
+    if (update.phase === "unsupported") return "不可用"
+    return "待检查"
+  })
   const data = createMemo(() => ({
     session: session() ? [session()!] : [],
     session_status: {
@@ -403,7 +532,10 @@ export default function ManagerPage() {
 
   const unsubscribe = sdk.event.listen((event) => applyEvent(event.details))
   void sdk.event.start()
-  onCleanup(unsubscribe)
+  onCleanup(() => {
+    unsubscribe()
+    unsubscribeUpdateProgress?.()
+  })
 
   const abortRetry = async () => {
     await sdk.client.session.abort({ sessionID: managerSessionID })
@@ -654,21 +786,86 @@ export default function ManagerPage() {
             </Button>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
-            <div class="text-12-medium text-v2-text-text-base mb-2">检查更新</div>
-            <p class="text-12-regular text-v2-text-text-muted leading-5">检查桌面端是否有新版本，并在发现更新时安装重启。</p>
+            <div class="flex items-start gap-3">
+              <div
+                classList={{
+                  "size-8 rounded-xl grid place-items-center shrink-0": true,
+                  "bg-icon-success-base/10 text-icon-success-base": update.phase === "ready" || update.phase === "latest",
+                  "bg-icon-warning-base/10 text-icon-warning-base": update.phase === "downloading" || update.phase === "checking" || update.phase === "installing",
+                  "bg-danger-base/10 text-danger-base": update.phase === "error" || update.phase === "unsupported",
+                  "bg-v2-background-bg-deep text-v2-text-text-muted": update.phase === "idle",
+                }}
+              >
+                <Icon
+                  name={update.phase === "ready" || update.phase === "latest" ? "circle-check" : update.phase === "error" ? "warning" : "download"}
+                  size="small"
+                />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-12-medium text-v2-text-text-base">桌面端更新</div>
+                  <div class="shrink-0 rounded-full border border-v2-border-border-base bg-v2-background-bg-deep px-2 py-0.5 text-11-medium text-v2-text-text-muted">
+                    {updateStatusLabel()}
+                  </div>
+                </div>
+                <p class="mt-1 text-12-regular text-v2-text-text-muted leading-5">
+                  当前版本{platform.version ? ` ${platform.version}` : "未知"}。检查新版本并下载，完成后可重启安装。
+                </p>
+              </div>
+            </div>
+            <Show when={update.phase === "downloading" && update.progress}>
+              <div class="mt-3">
+                <div class="h-1.5 overflow-hidden rounded-full bg-v2-background-bg-deep">
+                  <div
+                    class="h-full rounded-full bg-icon-warning-base transition-[width] duration-200"
+                    style={{ width: `${updateProgressPercent()}%` }}
+                  />
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-2 text-11-regular text-v2-text-text-muted">
+                  <span>{Math.round(updateProgressPercent())}%</span>
+                  <span class="truncate">
+                    {formatBytes(update.progress?.transferred)} / {formatBytes(update.progress?.total)}
+                    <Show when={formatSpeed(update.progress?.bytesPerSecond)}> · {formatSpeed(update.progress?.bytesPerSecond)}</Show>
+                  </span>
+                </div>
+              </div>
+            </Show>
+            <Show when={update.message}>
+              <p
+                classList={{
+                  "mt-3 rounded-lg border px-3 py-2 text-12-regular leading-5": true,
+                  "border-danger-base/30 bg-danger-base/5 text-danger-base": update.phase === "error" || update.phase === "unsupported",
+                  "border-icon-success-base/30 bg-icon-success-base/5 text-v2-text-text-base": update.phase === "ready" || update.phase === "latest",
+                  "border-v2-border-border-base bg-v2-background-bg-deep text-v2-text-text-muted": update.phase !== "error" && update.phase !== "unsupported" && update.phase !== "ready" && update.phase !== "latest",
+                }}
+              >
+                {update.message}
+              </p>
+            </Show>
             <div class="mt-3 flex items-center gap-2">
-              <Button variant="secondary" size="small" disabled={update.checking || update.installing} onClick={() => void checkUpdate()}>
-                {update.checking ? "检查中..." : "检查更新"}
-              </Button>
-              <Show when={update.available && platform.updateAndRestart}>
+              <Show
+                when={update.available && platform.updateAndRestart}
+                fallback={
+                  <Button variant="secondary" size="small" disabled={update.checking || update.installing} onClick={() => void checkUpdate()}>
+                    {update.checking ? "正在准备..." : update.phase === "error" ? "重试" : "检查并下载更新"}
+                  </Button>
+                }
+              >
                 <Button variant="primary" size="small" disabled={update.installing} onClick={() => void installUpdate()}>
-                  {update.installing ? "正在安装..." : "安装并重启"}
+                  {update.installing ? "正在安装..." : "重启并安装"}
+                </Button>
+              </Show>
+              <Show when={update.available && !update.installing}>
+                <Button variant="ghost" size="small" disabled={update.checking} onClick={() => void checkUpdate()}>
+                  重新检查
+                </Button>
+              </Show>
+              <Show when={update.releaseNotes || update.releaseName || update.releaseDate}>
+                <Button variant="ghost" size="small" onClick={showUpdateNotes}>
+                  查看更新内容
                 </Button>
               </Show>
             </div>
-            <Show when={update.message}>
-              <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5">{update.message}</p>
-            </Show>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">配置完毕</div>
@@ -681,6 +878,31 @@ export default function ManagerPage() {
             >
               进入正式页面
             </Button>
+          </section>
+          <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+            <div class="text-12-medium text-v2-text-text-base mb-2">启动页面</div>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">选择下次启动 HaoLab OpenCode 时默认进入的页面。</p>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <Button
+                variant={startupPage() === "manager" ? "primary" : "secondary"}
+                size="small"
+                disabled={startupSaving()}
+                onClick={() => void saveStartupPage("manager")}
+              >
+                管理页面
+              </Button>
+              <Button
+                variant={startupPage() === "classic" ? "primary" : "secondary"}
+                size="small"
+                disabled={startupSaving()}
+                onClick={() => void saveStartupPage("classic")}
+              >
+                正式页面
+              </Button>
+            </div>
+            <Show when={startupMessage()}>
+              <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5">{startupMessage()}</p>
+            </Show>
           </section>
         </div>
       </aside>
