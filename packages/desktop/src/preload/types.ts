@@ -19,6 +19,14 @@ export type TitlebarTheme = {
 export type WindowConfig = {
   updaterEnabled: boolean
 }
+export type UpdateDownloadProgress = {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+  downloaded?: boolean
+  version?: string
+}
 
 export type FatalRendererError = {
   error: string
@@ -87,8 +95,18 @@ export type ElectronAPI = {
   runDesktopMenuAction: (action: DesktopMenuAction) => Promise<void>
   loadingWindowComplete: () => void
   runUpdater: (alertOnFail: boolean) => Promise<void>
-  checkUpdate: () => Promise<{ updateAvailable: boolean; version?: string }>
+  checkUpdate: () => Promise<{
+    updateAvailable: boolean
+    version?: string
+    downloaded?: boolean
+    failed?: boolean
+    error?: string
+    releaseName?: string
+    releaseDate?: string
+    releaseNotes?: string
+  }>
   installUpdate: () => Promise<void>
+  onUpdateDownloadProgress: (cb: (progress: UpdateDownloadProgress) => void) => () => void
   setBackgroundColor: (color: string) => Promise<void>
   exportDebugLogs: () => Promise<string>
   recordFatalRendererError: (error: FatalRendererError) => Promise<void>

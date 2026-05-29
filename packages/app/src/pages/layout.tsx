@@ -179,6 +179,7 @@ export default function Layout(props: ParentProps) {
     if (!settings.ready()) return
     if (!settings.updates.startup()) return
     if (!updateQuery.data?.updateAvailable) return
+    if (!updateQuery.data.downloaded) return
     return updateQuery.data.version ?? ""
   }
   const installUpdate = () => {

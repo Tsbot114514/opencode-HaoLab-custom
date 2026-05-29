@@ -35,6 +35,19 @@ interface FetchDecompressionError extends Error {
   path: string
 }
 
+const RETRYABLE_NETWORK_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+])
+
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached media from tool result:"
 export { isMedia }
 
@@ -1143,6 +1156,15 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    case isRetryableNetworkError(e, ctx.aborted):
+      return new APIError(
+        {
+          message: errorMessage(e),
+          isRetryable: true,
+          metadata: networkErrorMetadata(e),
+        },
+        { cause: e },
+      ).toObject()
     case APICallError.isInstance(e):
       const parsed = ProviderError.parseAPICallError({
         providerID: ctx.providerID,
@@ -1198,6 +1220,36 @@ export function fromError(
       } catch {}
       return new NamedError.Unknown({ message: JSON.stringify(e) }, { cause: e }).toObject()
   }
+}
+
+function isRetryableNetworkError(input: unknown, aborted?: boolean): input is Error {
+  if (aborted) return false
+  if (!(input instanceof Error)) return false
+  const error = input as Error & { code?: unknown; cause?: unknown }
+  if (error.name === "TimeoutError") return true
+  if (typeof error.code === "string" && RETRYABLE_NETWORK_CODES.has(error.code)) return true
+  const message = error.message.toLowerCase()
+  if (
+    message.includes("fetch failed") ||
+    message.includes("network error") ||
+    message.includes("sse read timed out") ||
+    message.includes("socket hang up") ||
+    message.includes("terminated") ||
+    message.includes("body timeout")
+  ) {
+    return true
+  }
+  return isRetryableNetworkError(error.cause, aborted)
+}
+
+function networkErrorMetadata(input: Error) {
+  const error = input as Error & { code?: unknown }
+  return Object.fromEntries(
+    Object.entries({
+      name: input.name,
+      code: typeof error.code === "string" ? error.code : undefined,
+    }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
+  )
 }
 
 export * as MessageV2 from "./message-v2"

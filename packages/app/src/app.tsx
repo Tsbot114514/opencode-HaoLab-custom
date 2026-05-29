@@ -11,6 +11,7 @@ import { ThemeProvider } from "@opencode-ai/ui/theme/context"
 import haolabLoadingIcon from "./assets/haolab-loading.png"
 import { MetaProvider } from "@solidjs/meta"
 import { type BaseRouterProps, Navigate, Route, Router, useLocation, useNavigate } from "@solidjs/router"
+import { base64Encode } from "@opencode-ai/core/util/encode"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
 import { Effect } from "effect"
 import {
@@ -56,6 +57,7 @@ const loadSession = () => import("@/pages/session")
 const Session = lazy(loadSession)
 const Loading = () => <div class="size-full" />
 const haolabBranding = import.meta.env.OPENCODE_BRANDING === "haolab"
+const managerSessionID = "ses_manager_agent"
 
 function BrandedSplash(props: { class?: string }) {
   if (haolabBranding) return <img src={haolabLoadingIcon} alt="HaoLab" class={props.class} />
@@ -86,6 +88,17 @@ const ManagerRoute = () => {
           </ModelsProvider>
         </SDKProvider>
       )}
+    </Show>
+  )
+}
+
+const ClassicManagerRoute = () => {
+  const globalSync = useGlobalSync()
+  const directory = createMemo(() => globalSync.data.path.directory)
+
+  return (
+    <Show when={directory()} fallback={<Loading />} keyed>
+      {(directory) => <Navigate href={`/${base64Encode(directory)}/session/${managerSessionID}`} />}
     </Show>
   )
 }
@@ -384,6 +397,7 @@ export function AppInterface(props: {
                 >
                   <Route path="/" component={HomeRoute} />
                   <Route path="/classic" component={HomeRoute} />
+                  <Route path="/classic-manager" component={ClassicManagerRoute} />
                   <Route path="/manager" component={ManagerRoute} />
                   <Route path="/:dir" component={DirectoryLayout}>
                     <Route path="/" component={SessionIndexRoute} />
