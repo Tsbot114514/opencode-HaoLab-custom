@@ -1,128 +1,124 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">开源的 AI Coding Agent。</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+# HaoLab OpenCode
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+HaoLab OpenCode 是 fork 自 [OpenCode](https://opencode.ai) 的自定义桌面发行版，面向 HaoLab 的本地 manager-first 工作流和实验场景。
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+这是一个 fork/custom build，不是上游 OpenCode 官方仓库。仓库内部仍会保留很多 `opencode` 名称，例如包名、配置路径、schema、模块名等。这些不是单纯品牌文案，而是运行时兼容接口，不应随意改名。
 
----
+Fork 关系：
 
-### 安装
-
-```bash
-# 直接安装 (YOLO)
-curl -fsSL https://opencode.ai/install | bash
-
-# 软件包管理器
-npm i -g opencode-ai@latest        # 也可使用 bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS 和 Linux（推荐，始终保持最新）
-brew install opencode              # macOS 和 Linux（官方 brew formula，更新频率较低）
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # 任意系统
-nix run nixpkgs#opencode           # 或用 github:anomalyco/opencode 获取最新 dev 分支
+```text
+上游项目: https://github.com/anomalyco/opencode
+自定义发行版: https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom
 ```
 
-> [!TIP]
-> 安装前请先移除 0.1.x 之前的旧版本。
+## 主要差异
 
-### 桌面应用程序 (BETA)
+- HaoLab 品牌桌面应用：`HaoLab OpenCode`。
+- 默认启动到管理页面，而不是直接进入 classic session 页面。
+- 支持固定管理会话和本地 manager-agent 工作流。
+- 可在管理页面中选择下次启动进入“管理页面”或“正式页面”。
+- 自动更新走本 custom 仓库的 GitHub Release。
+- 当前主要验证 Windows 打包、安装和更新流程。
+- 增强了长时间 LLM streaming 和瞬时网络错误的重试/恢复能力。
 
-OpenCode 也提供桌面版应用。可直接从 [发布页 (releases page)](https://github.com/anomalyco/opencode/releases) 或 [opencode.ai/download](https://opencode.ai/download) 下载。
+## 下载
 
-| 平台                  | 下载文件                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`、`.rpm` 或 AppImage         |
+从本仓库 GitHub Releases 下载最新 HaoLab Windows 安装包：
 
-```bash
-# macOS (Homebrew Cask)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+```text
+https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom/releases
 ```
 
-#### 安装目录
+当前 Windows 安装包文件名：
 
-安装脚本按照以下优先级决定安装路径：
-
-1. `$OPENCODE_INSTALL_DIR` - 自定义安装目录
-2. `$XDG_BIN_DIR` - 符合 XDG 基础目录规范的路径
-3. `$HOME/bin` - 如果存在或可创建的用户二进制目录
-4. `$HOME/.opencode/bin` - 默认备用路径
-
-```bash
-# 示例
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+```text
+HaoLab-OpenCode-win-x64.exe
 ```
 
-### Agents
+自动更新依赖同一个 Release 中的：
 
-OpenCode 内置两种 Agent，可用 `Tab` 键快速切换：
+```text
+latest.yml
+HaoLab-OpenCode-win-x64.exe
+HaoLab-OpenCode-win-x64.exe.blockmap
+```
 
-- **build** - 默认模式，具备完整权限，适合开发工作
-- **plan** - 只读模式，适合代码分析与探索
-  - 默认拒绝修改文件
-  - 运行 bash 命令前会询问
-  - 便于探索未知代码库或规划改动
+## 桌面启动行为
 
-另外还包含一个 **general** 子 Agent，用于复杂搜索和多步任务，内部使用，也可在消息中输入 `@general` 调用。
+HaoLab 构建默认进入管理页面。管理页面可以设置下次启动入口：
 
-了解更多 [Agents](https://opencode.ai/docs/agents) 相关信息。
+- `管理页面`: 进入 HaoLab manager 页面。
+- `正式页面`: 进入 classic OpenCode session 页面。
 
-### 文档
+该偏好保存在桌面应用的本地配置中，重启后生效。
 
-更多配置说明请查看我们的 [**官方文档**](https://opencode.ai/docs)。
+## 开发
 
-### 参与贡献
+在仓库根目录安装依赖：
 
-如有兴趣贡献代码，请在提交 PR 前阅读 [贡献指南 (Contributing Docs)](./CONTRIBUTING.md)。
+```bash
+bun install
+```
 
-### 基于 OpenCode 进行开发
+常用开发命令：
 
-如果你在项目名中使用了 “opencode”（如 “opencode-dashboard” 或 “opencode-mobile”），请在 README 里注明该项目不是 OpenCode 团队官方开发，且不存在隶属关系。
+```bash
+bun dev:desktop
+bun dev:web
+bun dev:manager
+```
 
----
+类型检查请在具体 package 目录中运行，例如：
 
-**加入我们的社区** [飞书](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=738j8655-cd59-4633-a30a-1124e0096789&qr_code=true) | [X.com](https://x.com/opencode)
+```bash
+cd packages/desktop
+bun typecheck
+```
+
+不要从仓库根目录运行测试；测试应在具体 package 目录中运行。
+
+## 构建 HaoLab 桌面版
+
+在 `packages/desktop` 目录中运行：
+
+```powershell
+$env:OPENCODE_VERSION='1.15.13'
+$env:OPENCODE_CHANNEL='prod'
+$env:OPENCODE_BRANDING='haolab'
+bun ./scripts/prepare.ts
+bun run build
+bun run package:win
+```
+
+本地打包时可能生成带空格的文件名，而 updater metadata 需要连字符文件名。发布前请确保文件名与 `latest.yml` 对齐：
+
+```text
+HaoLab-OpenCode-win-x64.exe
+HaoLab-OpenCode-win-x64.exe.blockmap
+latest.yml
+```
+
+## 命名边界
+
+公开发行版文档、安装包、桌面产品名应该使用 HaoLab OpenCode。
+
+以下名称通常应保持 OpenCode/opencode 原样，除非明确要 fork 运行时接口：
+
+- `.opencode`
+- `opencode.json`
+- `@opencode-ai/*`
+- `https://opencode.ai/config.json`
+- CLI/server/sdk 内部兼容接口
+
+## 上游项目与归属说明
+
+HaoLab OpenCode fork 自 OpenCode，并尽量保持与上游运行时和配置生态兼容：
+
+```text
+https://github.com/anomalyco/opencode
+https://opencode.ai
+```
+
+核心配置、agent、tool、plugin 等通用能力仍可参考上游文档；本 fork 的自定义行为以本仓库文档和代码为准。
+
+本 fork 由 HaoLab 作为自定义发行版维护，不是上游 OpenCode 维护者发布的官方版本。
