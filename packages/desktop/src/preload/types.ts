@@ -36,6 +36,24 @@ export type FatalRendererError = {
   os?: string
 }
 
+export type HaolabDataLocation = {
+  bootstrapPath: string
+  configured: boolean
+  xdgDataHome: string
+  activePath: string
+  defaultPath: string
+}
+
+export type HaolabDataMigrationResult = HaolabDataLocation & {
+  copiedFrom: string
+  copiedTo: string
+  restartRequired: true
+}
+
+export type HaolabDataDeleteResult = HaolabDataLocation & {
+  deletedPath: string
+}
+
 export type ElectronAPI = {
   killSidecar: () => Promise<void>
   installCli: () => Promise<string>
@@ -48,6 +66,9 @@ export type ElectronAPI = {
   setWslConfig: (config: WslConfig) => Promise<void>
   getDisplayBackend: () => Promise<LinuxDisplayBackend | null>
   setDisplayBackend: (backend: LinuxDisplayBackend | null) => Promise<void>
+  getHaolabDataLocation: () => Promise<HaolabDataLocation>
+  migrateHaolabData: (selectedDir: string) => Promise<HaolabDataMigrationResult>
+  deleteDefaultHaolabData: () => Promise<HaolabDataDeleteResult>
   parseMarkdownCommand: (markdown: string) => Promise<string>
   checkAppExists: (appName: string) => Promise<boolean>
   wslPath: (path: string, mode: "windows" | "linux" | null) => Promise<string>

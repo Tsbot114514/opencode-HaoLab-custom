@@ -4,10 +4,9 @@
   "version": "1.15.14",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://opencode.ai",
+  "homepage": "https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom",
   "author": {
-    "name": "OpenCode",
-    "email": "hello@opencode.ai"
+    "name": "HaoLab"
   },
   "scripts": {
     "typecheck": "tsgo -b",

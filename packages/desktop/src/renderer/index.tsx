@@ -279,6 +279,30 @@ const createPlatform = (): Platform => {
       await window.api.setDisplayBackend(backend)
     },
 
+    getHaolabDataLocation: () => window.api.getHaolabDataLocation(),
+
+    migrateHaolabData: (selectedDir) => window.api.migrateHaolabData(selectedDir),
+
+    selectAndMigrateHaolabData: async () => {
+      const result = await window.api.openDirectoryPicker({
+        multiple: false,
+        title: "选择 HaoLab Code 数据存储位置",
+      })
+      if (!result || Array.isArray(result)) return null
+      return window.api.migrateHaolabData(result)
+    },
+
+    selectHaolabDataDirectory: async () => {
+      const result = await window.api.openDirectoryPicker({
+        multiple: false,
+        title: "选择 HaoLab Code 数据存储位置",
+      })
+      if (!result || Array.isArray(result)) return null
+      return result
+    },
+
+    deleteDefaultHaolabData: () => window.api.deleteDefaultHaolabData(),
+
     parseMarkdown: (markdown: string) => window.api.parseMarkdownCommand(markdown),
 
     webviewZoom,

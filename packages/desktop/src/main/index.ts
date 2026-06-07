@@ -18,6 +18,7 @@ import { registerIpcHandlers, sendDeepLinks, sendMenuCommand, sendSqliteMigratio
 import { exportDebugLogs, initCrashReporter, initLogging, startNetLog, write as writeLog } from "./logging"
 import { parseMarkdown } from "./markdown"
 import { createMenu } from "./menu"
+import { applyHaolabDataConfig, deleteDefaultHaolabData, getHaolabDataLocation, migrateHaolabData } from "./haolab-data"
 import {
   getDefaultServerUrl,
   getWslConfig,
@@ -135,6 +136,7 @@ const main = Effect.gen(function* () {
     process.env.XDG_STATE_HOME = join(root, "state")
     return root
   })()
+  if (!onboardingTestRoot) applyHaolabDataConfig(appId)
   app.setName(app.isPackaged ? APP_NAMES[CHANNEL] : "OpenCode Dev")
   app.setAppUserModelId(appId)
   app.setPath(
@@ -264,6 +266,9 @@ const main = Effect.gen(function* () {
     setWslConfig: (config: WslConfig) => setWslConfig(config),
     getDisplayBackend: async () => null,
     setDisplayBackend: async () => undefined,
+    getHaolabDataLocation: () => getHaolabDataLocation(appId),
+    migrateHaolabData: (selectedDir) => migrateHaolabData(appId, selectedDir),
+    deleteDefaultHaolabData: () => deleteDefaultHaolabData(appId),
     parseMarkdown: async (markdown) => parseMarkdown(markdown),
     checkAppExists: (appName) => checkAppExists(appName),
     wslPath: async (path, mode) => wslPath(path, mode),

@@ -32,6 +32,31 @@ type Deps = {
   setWslConfig: (config: WslConfig) => Promise<void> | void
   getDisplayBackend: () => Promise<string | null>
   setDisplayBackend: (backend: string | null) => Promise<void> | void
+  getHaolabDataLocation: () => Promise<{
+    bootstrapPath: string
+    configured: boolean
+    xdgDataHome: string
+    activePath: string
+    defaultPath: string
+  }>
+  migrateHaolabData: (selectedDir: string) => Promise<{
+    bootstrapPath: string
+    configured: boolean
+    xdgDataHome: string
+    activePath: string
+    defaultPath: string
+    copiedFrom: string
+    copiedTo: string
+    restartRequired: true
+  }>
+  deleteDefaultHaolabData: () => Promise<{
+    bootstrapPath: string
+    configured: boolean
+    xdgDataHome: string
+    activePath: string
+    defaultPath: string
+    deletedPath: string
+  }>
   parseMarkdown: (markdown: string) => Promise<string> | string
   checkAppExists: (appName: string) => Promise<boolean> | boolean
   wslPath: (path: string, mode: "windows" | "linux" | null) => Promise<string>
@@ -71,6 +96,11 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("set-display-backend", (_event: IpcMainInvokeEvent, backend: string | null) =>
     deps.setDisplayBackend(backend),
   )
+  ipcMain.handle("get-haolab-data-location", () => deps.getHaolabDataLocation())
+  ipcMain.handle("migrate-haolab-data", (_event: IpcMainInvokeEvent, selectedDir: string) =>
+    deps.migrateHaolabData(selectedDir),
+  )
+  ipcMain.handle("delete-default-haolab-data", () => deps.deleteDefaultHaolabData())
   ipcMain.handle("parse-markdown", (_event: IpcMainInvokeEvent, markdown: string) => deps.parseMarkdown(markdown))
   ipcMain.handle("check-app-exists", (_event: IpcMainInvokeEvent, appName: string) => deps.checkAppExists(appName))
   ipcMain.handle("wsl-path", (_event: IpcMainInvokeEvent, path: string, mode: "windows" | "linux" | null) =>

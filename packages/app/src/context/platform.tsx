@@ -18,6 +18,21 @@ type UpdateInfo = {
   releaseDate?: string
   releaseNotes?: string
 }
+export type HaolabDataLocation = {
+  bootstrapPath: string
+  configured: boolean
+  xdgDataHome: string
+  activePath: string
+  defaultPath: string
+}
+export type HaolabDataMigrationResult = HaolabDataLocation & {
+  copiedFrom: string
+  copiedTo: string
+  restartRequired: true
+}
+export type HaolabDataDeleteResult = HaolabDataLocation & {
+  deletedPath: string
+}
 export type UpdateDownloadProgress = {
   percent: number
   bytesPerSecond: number
@@ -106,6 +121,21 @@ export type Platform = {
 
   /** Set the preferred display backend (desktop only) */
   setDisplayBackend?(backend: DisplayBackend): Promise<void>
+
+  /** Get HaoLab global data storage location (desktop only) */
+  getHaolabDataLocation?(): Promise<HaolabDataLocation>
+
+  /** Copy OpenCode global data to a new HaoLab data directory (desktop only) */
+  migrateHaolabData?(selectedDir: string): Promise<HaolabDataMigrationResult>
+
+  /** Pick a local directory and copy OpenCode global data there (desktop only) */
+  selectAndMigrateHaolabData?(): Promise<HaolabDataMigrationResult | null>
+
+  /** Pick a local base directory for HaoLab global data (desktop only) */
+  selectHaolabDataDirectory?(): Promise<string | null>
+
+  /** Delete the original default global data directory after migration (desktop only) */
+  deleteDefaultHaolabData?(): Promise<HaolabDataDeleteResult>
 
   /** Parse markdown to HTML using native parser (desktop only, returns unprocessed code blocks) */
   parseMarkdown?(markdown: string): Promise<string>

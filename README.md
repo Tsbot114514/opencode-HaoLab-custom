@@ -1,129 +1,110 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">The open source AI coding agent.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+# HaoLab OpenCode
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+HaoLab OpenCode is a custom desktop distribution forked from [OpenCode](https://opencode.ai), focused on a manager-first local workflow for HaoLab experiments.
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+This repository is a fork/custom build, not the upstream OpenCode project. Upstream package names, configuration paths, schemas, and many internal module names still intentionally use `opencode` because the distribution remains compatible with the OpenCode runtime and ecosystem.
 
----
+Fork attribution:
 
-### Installation
-
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
-
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
+```text
+Upstream: https://github.com/anomalyco/opencode
+Custom distribution: https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom
 ```
 
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
+## What Is Different
 
-### Desktop App (BETA)
+- HaoLab-branded desktop app: `HaoLab OpenCode`.
+- Manager-first startup flow with a dedicated manager page.
+- Fixed manager session support for local manager-agent workflows.
+- Desktop startup page preference: manager page or classic session page.
+- GitHub Release based updater for the HaoLab custom repository.
+- Windows-focused packaging and update validation.
+- Network resilience changes for long-running LLM streaming and transient provider failures.
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
+## Downloads
 
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
+Download the latest HaoLab Windows installer from this repository's GitHub Releases:
 
-```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+```text
+https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom/releases
 ```
 
-#### Installation Directory
+Current Windows installer asset name:
 
-The install script respects the following priority order for the installation path:
-
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
-
-```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+```text
+HaoLab-OpenCode-win-x64.exe
 ```
 
-### Agents
+Updater metadata is published through the same release channel with `latest.yml` and the matching `.blockmap` file.
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+## Desktop Behavior
 
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
+On HaoLab builds, the desktop app defaults to the manager page. The manager page can switch the startup preference between:
 
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
+- `管理页面`: the HaoLab manager page.
+- `正式页面`: the classic OpenCode session page.
 
-Learn more about [agents](https://opencode.ai/docs/agents).
+The preference is stored locally by the desktop app and applied on the next startup.
 
-### Documentation
+## Development
 
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
+Install dependencies from the repository root:
 
-### Contributing
+```bash
+bun install
+```
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
+Common development commands:
 
-### Building on OpenCode
+```bash
+bun dev:desktop
+bun dev:web
+bun dev:manager
+```
 
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
+Run type checks from package directories when working on a package, for example:
 
----
+```bash
+cd packages/desktop
+bun typecheck
+```
 
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+Do not run tests from the repository root; package tests should be run from their package directories.
+
+## Building HaoLab Desktop
+
+From `packages/desktop`, build a HaoLab production Windows package with:
+
+```powershell
+$env:OPENCODE_VERSION='1.15.13'
+$env:OPENCODE_CHANNEL='prod'
+$env:OPENCODE_BRANDING='haolab'
+bun ./scripts/prepare.ts
+bun run build
+bun run package:win
+```
+
+Local packaging may emit filenames with spaces, while updater metadata expects hyphenated names. Before publishing release assets, align the installer and blockmap filenames with `latest.yml`:
+
+```text
+HaoLab-OpenCode-win-x64.exe
+HaoLab-OpenCode-win-x64.exe.blockmap
+latest.yml
+```
+
+## Repository Status
+
+This fork keeps upstream OpenCode internals where compatibility matters. Public distribution docs and desktop metadata should say HaoLab OpenCode; config names such as `.opencode`, `opencode.json`, `@opencode-ai/*`, and `https://opencode.ai/config.json` should remain unchanged unless the runtime is intentionally forked.
+
+## Upstream And Attribution
+
+HaoLab OpenCode is forked from OpenCode and keeps upstream compatibility where possible:
+
+```text
+https://github.com/anomalyco/opencode
+https://opencode.ai
+```
+
+For upstream documentation about core OpenCode configuration, agents, tools, and plugins, refer to the upstream docs unless this fork explicitly overrides behavior.
+
+This fork is maintained as a HaoLab custom distribution and is not an official release from the upstream OpenCode maintainers.

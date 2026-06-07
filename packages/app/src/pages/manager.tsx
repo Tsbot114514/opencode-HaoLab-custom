@@ -107,6 +107,11 @@ export default function ManagerPage() {
   const [startupPage, setStartupPage] = createSignal<"manager" | "classic">("manager")
   const [startupSaving, setStartupSaving] = createSignal(false)
   const [startupMessage, setStartupMessage] = createSignal("")
+  const [storage, setStorage] = createStore({
+    migrating: false,
+    deleting: false,
+    message: "",
+  })
   const [draft, setDraft] = createSignal("")
   const [selected, setSelected] = createSignal("")
   const [error, setError] = createSignal("")
@@ -121,6 +126,167 @@ export default function ManagerPage() {
       .filter((model) => models.visible({ providerID: model.provider.id, modelID: model.id }))
 
   const openProviderConfig = () => dialog.show(() => <DialogSelectProvider />)
+
+  const confirmAction = (input: { title: string; body: string; confirm: string; danger?: boolean }) =>
+    new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (value: boolean) => {
+        if (settled) return
+        settled = true
+        resolve(value)
+      }
+      dialog.show(
+        () => (
+          <Dialog title={input.title} fit class="overflow-hidden">
+            <div class="w-[min(calc(100vw-48px),560px)]">
+              <div
+                classList={{
+                  "rounded-2xl border p-4": true,
+                  "border-danger-base/30 bg-danger-base/5": Boolean(input.danger),
+                  "border-v2-border-border-base bg-v2-background-bg-deep": !input.danger,
+                }}
+              >
+                <div class="flex gap-3">
+                  <div
+                    classList={{
+                      "mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl": true,
+                      "bg-danger-base/10 text-danger-base": Boolean(input.danger),
+                      "bg-icon-warning-base/10 text-icon-warning-base": !input.danger,
+                    }}
+                  >
+                    <Icon name={input.danger ? "trash" : "folder"} size="small" />
+                  </div>
+                  <p class="min-w-0 whitespace-pre-wrap text-13-regular leading-6 text-v2-text-text-muted">{input.body}</p>
+                </div>
+              </div>
+              <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  variant="ghost"
+                  size="small"
+                  class="sm:min-w-24"
+                  onClick={() => {
+                    dialog.close()
+                    done(false)
+                  }}
+                >
+                  取消
+                </Button>
+                <Button
+                  variant={input.danger ? "secondary" : "primary"}
+                  size="small"
+                  class="sm:min-w-24"
+                  onClick={() => {
+                    dialog.close()
+                    done(true)
+                  }}
+                >
+                  {input.confirm}
+                </Button>
+              </div>
+            </div>
+          </Dialog>
+        ),
+        () => done(false),
+      )
+    })
+
+  const DataMigrationDialog = () => {
+    const [selectedDir, setSelectedDir] = createSignal("")
+    const [running, setRunning] = createSignal(false)
+    const [message, setMessage] = createSignal("")
+    const targetPath = () => (selectedDir() ? `${selectedDir()}\\haolabcode-data\\data\\opencode` : "选择文件夹后自动生成")
+
+    const chooseDir = async () => {
+      if (!platform.selectHaolabDataDirectory) {
+        setMessage("当前环境不支持选择数据目录。")
+        return
+      }
+      const result = await platform.selectHaolabDataDirectory()
+      if (result) {
+        setSelectedDir(result)
+        setMessage("")
+      }
+    }
+
+    const run = async () => {
+      if (!selectedDir()) {
+        setMessage("请先选择一个文件夹。")
+        return
+      }
+      if (!platform.migrateHaolabData) {
+        setMessage("当前环境不支持修改数据存储路径。")
+        return
+      }
+      setRunning(true)
+      setMessage("正在复制数据目录，请不要继续会话或启动 agent...")
+      try {
+        const result = await platform.migrateHaolabData(selectedDir())
+        await refetchHaolabDataLocation()
+        setStorage("message", `迁移完成。新目录：${result.activePath}。请重启 HaoLab OpenCode 后生效。`)
+        dialog.close()
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : String(err))
+      } finally {
+        setRunning(false)
+      }
+    }
+
+    return (
+      <Dialog title="修改数据存储路径" fit class="overflow-hidden">
+        <div class="w-[min(calc(100vw-48px),620px)]">
+          <div class="rounded-3xl border border-v2-border-border-base bg-v2-background-bg-deep p-4">
+            <div class="flex items-start gap-3">
+              <div class="grid size-10 shrink-0 place-items-center rounded-2xl bg-icon-warning-base/10 text-icon-warning-base">
+                <Icon name="folder" size="small" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-13-medium text-v2-text-text-base">选择新的数据存储位置</div>
+                <p class="mt-1 text-12-regular leading-5 text-v2-text-text-muted">
+                  系统会在你选择的文件夹下自动创建 <span class="font-mono">haolabcode-data</span> 子文件夹。
+                </p>
+              </div>
+            </div>
+            <div class="mt-4 flex gap-2">
+              <div class="min-w-0 flex-1 rounded-xl border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2">
+                <div class="truncate text-12-regular text-v2-text-text-base">{selectedDir() || "尚未选择文件夹"}</div>
+              </div>
+              <Button variant="secondary" size="small" disabled={running()} onClick={() => void chooseDir()}>
+                选择文件夹
+              </Button>
+            </div>
+            <div class="mt-3 rounded-xl border border-v2-border-border-base bg-v2-background-bg-base px-3 py-2">
+              <div class="text-11-medium text-v2-text-text-muted">迁移后的 OpenCode 数据目录</div>
+              <div class="mt-1 break-all font-mono text-12-regular text-v2-text-text-base">{targetPath()}</div>
+            </div>
+          </div>
+
+          <div class="mt-4 rounded-2xl border border-icon-warning-base/25 bg-icon-warning-base/5 p-3">
+            <div class="flex gap-2">
+              <Icon name="warning" size="small" class="mt-0.5 shrink-0 text-icon-warning-base" />
+              <p class="text-12-regular leading-5 text-v2-text-text-muted">
+                迁移会复制当前 OpenCode 数据目录。迁移期间请停止所有 agent 活动，不要继续会话。迁移完成后需要重启生效，旧数据会保留。
+              </p>
+            </div>
+          </div>
+
+          <Show when={message()}>
+            <p class="mt-3 rounded-xl border border-v2-border-border-base bg-v2-background-bg-deep px-3 py-2 text-12-regular leading-5 text-v2-text-text-muted break-words">
+              {message()}
+            </p>
+          </Show>
+
+          <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" size="small" class="sm:min-w-24" disabled={running()} onClick={() => dialog.close()}>
+              取消
+            </Button>
+            <Button variant="primary" size="small" class="sm:min-w-28" disabled={running() || !selectedDir()} onClick={() => void run()}>
+              {running() ? "正在迁移..." : "开始迁移"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    )
+  }
 
   const saveStartupPage = async (value: "manager" | "classic") => {
     const storage = platform.storage?.("opencode.global.dat")
@@ -138,6 +304,45 @@ export default function ManagerPage() {
       setStartupMessage(err instanceof Error ? err.message : String(err))
     } finally {
       setStartupSaving(false)
+    }
+  }
+
+  const readHaolabDataLocation = async () => {
+    if (!platform.getHaolabDataLocation) return undefined
+    return platform.getHaolabDataLocation()
+  }
+
+  const [haolabDataLocation, { refetch: refetchHaolabDataLocation }] = createResource(readHaolabDataLocation)
+
+  const migrateHaolabData = async () => {
+    if (!platform.migrateHaolabData || !platform.selectHaolabDataDirectory) {
+      setStorage("message", "当前环境不支持修改数据存储路径。")
+      return
+    }
+    dialog.show(() => <DataMigrationDialog />)
+  }
+
+  const deleteDefaultHaolabData = async () => {
+    if (!platform.deleteDefaultHaolabData) {
+      setStorage("message", "当前环境不支持删除默认数据目录。")
+      return
+    }
+    const confirmed = await confirmAction({
+      title: "删除原默认数据目录",
+      body: "请确认重启后一切运行正常。继续后会删除默认路径下的 OpenCode 数据文件夹。\n\n该操作不会删除当前自定义数据目录。",
+      confirm: "继续删除",
+      danger: true,
+    })
+    if (!confirmed) return
+    setStorage({ deleting: true, message: "正在删除默认数据目录..." })
+    try {
+      const result = await platform.deleteDefaultHaolabData()
+      await refetchHaolabDataLocation()
+      setStorage("message", `已删除默认数据目录：${result.deletedPath}`)
+    } catch (err) {
+      setStorage("message", err instanceof Error ? err.message : String(err))
+    } finally {
+      setStorage("deleting", false)
     }
   }
 
@@ -902,6 +1107,50 @@ export default function ManagerPage() {
             </div>
             <Show when={startupMessage()}>
               <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5">{startupMessage()}</p>
+            </Show>
+          </section>
+          <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+            <div class="text-12-medium text-v2-text-text-base mb-2">数据存储</div>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">
+              修改 OpenCode 全局数据目录。迁移会复制默认数据文件夹，重启后从新位置读取。
+            </p>
+            <Show
+              when={haolabDataLocation()}
+              fallback={<p class="mt-3 text-12-regular text-v2-text-text-muted leading-5">当前环境不支持数据存储位置管理。</p>}
+            >
+              {(location) => (
+                <div class="mt-3 space-y-2 rounded-xl border border-v2-border-border-base bg-v2-background-bg-deep p-3">
+                  <div>
+                    <div class="text-11-medium text-v2-text-text-muted">当前数据目录</div>
+                    <div class="mt-1 break-all text-12-regular text-v2-text-text-base">{location().activePath}</div>
+                  </div>
+                  <div>
+                    <div class="text-11-medium text-v2-text-text-muted">默认数据目录</div>
+                    <div class="mt-1 break-all text-12-regular text-v2-text-text-base">{location().defaultPath}</div>
+                  </div>
+                </div>
+              )}
+            </Show>
+            <div class="mt-3 grid grid-cols-1 gap-2">
+              <Button
+                variant="primary"
+                size="small"
+                disabled={storage.migrating || storage.deleting || !platform.migrateHaolabData || !platform.selectHaolabDataDirectory}
+                onClick={() => void migrateHaolabData()}
+              >
+                {storage.migrating ? "正在迁移..." : "修改数据存储路径"}
+              </Button>
+              <Button
+                variant="secondary"
+                size="small"
+                disabled={storage.migrating || storage.deleting || !platform.deleteDefaultHaolabData || !haolabDataLocation()?.configured}
+                onClick={() => void deleteDefaultHaolabData()}
+              >
+                {storage.deleting ? "正在删除..." : "删除原文件"}
+              </Button>
+            </div>
+            <Show when={storage.message}>
+              <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5 break-words">{storage.message}</p>
             </Show>
           </section>
         </div>
