@@ -11,7 +11,7 @@ context assembly, session tools, skills, and per-session state.
 - Development worktree: `D:\llm\opencode-custom`
 - Development branch: `custom/opencode-local`
 - Upstream branch: `upstream/dev`
-- Fork remote: `origin=https://github.com/ts18006786422-cmyk/opencode.git`
+- Fork remote: `origin=https://github.com/Tsbot114514/opencode.git`
 - Official remote: `upstream=https://github.com/anomalyco/opencode.git`
 - Local changes are not pushed automatically. Commit and push only when the user
   explicitly asks for it.

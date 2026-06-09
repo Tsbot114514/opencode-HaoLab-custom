@@ -8,7 +8,7 @@ Upstream attribution:
 
 ```text
 Upstream: https://github.com/anomalyco/opencode
-Custom distribution: https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom
+Custom distribution: https://github.com/Tsbot114514/opencode-HaoLab-custom
 ```
 
 ## Development
@@ -49,7 +49,7 @@ bun run package:win
 The GitHub updater is configured in `electron-builder.config.ts` to publish HaoLab production builds to:
 
 ```text
-https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom
+https://github.com/Tsbot114514/opencode-HaoLab-custom
 ```
 
 Release assets expected by the updater:

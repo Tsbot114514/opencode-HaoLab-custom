@@ -8,7 +8,7 @@ Fork attribution:
 
 ```text
 Upstream: https://github.com/anomalyco/opencode
-Custom distribution: https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom
+Custom distribution: https://github.com/Tsbot114514/opencode-HaoLab-custom
 ```
 
 ## What Is Different
@@ -26,7 +26,7 @@ Custom distribution: https://github.com/ts18006786422-cmyk/opencode-HaoLab-custo
 Download the latest HaoLab Windows installer from this repository's GitHub Releases:
 
 ```text
-https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom/releases
+https://github.com/Tsbot114514/opencode-HaoLab-custom/releases
 ```
 
 Current Windows installer asset name:

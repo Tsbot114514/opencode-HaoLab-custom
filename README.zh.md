@@ -8,7 +8,7 @@ Fork 关系：
 
 ```text
 上游项目: https://github.com/anomalyco/opencode
-自定义发行版: https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom
+自定义发行版: https://github.com/Tsbot114514/opencode-HaoLab-custom
 ```
 
 ## 主要差异
@@ -26,7 +26,7 @@ Fork 关系：
 从本仓库 GitHub Releases 下载最新 HaoLab Windows 安装包：
 
 ```text
-https://github.com/ts18006786422-cmyk/opencode-HaoLab-custom/releases
+https://github.com/Tsbot114514/opencode-HaoLab-custom/releases
 ```
 
 当前 Windows 安装包文件名：

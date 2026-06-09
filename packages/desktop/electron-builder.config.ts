@@ -104,7 +104,7 @@ function getConfig() {
         appId: "ai.opencode.desktop.beta",
         productName: "OpenCode Beta",
         protocols: { name: "OpenCode Beta", schemes: ["opencode"] },
-        publish: { provider: "github", owner: "ts18006786422-cmyk", repo: "opencode-HaoLab-custom", channel: "latest" },
+        publish: { provider: "github", owner: "Tsbot114514", repo: "opencode-HaoLab-custom", channel: "latest" },
         rpm: { packageName: "opencode-beta" },
       }
     }
@@ -114,7 +114,7 @@ function getConfig() {
         appId: "ai.opencode.desktop",
         productName: branding === "haolab" ? "HaoLab OpenCode" : "OpenCode",
         protocols: { name: branding === "haolab" ? "HaoLab OpenCode" : "OpenCode", schemes: ["opencode"] },
-        publish: { provider: "github", owner: "ts18006786422-cmyk", repo: "opencode-HaoLab-custom", channel: "latest" },
+        publish: { provider: "github", owner: "Tsbot114514", repo: "opencode-HaoLab-custom", channel: "latest" },
         rpm: { packageName: "opencode" },
       }
     }
