@@ -4,6 +4,7 @@ import markedShiki from "marked-shiki"
 import katex from "katex"
 import { bundledLanguages, type BundledLanguage } from "shiki"
 import { createSimpleContext } from "./helper"
+import { normalizeLatexDelimiters } from "./marked-latex"
 import { getSharedHighlighter, registerCustomTheme, ThemeRegistrationResolved } from "@pierre/diffs"
 
 registerCustomTheme("OpenCode", () => {
@@ -507,13 +508,17 @@ export const { use: useMarked, provider: MarkedProvider } = createSimpleContext(
       const nativeParser = props.nativeParser
       return {
         async parse(markdown: string): Promise<string> {
-          const html = await nativeParser(markdown)
+          const html = await nativeParser(normalizeLatexDelimiters(markdown))
           const withMath = renderMathExpressions(html)
           return highlightCodeBlocks(withMath)
         },
       }
     }
 
-    return jsParser
+    return {
+      parse(markdown: string) {
+        return jsParser.parse(normalizeLatexDelimiters(markdown))
+      },
+    }
   },
 })
