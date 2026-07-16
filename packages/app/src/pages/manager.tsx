@@ -6,11 +6,11 @@ import { Dialog } from "@opencode-ai/ui/dialog"
 import { DockShellForm, DockTray } from "@opencode-ai/ui/dock-surface"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
+import { Markdown } from "@opencode-ai/ui/markdown"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { SessionTurn } from "@opencode-ai/ui/session-turn"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { useNavigate } from "@solidjs/router"
-import { base64Encode } from "@opencode-ai/core/util/encode"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
@@ -18,7 +18,6 @@ import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
-import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { useProviders } from "@/hooks/use-providers"
 import { Identifier } from "@/utils/id"
@@ -81,7 +80,6 @@ function formatSpeed(value: number | undefined) {
 
 export default function ManagerPage() {
   const sdk = useGlobalSDK()
-  const directory = useSDK().directory
   const models = useModels()
   const providers = useProviders()
   const platform = usePlatform()
@@ -422,9 +420,10 @@ export default function ManagerPage() {
               <Show when={update.releaseDate}> · 发布时间：{new Date(update.releaseDate!).toLocaleString()}</Show>
             </div>
           </Show>
-          <pre class="whitespace-pre-wrap break-words font-sans text-13-regular leading-6 text-v2-text-text-base">
-            {update.releaseNotes || "远端没有提供版本更新说明。"}
-          </pre>
+          <Markdown
+            text={update.releaseNotes || "远端没有提供版本更新说明。"}
+            class="break-words text-13-regular leading-6 text-v2-text-text-base"
+          />
         </div>
       </Dialog>
     ))
@@ -1079,7 +1078,7 @@ export default function ManagerPage() {
               variant="primary"
               size="large"
               class="mt-3 w-full"
-              onClick={() => navigate(`/${base64Encode(directory)}/session/${managerSessionID}`)}
+              onClick={() => navigate("/classic-manager")}
             >
               进入正式页面
             </Button>

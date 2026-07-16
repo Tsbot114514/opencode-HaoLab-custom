@@ -12,6 +12,7 @@ import {
   displayName,
   effectiveWorkspaceOrder,
   errorMessage,
+  getProjectAvatarSource,
   hasProjectPermissions,
   latestRootSession,
 } from "./helpers"
@@ -27,6 +28,24 @@ const session = (input: Partial<Session> & Pick<Session, "id" | "directory">) =>
     time: { created: 0, updated: 0, archived: undefined },
     ...input,
   }) as Session
+
+describe("project avatar source", () => {
+  const opencodeProjectID = "4b0ea68d7af9a6031a7ffda7ad66e0cb83315750"
+
+  test("keeps a text avatar when the OpenCode project has a color", () => {
+    expect(getProjectAvatarSource(opencodeProjectID, { color: "lime", url: "data:image/svg+xml,leaf" })).toBeUndefined()
+  })
+
+  test("prefers an explicit override over the OpenCode default icon", () => {
+    expect(getProjectAvatarSource(opencodeProjectID, { override: "data:image/png;base64,custom" })).toBe(
+      "data:image/png;base64,custom",
+    )
+  })
+
+  test("uses the OpenCode default icon without a user preference", () => {
+    expect(getProjectAvatarSource(opencodeProjectID)).toBe("https://opencode.ai/favicon.svg")
+  })
+})
 
 describe("layout deep links", () => {
   test("parses open-project deep links", () => {
