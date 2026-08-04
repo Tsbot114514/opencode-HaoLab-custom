@@ -122,6 +122,28 @@ describe("plugin.codex", () => {
     })
   })
 
+  test("uses ChatGPT Codex context limits for GPT-5.6 models", async () => {
+    const hooks = await CodexAuthPlugin({} as never)
+    const models = await hooks.provider!.models!(
+      {
+        models: {
+          "gpt-5.6-sol": {
+            id: "gpt-5.6-sol",
+            api: { id: "gpt-5.6-sol" },
+            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+          },
+        },
+      } as never,
+      { auth: { type: "oauth" } } as never,
+    )
+
+    expect(models["gpt-5.6-sol"]?.limit).toEqual({
+      context: 400_000,
+      input: 272_000,
+      output: 128_000,
+    })
+  })
+
   test("deduplicates concurrent Codex token refreshes", async () => {
     let auth = {
       type: "oauth" as const,

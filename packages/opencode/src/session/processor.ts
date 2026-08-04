@@ -780,13 +780,16 @@ export const layer = Layer.effect(
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         slog.info("process")
         ctx.needsCompaction = false
-        ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        const cfg = yield* config.get()
+        ctx.shouldBreak = cfg.experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
-            yield* status.set(ctx.sessionID, { type: "busy" })
+            if ((yield* status.get(ctx.sessionID)).type !== "retry") {
+              yield* status.set(ctx.sessionID, { type: "busy" })
+            }
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
@@ -811,6 +814,7 @@ export const layer = Layer.effect(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                maxAttempts: cfg.retry?.maxAttempts,
                 set: (info) => {
                   // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
                   const event = flags.experimentalEventSystem
@@ -829,6 +833,7 @@ export const layer = Layer.effect(
                       status.set(ctx.sessionID, {
                         type: "retry",
                         attempt: info.attempt,
+                        maxAttempts: info.maxAttempts,
                         message: info.message,
                         action: info.action,
                         next: info.next,

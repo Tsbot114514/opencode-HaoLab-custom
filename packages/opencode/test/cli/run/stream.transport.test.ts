@@ -76,6 +76,7 @@ function retry(sessionID: string, attempt: number, message: string) {
       status: {
         type: "retry",
         attempt,
+        maxAttempts: 5,
         message,
         next: 1,
       },

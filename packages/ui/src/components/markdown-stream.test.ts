@@ -7,6 +7,12 @@ describe("markdown stream", () => {
     expect(stream("say `code", true)).toEqual([{ raw: "say `code", src: "say `code`", mode: "live" }])
   })
 
+  test("heals incomplete block math while streaming", () => {
+    expect(stream("before\n\n$$\nd=0.25", true)).toEqual([
+      { raw: "before\n\n$$\nd=0.25", src: "before\n\n$$\nd=0.25\n$$", mode: "live" },
+    ])
+  })
+
   test("keeps incomplete links non-clickable until they finish", () => {
     expect(stream("see [docs](https://example.com/gu", true)).toEqual([
       { raw: "see [docs](https://example.com/gu", src: "see docs", mode: "live" },

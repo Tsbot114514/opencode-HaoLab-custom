@@ -53,6 +53,7 @@ import { useCheckServerHealth } from "./utils/server-health"
 
 const HomeRoute = lazy(() => import("@/pages/home"))
 const ManagerRoutePage = lazy(() => import("@/pages/manager"))
+const ExperimentRoutePage = lazy(() => import("@/pages/experiment"))
 const loadSession = () => import("@/pages/session")
 const Session = lazy(loadSession)
 const Loading = () => <div class="size-full" />
@@ -85,6 +86,23 @@ const ManagerRoute = () => {
         <SDKProvider directory={directory}>
           <ModelsProvider>
             <ManagerRoutePage />
+          </ModelsProvider>
+        </SDKProvider>
+      )}
+    </Show>
+  )
+}
+
+const ExperimentRoute = () => {
+  const globalSync = useGlobalSync()
+  const directory = createMemo(() => globalSync.data.path.directory)
+
+  return (
+    <Show when={directory()} fallback={<Loading />} keyed>
+      {(directory) => (
+        <SDKProvider directory={directory}>
+          <ModelsProvider>
+            <ExperimentRoutePage />
           </ModelsProvider>
         </SDKProvider>
       )}
@@ -197,7 +215,7 @@ function SessionProviders(props: ParentProps) {
 
 function RouterRoot(props: ParentProps<{ appChildren?: JSX.Element }>) {
   const location = useLocation()
-  const minimal = createMemo(() => location.pathname === "/manager")
+  const minimal = createMemo(() => location.pathname === "/manager" || location.pathname.startsWith("/experiment"))
   return (
     <Show
       when={!minimal()}
@@ -399,6 +417,7 @@ export function AppInterface(props: {
                   <Route path="/classic" component={HomeRoute} />
                   <Route path="/classic-manager" component={ClassicManagerRoute} />
                   <Route path="/manager" component={ManagerRoute} />
+                  <Route path="/experiment" component={ExperimentRoute} />
                   <Route path="/:dir" component={DirectoryLayout}>
                     <Route path="/" component={SessionIndexRoute} />
                     <Route path="/session/:id?" component={SessionRoute} />

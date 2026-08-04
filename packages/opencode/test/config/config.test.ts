@@ -1455,6 +1455,14 @@ test("config parser preserves permission order while rejecting unknown top-level
   }
 })
 
+test("config parser accepts retry limits from zero through twenty", () => {
+  expect(ConfigParse.schema(Config.Info, { retry: { maxAttempts: 0 } }, "test").retry?.maxAttempts).toBe(0)
+  expect(ConfigParse.schema(Config.Info, { retry: { maxAttempts: 20 } }, "test").retry?.maxAttempts).toBe(20)
+  expect(() => ConfigParse.schema(Config.Info, { retry: { maxAttempts: -1 } }, "test")).toThrow()
+  expect(() => ConfigParse.schema(Config.Info, { retry: { maxAttempts: 21 } }, "test")).toThrow()
+  expect(() => ConfigParse.schema(Config.Info, { retry: { maxAttempts: 1.5 } }, "test")).toThrow()
+})
+
 // MCP config merging tests
 
 it.instance("project config can override MCP server enabled status", () =>

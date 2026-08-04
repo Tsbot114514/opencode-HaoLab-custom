@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenCode Agent 对话</title>
+    <style>
+      :root { color-scheme:light; --ink:#17262d; --muted:#69767a; --paper:#f3f0e8; --panel:#fffdf8; --line:#d8d2c6; --accent:#b64a37; --soft:#e9e5db; }
+      * { box-sizing:border-box; }
+      body { margin:0; height:100vh; overflow:hidden; background:var(--paper); color:var(--ink); font-family:"Microsoft YaHei",sans-serif; }
+      button, textarea { font:inherit; }
+      .shell { height:100vh; display:grid; grid-template-columns:minmax(210px,280px) 1fr; }
+      aside { display:flex; flex-direction:column; padding:24px; border-right:1px solid var(--line); background:color-mix(in srgb,var(--panel) 55%,var(--paper)); }
+      .eyebrow { font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
+      .brand { margin:8px 0 22px; font:600 25px/1.15 Georgia,"SimSun",serif; }
+      .connection { display:flex; align-items:flex-start; gap:9px; padding:13px 0; border-block:1px solid var(--line); }
+      .dot { width:8px; height:8px; margin-top:5px; border-radius:50%; background:#9c9c95; }
+      .dot.ready { background:#2f865b; box-shadow:0 0 0 4px color-mix(in srgb,#2f865b 12%,transparent); }
+      .connection strong { display:block; font-size:12px; }
+      .connection span { display:block; margin-top:3px; color:var(--muted); font-size:11px; line-height:1.45; }
+      .suggestions { margin-top:24px; }
+      .suggestions p { margin:0 0 10px; color:var(--muted); font-size:11px; }
+      .suggestion { width:100%; margin-bottom:7px; padding:10px 11px; border:1px solid var(--line); background:transparent; color:var(--ink); text-align:left; font-size:12px; line-height:1.45; cursor:pointer; }
+      .suggestion:hover { border-color:var(--ink); background:var(--panel); }
+      .reset { margin-top:auto; padding:9px 10px; border:0; background:transparent; color:var(--muted); text-align:left; font-size:12px; cursor:pointer; }
+      .reset:hover { color:var(--ink); }
+      .conversation { min-width:0; height:100vh; display:grid; grid-template-rows:auto 1fr auto; }
+      header { display:flex; justify-content:space-between; align-items:center; min-height:66px; padding:14px 26px; border-bottom:1px solid var(--line); }
+      header strong { display:block; font-size:13px; }
+      header span { color:var(--muted); font-size:11px; }
+      .privacy { max-width:310px; text-align:right; line-height:1.45; }
+      .messages { overflow-y:auto; padding:34px max(28px,calc((100% - 760px)/2)); scroll-behavior:smooth; }
+      .welcome { max-width:610px; margin:8vh auto 0; text-align:center; }
+      .welcome h1 { margin:14px 0; font:600 clamp(34px,5vw,58px)/1.05 Georgia,"SimSun",serif; letter-spacing:-.03em; }
+      .welcome p { margin:0 auto; max-width:560px; color:var(--muted); font-size:14px; line-height:1.8; }
+      .message { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; margin:0 0 24px; }
+      .avatar { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--line); background:var(--panel); font:600 11px Georgia,serif; }
+      .message.user .avatar { background:var(--ink); color:white; border-color:var(--ink); }
+      .message-label { margin-bottom:5px; color:var(--muted); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+      .message-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; line-height:1.75; }
+      .message.pending .message-text { color:var(--muted); }
+      .pulse::after { content:""; display:inline-block; width:15px; height:1px; margin-left:7px; background:var(--accent); vertical-align:middle; animation:pulse 1s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity:.2; transform:scaleX(.4); } }
+      .composer-wrap { padding:16px max(24px,calc((100% - 780px)/2)) 22px; border-top:1px solid var(--line); background:color-mix(in srgb,var(--panel) 45%,var(--paper)); }
+      .composer { display:grid; grid-template-columns:1fr auto; align-items:end; border:1px solid var(--line); background:var(--panel); }
+      textarea { width:100%; min-height:54px; max-height:150px; resize:none; padding:16px; border:0; outline:0; background:transparent; color:var(--ink); line-height:1.5; }
+      .send { min-width:84px; height:40px; margin:7px; border:1px solid var(--ink); background:var(--ink); color:white; cursor:pointer; }
+      .send:disabled { cursor:not-allowed; opacity:.35; }
+      .composer-note { margin:7px 2px 0; color:var(--muted); font-size:10px; }
+      @media(max-width:760px) { .shell{grid-template-columns:1fr}aside{display:none}.privacy{display:none}.messages{padding:24px 18px}.composer-wrap{padding:12px 14px 16px}header{padding:12px 18px}.welcome{margin-top:5vh} }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <div class="eyebrow">HaoLab · Agent bridge</div><div class="brand">OpenCode<br />对话实验</div>
+        <div class="connection"><span class="dot" id="connectionDot"></span><div><strong id="connectionLabel">等待 HaoLab 容器</strong><span id="modelLabel">尚未收到模型信息</span></div></div>
+        <div class="suggestions"><p>可以尝试</p><button class="suggestion">用三句话解释工作记忆是什么。</button><button class="suggestion">给我一个 30 秒的实验前放松练习。</button><button class="suggestion">说明反应时实验中为什么不能提前按键。</button></div>
+        <button class="reset" id="reset">清空并创建新会话</button>
+      </aside>
+      <section class="conversation">
+        <header><div><strong>实验内 Agent 对话</strong><span id="agentLabel">Agent：等待连接</span></div><span class="privacy">对话由 HaoLab 容器转发，实验页面无法读取 OpenCode 凭据。</span></header>
+        <div class="messages" id="messages"><div class="welcome" id="welcome"><div class="eyebrow">Conversation resource demo</div><h1>直接使用已经配置好的 Agent。</h1><p>这个页面只负责对话界面。Session 创建、模型选择和 OpenCode 请求均由外层实验容器完成。</p></div></div>
+        <div class="composer-wrap"><form class="composer" id="form"><textarea id="input" maxlength="8000" placeholder="输入消息，Enter 发送，Shift + Enter 换行" aria-label="消息"></textarea><button class="send" id="send" type="submit" disabled>发送</button></form><div class="composer-note">本演示禁用了常见工具调用；Agent 回复可能产生模型费用。</div></div>
+      </section>
+    </div>
+    <script>
+      const state = { ready:false, busy:false, pending:"" }
+      const messages = document.querySelector("#messages"), input = document.querySelector("#input"), send = document.querySelector("#send")
+      function id(){ return crypto.randomUUID ? crypto.randomUUID() : `req-${Date.now()}-${Math.random()}` }
+      function updateSend(){ send.disabled = !state.ready || state.busy || !input.value.trim() }
+      function addMessage(role,text,requestId,pending=false){
+        document.querySelector("#welcome")?.remove()
+        const item=document.createElement("article");item.className=`message ${role}${pending?" pending":""}`;if(requestId)item.dataset.requestId=requestId
+        const avatar=document.createElement("div");avatar.className="avatar";avatar.textContent=role==="user"?"YOU":"AI"
+        const body=document.createElement("div"),label=document.createElement("div"),content=document.createElement("div")
+        label.className="message-label";label.textContent=role==="user"?"Participant":"OpenCode Agent";content.className=`message-text${pending?" pulse":""}`;content.textContent=text
+        body.append(label,content);item.append(avatar,body);messages.append(item);messages.scrollTop=messages.scrollHeight;return item
+      }
+      function submit(text){
+        const value=text.trim();if(!value||!state.ready||state.busy)return
+        const requestId=id();state.busy=true;state.pending=requestId;addMessage("user",value);addMessage("assistant","正在思考",requestId,true);input.value="";updateSend()
+        window.parent.postMessage({type:"haolab.agent.send",requestId,text:value},"*")
+      }
+      function settle(requestId,text,error=false){
+        if(requestId!==state.pending)return
+        const item=messages.querySelector(`[data-request-id="${CSS.escape(requestId)}"]`);if(item){item.classList.remove("pending");const content=item.querySelector(".message-text");content.classList.remove("pulse");content.textContent=error?`请求失败：${text}`:text}
+        state.busy=false;state.pending="";updateSend();input.focus();messages.scrollTop=messages.scrollHeight
+      }
+      window.addEventListener("message",(event)=>{
+        const message=event.data;if(!message||typeof message!=="object")return
+        if(message.type==="haolab.agent.ready"){state.ready=true;document.querySelector("#connectionDot").classList.add("ready");document.querySelector("#connectionLabel").textContent="已连接 OpenCode";document.querySelector("#modelLabel").textContent=message.model;document.querySelector("#agentLabel").textContent=`Agent：${message.agent}`;updateSend();return}
+        if(message.type==="haolab.agent.response")settle(message.requestId,message.text)
+        if(message.type==="haolab.agent.error")settle(message.requestId,message.message,true)
+        if(message.type==="haolab.agent.reset.complete"){messages.replaceChildren();const welcome=document.createElement("div");welcome.className="welcome";welcome.id="welcome";welcome.innerHTML='<div class="eyebrow">New session</div><h1>新的对话已经准备好。</h1><p>下一条消息会创建一个独立的 OpenCode Session。</p>';messages.append(welcome)}
+      })
+      document.querySelector("#form").addEventListener("submit",(event)=>{event.preventDefault();submit(input.value)})
+      input.addEventListener("input",updateSend);input.addEventListener("keydown",(event)=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();submit(input.value)}})
+      document.querySelectorAll(".suggestion").forEach((button)=>button.addEventListener("click",()=>submit(button.textContent)))
+      document.querySelector("#reset").addEventListener("click",()=>{if(state.busy)return;window.parent.postMessage({type:"haolab.agent.reset"},"*")})
+    </script>
+  </body>
+</html>

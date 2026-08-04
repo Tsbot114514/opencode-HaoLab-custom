@@ -28,7 +28,7 @@ const channel = (() => {
 const branding = process.env.OPENCODE_BRANDING === "haolab" ? "haolab" : undefined
 
 const getBase = (): Configuration => ({
-  artifactName: branding === "haolab" ? "HaoLab OpenCode-${os}-${arch}.${ext}" : "opencode-desktop-${os}-${arch}.${ext}",
+  artifactName: branding === "haolab" ? "HaoLab-OpenCode-${os}-${arch}.${ext}" : "opencode-desktop-${os}-${arch}.${ext}",
   directories: {
     output: "dist",
     buildResources: "resources",

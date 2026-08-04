@@ -36,7 +36,7 @@ export const PRUNE_MINIMUM = 20_000
 export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
-const DEFAULT_TAIL_TURNS = 2
+const DEFAULT_TAIL_TURNS = 20
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
@@ -66,6 +66,9 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 ## Critical Context
 - [important technical facts, errors, open questions, or "(none)"]
 
+## Recent Tool Calls
+- [tool name: key inputs; result or error; why it matters for continuing, or "(none)"]
+
 ## Relevant Files
 - [file or directory path: why it matters, or "(none)"]
 </template>
@@ -74,6 +77,7 @@ Rules:
 - Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs.
 - Preserve exact file paths, commands, error strings, and identifiers when known.
+- For recent tool calls, preserve the tool name, important inputs, outcome, and any information needed to continue without repeating work.
 - Do not mention the summary process or that context was compacted.`
 type Turn = {
   start: number
@@ -238,7 +242,7 @@ export const layer = Layer.effect(
       messages: MessageV2.WithParts[]
       model: Provider.Model
     }) {
-      const msgs = yield* MessageV2.toModelMessagesEffect(input.messages, input.model)
+      const msgs = yield* MessageV2.toModelMessagesEffect(MessageV2.dialogueOnly(input.messages), input.model)
       return Token.estimate(JSON.stringify(msgs))
     })
 
@@ -389,8 +393,9 @@ export const layer = Layer.effect(
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
+      const relevant = history.filter((_, index) => !hidden.has(index))
       const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
+        messages: relevant,
         cfg,
         model,
       })
@@ -401,7 +406,7 @@ export const layer = Layer.effect(
         { context: [], prompt: undefined },
       )
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
-      const msgs = structuredClone(selected.head)
+      const msgs = structuredClone(relevant)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
         stripMedia: true,

@@ -1070,11 +1070,22 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
     return [
       ...result.slice(compactionIndex, summaryIndex + 1),
-      ...result.slice(tailIndex, compactionIndex),
+      ...dialogueOnly(result.slice(tailIndex, compactionIndex)),
       ...result.slice(summaryIndex + 1),
     ]
   }
   return result
+}
+
+export function dialogueOnly(msgs: WithParts[]) {
+  return msgs.flatMap((msg): WithParts[] => {
+    const parts = msg.parts.filter((part) => {
+      if (part.type !== "text" || !part.text.trim()) return false
+      if (msg.info.role === "user" && (part.ignored || part.synthetic)) return false
+      return true
+    })
+    return parts.length ? [{ info: msg.info, parts }] : []
+  })
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {

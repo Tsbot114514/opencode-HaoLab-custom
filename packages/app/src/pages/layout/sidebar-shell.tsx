@@ -10,6 +10,7 @@ import {
 import { ConstrainDragXAxis } from "@/utils/solid-dnd"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { type LocalProject } from "@/context/layout"
 
 export const SidebarContent = (props: {
@@ -27,8 +28,11 @@ export const SidebarContent = (props: {
   renderProjectOverlay: () => JSX.Element
   settingsLabel: Accessor<string>
   settingsKeybind: Accessor<string | undefined>
+  pageSwitcherLabel: Accessor<string>
   managerLabel: Accessor<string>
+  experimentLabel: Accessor<string>
   onOpenManager: () => void
+  onOpenExperiment: () => void
   onOpenSettings: () => void
   helpLabel: Accessor<string>
   onOpenHelp: () => void
@@ -92,15 +96,27 @@ export const SidebarContent = (props: {
           </DragDropProvider>
         </div>
         <div class="shrink-0 w-full pt-3 pb-6 flex flex-col items-center gap-2">
-          <Tooltip placement={placement()} value={props.managerLabel()}>
-            <IconButton
-              icon="brain"
-              variant="ghost"
-              size="large"
-              onClick={props.onOpenManager}
-              aria-label={props.managerLabel()}
-            />
-          </Tooltip>
+          <DropdownMenu>
+            <Tooltip placement={placement()} value={props.pageSwitcherLabel()}>
+              <DropdownMenu.Trigger
+                as={IconButton}
+                icon="brain"
+                variant="ghost"
+                size="large"
+                aria-label={props.pageSwitcherLabel()}
+              />
+            </Tooltip>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content>
+                <DropdownMenu.Item onSelect={props.onOpenManager}>
+                  <DropdownMenu.ItemLabel>{props.managerLabel()}</DropdownMenu.ItemLabel>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={props.onOpenExperiment}>
+                  <DropdownMenu.ItemLabel>{props.experimentLabel()}</DropdownMenu.ItemLabel>
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu>
           <TooltipKeybind placement={placement()} title={props.settingsLabel()} keybind={props.settingsKeybind() ?? ""}>
             <IconButton
               icon="settings-gear"

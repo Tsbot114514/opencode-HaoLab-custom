@@ -99,6 +99,7 @@ describe("session.retry.delay", () => {
               status.set(sessionID, {
                 type: "retry",
                 attempt: info.attempt,
+                maxAttempts: info.maxAttempts,
                 message: info.message,
                 next: info.next,
               }),
@@ -110,10 +111,56 @@ describe("session.retry.delay", () => {
         expect(yield* status.get(sessionID)).toMatchObject({
           type: "retry",
           attempt: 2,
+          maxAttempts: 5,
           message: "boom",
         })
       }),
     ),
+  )
+
+  it.live("policy stops after the configured retry limit", () =>
+    Effect.gen(function* () {
+      const attempts: number[] = []
+      const error = apiError({ "retry-after-ms": "0" })
+      const requests: number[] = []
+      const result = yield* Effect.sync(() => requests.push(1)).pipe(
+        Effect.andThen(Effect.fail(error)),
+        Effect.retry(
+          SessionRetry.policy({
+            provider: "test",
+            parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+            maxAttempts: 2,
+            set: (info) => Effect.sync(() => attempts.push(info.attempt)),
+          }),
+        ),
+        Effect.exit,
+      )
+
+      expect(result._tag).toBe("Failure")
+      expect(requests).toHaveLength(3)
+      expect(attempts).toEqual([1, 2])
+    }),
+  )
+
+  it.live("policy disables retries when the configured limit is zero", () =>
+    Effect.gen(function* () {
+      const attempts: number[] = []
+      const error = apiError({ "retry-after-ms": "0" })
+      const result = yield* Effect.fail(error).pipe(
+        Effect.retry(
+          SessionRetry.policy({
+            provider: "test",
+            parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+            maxAttempts: 0,
+            set: (info) => Effect.sync(() => attempts.push(info.attempt)),
+          }),
+        ),
+        Effect.exit,
+      )
+
+      expect(result._tag).toBe("Failure")
+      expect(attempts).toEqual([])
+    }),
   )
 })
 

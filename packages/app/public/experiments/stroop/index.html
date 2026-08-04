@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stroop 颜色词任务</title>
+    <style>
+      :root { color-scheme: light; --ink:#19242b; --muted:#68747a; --paper:#f4f1e9; --panel:#fffdf8; --line:#d9d4c8; --accent:#c9513d; }
+      * { box-sizing: border-box; }
+      body { margin:0; min-height:100vh; background:var(--paper); color:var(--ink); font-family:"Microsoft YaHei",sans-serif; }
+      button { font:inherit; }
+      .shell { min-height:100vh; display:grid; grid-template-rows:auto 1fr auto; }
+      header, footer { display:flex; align-items:center; justify-content:space-between; padding:18px 28px; border-color:var(--line); }
+      header { border-bottom:1px solid var(--line); }
+      footer { border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+      .eyebrow { font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
+      .progress { font-variant-numeric:tabular-nums; font-size:13px; color:var(--muted); }
+      main { display:grid; place-items:center; padding:32px; }
+      .screen { display:none; width:min(720px,100%); }
+      .screen.active { display:block; }
+      h1 { margin:14px 0 16px; font:600 clamp(34px,6vw,64px)/1.05 Georgia,"SimSun",serif; letter-spacing:-.03em; }
+      .lead { max-width:590px; color:var(--muted); font-size:16px; line-height:1.8; }
+      .rule { display:grid; grid-template-columns:repeat(2,1fr); gap:1px; margin:30px 0; border:1px solid var(--line); background:var(--line); }
+      .rule div { padding:18px; background:var(--panel); }
+      .rule b { display:block; margin-bottom:5px; font-size:13px; }
+      .rule span { color:var(--muted); font-size:13px; line-height:1.5; }
+      .primary, .secondary { border:1px solid var(--ink); padding:11px 18px; cursor:pointer; }
+      .primary { background:var(--ink); color:white; }
+      .primary:hover { background:#2c3a42; }
+      .secondary { background:transparent; color:var(--ink); }
+      .task { text-align:center; }
+      .fixation { height:280px; display:grid; place-items:center; font:400 54px Georgia,serif; }
+      .word { height:280px; display:grid; place-items:center; font:700 clamp(70px,13vw,142px)/1 "Microsoft YaHei",sans-serif; letter-spacing:.08em; }
+      .answers { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+      .answer { min-height:58px; border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer; }
+      .answer:hover { border-color:var(--ink); transform:translateY(-1px); }
+      .answer kbd { display:inline-grid; place-items:center; width:23px; height:23px; margin-right:8px; border:1px solid var(--line); background:white; font:12px monospace; }
+      .metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; margin:28px 0; border:1px solid var(--line); background:var(--line); }
+      .metric { background:var(--panel); padding:22px; }
+      .metric strong { display:block; font:600 30px Georgia,serif; }
+      .metric span { color:var(--muted); font-size:12px; }
+      .actions { display:flex; gap:10px; flex-wrap:wrap; }
+      .note { margin-top:24px; color:var(--muted); font-size:12px; line-height:1.6; }
+      @media (max-width:640px) { header,footer{padding:14px 18px}.rule,.metric-grid{grid-template-columns:1fr}.answers{grid-template-columns:repeat(2,1fr)}main{padding:22px}.word,.fixation{height:220px} }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header><div><div class="eyebrow">HaoLab · Cognitive task</div><strong>Stroop 颜色词任务</strong></div><div class="progress" id="progress">准备</div></header>
+      <main>
+        <section class="screen active" id="intro">
+          <div class="eyebrow">任务说明</div><h1>忽略文字，判断颜色。</h1>
+          <p class="lead">屏幕中央会出现一个颜色词。请忽略文字含义，只判断文字本身使用的墨水颜色，并尽快准确作答。</p>
+          <div class="rule"><div><b>按键</b><span>D 红色 · F 蓝色 · J 绿色 · K 黄色</span></div><div><b>流程</b><span>共 16 题，预计约 1 分钟。答题后自动进入下一题。</span></div></div>
+          <button class="primary" id="start">开始实验</button>
+        </section>
+        <section class="screen task" id="task">
+          <div id="stimulus" class="fixation">+</div>
+          <div class="answers">
+            <button class="answer" data-color="red"><kbd>D</kbd>红色</button><button class="answer" data-color="blue"><kbd>F</kbd>蓝色</button>
+            <button class="answer" data-color="green"><kbd>J</kbd>绿色</button><button class="answer" data-color="yellow"><kbd>K</kbd>黄色</button>
+          </div>
+        </section>
+        <section class="screen" id="results">
+          <div class="eyebrow">实验完成</div><h1>本次任务结果</h1>
+          <div class="metric-grid"><div class="metric"><strong id="accuracy">--</strong><span>正确率</span></div><div class="metric"><strong id="meanRt">--</strong><span>正确反应平均时长</span></div><div class="metric"><strong id="effect">--</strong><span>不一致条件延迟</span></div></div>
+          <div class="actions"><button class="primary" id="download">导出 CSV</button><button class="secondary" id="restart">再做一次</button></div>
+          <p class="note">这是用于验证 HaoLab 实验容器的基础演示任务，不应直接替代经过预注册、平衡化与效度审查的正式研究方案。</p>
+        </section>
+      </main>
+      <footer><span>请在安静环境中完成，实验过程中不要切换窗口。</span><span id="status">尚未开始</span></footer>
+    </div>
+    <script>
+      const colors = {
+        red: { label: "红", value: "#c43e32", key: "d" }, blue: { label: "蓝", value: "#2765ad", key: "f" },
+        green: { label: "绿", value: "#288353", key: "j" }, yellow: { label: "黄", value: "#d29a12", key: "k" },
+      }
+      const screens = [...document.querySelectorAll(".screen")]
+      let trials = [], results = [], index = 0, startedAt = 0, accepting = false
+      const show = (id) => screens.forEach((screen) => screen.classList.toggle("active", screen.id === id))
+      const shuffle = (items) => items.map((value) => ({ value, order: Math.random() })).sort((a,b) => a.order-b.order).map((item) => item.value)
+      function makeTrials() {
+        const ids = Object.keys(colors)
+        return shuffle(ids.flatMap((ink) => [
+          { ink, word: ink, congruent: true },
+          ...shuffle(ids.filter((word) => word !== ink)).slice(0,3).map((word) => ({ ink, word, congruent: false })),
+        ]))
+      }
+      function start() {
+        trials = makeTrials(); results = []; index = 0; accepting = false; show("task"); next()
+      }
+      function next() {
+        if (index >= trials.length) return finish()
+        accepting = false
+        const stimulus = document.querySelector("#stimulus")
+        stimulus.className = "fixation"; stimulus.textContent = "+"; stimulus.style.color = ""
+        document.querySelector("#progress").textContent = `${index + 1} / ${trials.length}`
+        document.querySelector("#status").textContent = "注视中央"
+        setTimeout(() => {
+          const trial = trials[index]
+          stimulus.className = "word"; stimulus.textContent = colors[trial.word].label; stimulus.style.color = colors[trial.ink].value
+          startedAt = performance.now(); accepting = true; document.querySelector("#status").textContent = "请判断墨水颜色"
+        }, 420)
+      }
+      function answer(response) {
+        if (!accepting) return
+        accepting = false
+        const trial = trials[index]
+        results.push({ trial: index + 1, word: trial.word, ink: trial.ink, congruent: trial.congruent, response, correct: response === trial.ink, rt_ms: Math.round(performance.now() - startedAt) })
+        index += 1; setTimeout(next, 180)
+      }
+      function average(items) { return items.length ? Math.round(items.reduce((sum,item) => sum + item, 0) / items.length) : 0 }
+      function finish() {
+        const correct = results.filter((row) => row.correct)
+        const congruent = correct.filter((row) => row.congruent).map((row) => row.rt_ms)
+        const incongruent = correct.filter((row) => !row.congruent).map((row) => row.rt_ms)
+        document.querySelector("#accuracy").textContent = `${Math.round(correct.length / results.length * 100)}%`
+        document.querySelector("#meanRt").textContent = `${average(correct.map((row) => row.rt_ms))} ms`
+        document.querySelector("#effect").textContent = `${average(incongruent) - average(congruent)} ms`
+        document.querySelector("#progress").textContent = "完成"; document.querySelector("#status").textContent = "数据已就绪"; show("results")
+      }
+      function download() {
+        const fields = ["trial","word","ink","congruent","response","correct","rt_ms"]
+        const csv = [fields.join(","), ...results.map((row) => fields.map((field) => row[field]).join(","))].join("\n")
+        const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" })); link.download = `stroop-${Date.now()}.csv`; link.click(); URL.revokeObjectURL(link.href)
+      }
+      document.querySelector("#start").addEventListener("click", start)
+      document.querySelector("#restart").addEventListener("click", start)
+      document.querySelector("#download").addEventListener("click", download)
+      document.querySelectorAll(".answer").forEach((button) => button.addEventListener("click", () => answer(button.dataset.color)))
+      document.addEventListener("keydown", (event) => { const entry = Object.entries(colors).find(([,color]) => color.key === event.key.toLowerCase()); if (entry) answer(entry[0]) })
+    </script>
+  </body>
+</html>

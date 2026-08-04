@@ -337,6 +337,7 @@ export type SessionStatus =
   | {
       type: "retry"
       attempt: number
+      maxAttempts: number
       message: string
       action?: {
         reason: string
@@ -1303,6 +1304,12 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+  }
+  retry?: {
+    /**
+     * Maximum automatic retries per model request (default: 5). Set to 0 to disable retries.
+     */
+    maxAttempts?: number
   }
   experimental?: {
     disable_paste_summary?: boolean
@@ -3989,6 +3996,66 @@ export type GlobalConfigUpdateResponses = {
 }
 
 export type GlobalConfigUpdateResponse = GlobalConfigUpdateResponses[keyof GlobalConfigUpdateResponses]
+
+export type GlobalProxyGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/proxy"
+}
+
+export type GlobalProxyGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalProxyGetError = GlobalProxyGetErrors[keyof GlobalProxyGetErrors]
+
+export type GlobalProxyGetResponses = {
+  /**
+   * Get proxy configuration
+   */
+  200: {
+    enabled: boolean
+    url: string
+  }
+}
+
+export type GlobalProxyGetResponse = GlobalProxyGetResponses[keyof GlobalProxyGetResponses]
+
+export type GlobalProxyUpdateData = {
+  body?: {
+    enabled?: boolean
+    url?: string
+    apply?: boolean
+  }
+  path?: never
+  query?: never
+  url: "/global/proxy"
+}
+
+export type GlobalProxyUpdateErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type GlobalProxyUpdateError = GlobalProxyUpdateErrors[keyof GlobalProxyUpdateErrors]
+
+export type GlobalProxyUpdateResponses = {
+  /**
+   * Successfully updated proxy configuration
+   */
+  200: {
+    enabled: boolean
+    url: string
+  }
+}
+
+export type GlobalProxyUpdateResponse = GlobalProxyUpdateResponses[keyof GlobalProxyUpdateResponses]
 
 export type GlobalDisposeData = {
   body?: never

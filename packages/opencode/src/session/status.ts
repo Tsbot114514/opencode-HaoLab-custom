@@ -2,7 +2,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
-import { NonNegativeInt } from "@opencode-ai/core/schema"
+import { NonNegativeInt, PositiveInt } from "@opencode-ai/core/schema"
 import { Effect, Layer, Context, Schema } from "effect"
 
 export const Info = Schema.Union([
@@ -12,6 +12,7 @@ export const Info = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("retry"),
     attempt: NonNegativeInt,
+    maxAttempts: PositiveInt,
     message: Schema.String,
     action: Schema.optional(
       Schema.Struct({

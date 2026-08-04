@@ -1,0 +1,26 @@
+{
+  "active": "agent-chat",
+  "experiments": [
+    {
+      "id": "agent-chat",
+      "name": "OpenCode Agent 对话",
+      "entry": "agent-chat/index.html",
+      "agent": "build"
+    },
+    {
+      "id": "stroop",
+      "name": "Stroop 颜色词任务",
+      "entry": "stroop/index.html"
+    },
+    {
+      "id": "reaction-time",
+      "name": "简单反应时任务",
+      "entry": "reaction-time/index.html"
+    },
+    {
+      "id": "n-back",
+      "name": "2-back 工作记忆任务",
+      "entry": "n-back/index.html"
+    }
+  ]
+}

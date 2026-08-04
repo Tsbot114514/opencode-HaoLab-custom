@@ -227,10 +227,11 @@ describe("SessionStatus.Info", () => {
     expect(decode({ type: "busy" })).toEqual({ type: "busy" })
   })
 
-  test("retry carries attempt/message/action/next", () => {
+  test("retry carries attempt/maxAttempts/message/action/next", () => {
     const input = {
       type: "retry" as const,
       attempt: 1,
+      maxAttempts: 5,
       message: "transient",
       action: {
         reason: "free_tier_limit",

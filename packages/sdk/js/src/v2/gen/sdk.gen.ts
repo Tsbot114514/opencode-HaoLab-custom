@@ -78,6 +78,10 @@ import type {
   GlobalEventResponses,
   GlobalHealthErrors,
   GlobalHealthResponses,
+  GlobalProxyGetErrors,
+  GlobalProxyGetResponses,
+  GlobalProxyUpdateErrors,
+  GlobalProxyUpdateResponses,
   GlobalUpgradeErrors,
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
@@ -531,6 +535,57 @@ export class Config extends HeyApiClient {
   }
 }
 
+export class Proxy extends HeyApiClient {
+  /**
+   * Get proxy configuration
+   *
+   * Retrieve the current persisted proxy configuration.
+   */
+  public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<GlobalProxyGetResponses, GlobalProxyGetErrors, ThrowOnError>({
+      url: "/global/proxy",
+      ...options,
+    })
+  }
+
+  /**
+   * Update proxy configuration
+   *
+   * Persist proxy configuration and optionally apply it to future outbound requests.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      enabled?: boolean
+      url?: string
+      apply?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "enabled" },
+            { in: "body", key: "url" },
+            { in: "body", key: "apply" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<GlobalProxyUpdateResponses, GlobalProxyUpdateErrors, ThrowOnError>({
+      url: "/global/proxy",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Global extends HeyApiClient {
   /**
    * Get health
@@ -595,6 +650,11 @@ export class Global extends HeyApiClient {
   private _config?: Config
   get config(): Config {
     return (this._config ??= new Config({ client: this.client }))
+  }
+
+  private _proxy?: Proxy
+  get proxy(): Proxy {
+    return (this._proxy ??= new Proxy({ client: this.client }))
   }
 }
 

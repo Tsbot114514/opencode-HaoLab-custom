@@ -987,7 +987,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "falls back to full summary when retained tail media exceeds preserve token budget",
+    "includes retained tail media labels in summary input",
     () => {
       const stub = llm()
       let captured = ""
@@ -1015,9 +1015,14 @@ describe("session.compaction.process", () => {
 
         const part = yield* readCompactionPart(session.id)
         expect(part?.type).toBe("compaction")
-        expect(part?.tail_start_id).toBeUndefined()
+        expect(part?.tail_start_id).toBe(recent.id)
         expect(captured).toContain("recent image turn")
         expect(captured).toContain("Attached image/png: big.png")
+
+        const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        expect(filtered.find((msg) => msg.info.id === recent.id)?.parts).toMatchObject([
+          { type: "text", text: "recent image turn" },
+        ])
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
     },
     { git: true },
@@ -1062,7 +1067,7 @@ describe("session.compaction.process", () => {
         expect(part?.type).toBe("compaction")
         expect(part?.tail_start_id).toBe(keep.id)
         expect(captured).toContain("zzzz")
-        expect(captured).not.toContain("keep tail")
+        expect(captured).toContain("keep tail")
 
         const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
         expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
@@ -1342,7 +1347,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "summarizes only the head while keeping recent tail out of summary input",
+    "includes the retained recent tail in summary input",
     () => {
       const stub = llm()
       let captured = ""
@@ -1370,10 +1375,112 @@ describe("session.compaction.process", () => {
         })
 
         expect(captured).toContain("older context")
-        expect(captured).not.toContain("keep this turn")
-        expect(captured).not.toContain("and this one too")
+        expect(captured).toContain("keep this turn")
+        expect(captured).toContain("and this one too")
         expect(captured).not.toContain("What did we do so far?")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 2 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "includes the 20 recent user turns in summary input by default",
+    () => {
+      const stub = llm()
+      let captured = ""
+      stub.push(
+        reply("summary", (input) => {
+          captured = JSON.stringify(input.messages)
+        }),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "summarize this oldest turn")
+        yield* Effect.forEach(Array.from({ length: 20 }, (_, index) => index + 1), (index) =>
+          createUserMessage(session.id, `retained turn ${index}`),
+        )
+        yield* createCompactionMarker(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        expect(parent).toBeTruthy()
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(captured).toContain("summarize this oldest turn")
+        expect(captured).toContain("retained turn 1")
+        expect(captured).toContain("retained turn 20")
       }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "summarizes recent tool calls while retaining only recent dialogue",
+    () => {
+      const stub = llm()
+      let captured = ""
+      stub.push(
+        reply("summary", (input) => {
+          captured = JSON.stringify(input.messages)
+        }),
+      )
+      return Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "older context")
+        const recent = yield* createUserMessage(session.id, "recent request")
+        const assistant = yield* createAssistantMessage(session.id, recent.id, test.directory)
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: assistant.id,
+          sessionID: session.id,
+          type: "tool",
+          callID: "call-1",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: { filePath: "secret.txt" },
+            output: "tool output must be omitted",
+            title: "Read secret.txt",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        })
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: assistant.id,
+          sessionID: session.id,
+          type: "text",
+          text: "assistant reply",
+        })
+        yield* createCompactionMarker(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        expect(parent).toBeTruthy()
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(captured).toContain("read")
+        expect(captured).toContain("secret.txt")
+        expect(captured).toContain("tool output must be omitted")
+        expect(captured).toContain("## Recent Tool Calls")
+
+        const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        expect(filtered.find((msg) => msg.info.id === recent.id)?.parts).toMatchObject([
+          { type: "text", text: "recent request" },
+        ])
+        expect(filtered.find((msg) => msg.info.id === assistant.id)?.parts).toMatchObject([
+          { type: "text", text: "assistant reply" },
+        ])
+        expect(filtered.some((msg) => msg.parts.some((part) => part.type === "tool"))).toBe(false)
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 1, preserve_recent_tokens: 10_000 }),
+        }),
+      )
     },
     { git: true },
   )
@@ -1415,6 +1522,7 @@ describe("session.compaction.process", () => {
         expect(captured.match(/summary one/g)?.length).toBe(1)
         expect(captured).toContain("## Constraints & Preferences")
         expect(captured).toContain("## Progress")
+        expect(captured).toContain("## Recent Tool Calls")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },

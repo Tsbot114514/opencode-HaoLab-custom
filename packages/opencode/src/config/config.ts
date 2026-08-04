@@ -275,7 +275,7 @@ export const Info = Schema.Struct({
       }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:
-          "Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)",
+          "Number of recent user turns whose user and assistant text is kept during compaction (default: 20)",
       }),
       preserve_recent_tokens: Schema.optional(NonNegativeInt).annotate({
         description: "Maximum number of tokens from recent turns to preserve verbatim after compaction",
@@ -285,6 +285,15 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  retry: Schema.optional(
+    Schema.Struct({
+      maxAttempts: Schema.optional(
+        Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 })).annotate({
+          description: "Maximum automatic retries per model request (default: 5). Set to 0 to disable retries.",
+        }),
+      ),
+    }),
+  ).annotate({ description: "Automatic model request retry configuration" }),
   experimental: Schema.optional(
     Schema.Struct({
       disable_paste_summary: Schema.optional(Schema.Boolean),
