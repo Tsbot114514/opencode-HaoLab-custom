@@ -42,6 +42,7 @@ import { ModelsProvider } from "@/context/models"
 import { NotificationProvider } from "@/context/notification"
 import { PermissionProvider } from "@/context/permission"
 import { PromptProvider } from "@/context/prompt"
+import { usePlatform } from "@/context/platform"
 import { ServerConnection, ServerProvider, serverName, useServer } from "@/context/server"
 import { SettingsProvider } from "@/context/settings"
 import { SDKProvider } from "@/context/sdk"
@@ -238,6 +239,8 @@ function RouterRoot(props: ParentProps<{ appChildren?: JSX.Element }>) {
 }
 
 export function AppBaseProviders(props: ParentProps<{ locale?: Locale }>) {
+  const platform = usePlatform()
+
   return (
     <MetaProvider>
       <Font />
@@ -256,7 +259,7 @@ export function AppBaseProviders(props: ParentProps<{ locale?: Locale }>) {
             >
               <QueryProvider>
                 <DialogProvider>
-                  <MarkedProvider>
+                  <MarkedProvider nativeParser={platform.parseMarkdown}>
                     <FileComponentProvider component={File}>{props.children}</FileComponentProvider>
                   </MarkedProvider>
                 </DialogProvider>

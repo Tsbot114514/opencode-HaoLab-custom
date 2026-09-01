@@ -23,6 +23,7 @@ import { useProviders } from "@/hooks/use-providers"
 import { Identifier } from "@/utils/id"
 import { authTokenFromCredentials } from "@/utils/server"
 import type { UpdateDownloadProgress } from "@/context/platform"
+import { compareMessages } from "@/utils/message-order"
 
 const managerSessionID = "ses_manager_agent"
 const managerTitle = "管理agent"
@@ -45,7 +46,7 @@ function sortByID<T extends { id: string }>(items: T[]) {
 }
 
 function sortMessages(items: WithParts[]) {
-  return items.sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))
+  return items.sort((a, b) => compareMessages(a.info, b.info))
 }
 
 function proxyUrl(input: string) {
@@ -219,9 +220,8 @@ export default function ManagerPage() {
       setMessage("正在复制数据目录，请不要继续会话或启动 agent...")
       try {
         const result = await platform.migrateHaolabData(selectedDir())
-        await refetchHaolabDataLocation()
-        setStorage("message", `迁移完成。新目录：${result.activePath}。请重启 HaoLab OpenCode 后生效。`)
-        dialog.close()
+        setMessage(`迁移完成。新目录：${result.activePath}。正在重启 HaoLab OpenCode...`)
+        await platform.restart()
       } catch (err) {
         setMessage(err instanceof Error ? err.message : String(err))
       } finally {
@@ -262,7 +262,7 @@ export default function ManagerPage() {
             <div class="flex gap-2">
               <Icon name="warning" size="small" class="mt-0.5 shrink-0 text-icon-warning-base" />
               <p class="text-12-regular leading-5 text-v2-text-text-muted">
-                迁移会复制当前 OpenCode 数据目录。迁移期间请停止所有 agent 活动，不要继续会话。迁移完成后需要重启生效，旧数据会保留。
+                迁移会复制当前 OpenCode 数据目录。迁移期间请停止所有 agent 活动，不要继续会话。迁移完成后 HaoLab OpenCode 会自动重启，旧数据会保留。
               </p>
             </div>
           </div>
@@ -1111,7 +1111,7 @@ export default function ManagerPage() {
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">数据存储</div>
             <p class="text-12-regular text-v2-text-text-muted leading-5">
-              修改 OpenCode 全局数据目录。迁移会复制默认数据文件夹，重启后从新位置读取。
+              修改 OpenCode 全局数据目录。迁移会复制默认数据文件夹，并自动重启后从新位置读取。
             </p>
             <Show
               when={haolabDataLocation()}

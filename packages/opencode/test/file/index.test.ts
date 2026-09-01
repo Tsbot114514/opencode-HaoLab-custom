@@ -29,6 +29,20 @@ const read = Effect.fn("FileTest.read")(function* (input: string) {
   return yield* file.read(input)
 })
 
+const readEditable = Effect.fn("FileTest.readEditable")(function* (input: string) {
+  const file = yield* File.Service
+  return yield* file.readEditable(input)
+})
+
+const writeEditable = Effect.fn("FileTest.writeEditable")(function* (input: {
+  path: string
+  content: string
+  expectedRevision: string
+}) {
+  const file = yield* File.Service
+  return yield* file.writeEditable(input)
+})
+
 const list = Effect.fn("FileTest.list")(function* (dir?: string) {
   const file = yield* File.Service
   return yield* file.list(dir)
@@ -120,6 +134,46 @@ describe("file/index Filesystem patterns", () => {
 
         const result = yield* read("multiline.txt")
         expect(result.content).toBe("line1\nline2\nline3")
+      }),
+    )
+  })
+
+  describe("editable content", () => {
+    it.instance("preserves exact Markdown whitespace when reading and writing", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const original = "  # Title\n\nbody\n\n"
+        yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "notes.md"), original, "utf-8"))
+
+        const loaded = yield* readEditable("notes.md")
+        expect(loaded.content).toBe(original)
+
+        const saved = yield* writeEditable({
+          path: "notes.md",
+          content: "# Updated\n",
+          expectedRevision: loaded.revision,
+        })
+        expect(saved.content).toBe("# Updated\n")
+        expect(yield* readEditable("notes.md")).toEqual(saved)
+      }),
+    )
+
+    it.instance("rejects a stale revision without overwriting the file", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "notes.md")
+        yield* Effect.promise(() => fs.writeFile(target, "first", "utf-8"))
+        const loaded = yield* readEditable("notes.md")
+        yield* Effect.promise(() => fs.writeFile(target, "agent update", "utf-8"))
+
+        const exit = yield* writeEditable({
+          path: "notes.md",
+          content: "user update",
+          expectedRevision: loaded.revision,
+        }).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* Effect.promise(() => fs.readFile(target, "utf-8"))).toBe("agent update")
       }),
     )
   })

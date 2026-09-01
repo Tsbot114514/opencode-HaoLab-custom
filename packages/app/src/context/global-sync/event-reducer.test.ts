@@ -357,6 +357,24 @@ describe("applyDirectoryEvent", () => {
     expect(store.part.msg_2).toBeUndefined()
   })
 
+  test("inserts rollover messages by creation time", () => {
+    const sessionID = "ses_1"
+    const old = { ...userMessage("msg_fffffffff001old", sessionID), time: { created: 1 } }
+    const next = { ...userMessage("msg_000000000001new", sessionID), time: { created: 2 } }
+    const [store, setStore] = createStore(baseState({ message: { [sessionID]: [old] } }))
+
+    applyDirectoryEvent({
+      event: { type: "message.updated", properties: { info: next } },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.message[sessionID]?.map((message) => message.id)).toEqual([old.id, next.id])
+  })
+
   test("upserts and prunes message parts", () => {
     const sessionID = "ses_1"
     const messageID = "msg_1"

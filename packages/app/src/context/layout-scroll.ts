@@ -110,6 +110,7 @@ export function createScrollPersistence(opts: Options) {
   }
 
   function dispose() {
+    flushAll()
     drop(Array.from(timers.keys()))
   }
 

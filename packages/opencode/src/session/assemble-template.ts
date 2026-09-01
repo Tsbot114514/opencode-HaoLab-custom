@@ -622,6 +622,8 @@ type CompactionPart = PartBase & {
   auto: boolean
   overflow?: boolean
   tail_start_id?: MessageID
+  tail_text_only?: boolean
+  tail_full_start_id?: MessageID
 }
 \`\`\`
 

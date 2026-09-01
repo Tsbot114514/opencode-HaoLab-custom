@@ -1088,6 +1088,13 @@ export function options(input: {
     result["promptCacheKey"] = input.sessionID
   }
 
+  if (input.model.api.npm === "@ai-sdk/openai" && /^gpt-5\.6(?:-|$)/.test(input.model.api.id)) {
+    result["promptCacheOptions"] = {
+      mode: "implicit",
+      ttl: "30m",
+    }
+  }
+
   if (input.model.api.npm === "@ai-sdk/google" || input.model.api.npm === "@ai-sdk/google-vertex") {
     if (input.model.capabilities.reasoning) {
       result["thinkingConfig"] = {

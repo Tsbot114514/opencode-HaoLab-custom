@@ -32,10 +32,12 @@ export const createSessionTabs = (input: TabsInput) => {
         .all()
         .flatMap((tab) => {
           if (tab === "context" || tab === "review") return []
-          const value = input.pathFromTab(tab) ? input.normalizeTab(tab) : tab
-          if (seen.has(value)) return []
-          seen.add(value)
-          return [value]
+          const value = input.pathFromTab(tab)
+          if (!value) return []
+          const normalized = input.normalizeTab(tab)
+          if (seen.has(normalized)) return []
+          seen.add(normalized)
+          return [normalized]
         })
     },
     emptyTabs,

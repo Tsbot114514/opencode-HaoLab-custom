@@ -1,0 +1,358 @@
+.markdown-editor-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  min-height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-weak-base);
+  background: color-mix(in srgb, var(--background-base) 92%, transparent);
+  padding: 0 12px;
+  backdrop-filter: blur(12px);
+}
+
+.markdown-review-mode {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-weak-base);
+  border-radius: 999px;
+  background: var(--surface-raised-base);
+  color: var(--text-weak);
+  font-size: 11px;
+  line-height: 20px;
+  padding: 0 8px;
+}
+
+.markdown-review-counts {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 11px/20px var(--font-family-mono);
+}
+
+.markdown-review-counts span {
+  border-radius: 5px;
+  padding: 0 6px;
+}
+
+.markdown-review-counts [data-kind="added"] {
+  background: color-mix(in srgb, var(--syntax-diff-add) 14%, transparent);
+  color: var(--syntax-diff-add);
+}
+
+.markdown-review-counts [data-kind="removed"] {
+  background: color-mix(in srgb, var(--syntax-diff-delete) 14%, transparent);
+  color: var(--syntax-diff-delete);
+}
+
+.markdown-review-autosave {
+  flex: 0 0 auto;
+  color: var(--text-weak);
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.markdown-review-layout {
+  display: flex;
+  min-height: 100%;
+  align-items: stretch;
+}
+
+.markdown-document-workspace {
+  min-width: 0;
+  min-height: 100%;
+  flex: 1 1 auto;
+  background: var(--background-stronger);
+  padding-bottom: 120px;
+}
+
+.markdown-document-page,
+.markdown-document-host,
+.markdown-editor .ProseMirror {
+  min-height: 1056px;
+}
+
+.markdown-document-page {
+  border: 1px solid color-mix(in srgb, var(--border-base) 72%, transparent);
+  background: var(--background-base);
+}
+
+.markdown-editor .ProseMirror {
+  width: 100%;
+  max-width: none;
+  outline: none;
+  color: var(--text-base);
+  font-family: Aptos, Calibri, "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 16px;
+  line-height: 1.75;
+  padding: 32px 28px 120px;
+}
+
+.markdown-editor .ProseMirror h1,
+.markdown-editor .ProseMirror h2,
+.markdown-editor .ProseMirror h3 {
+  font-family: Aptos Display, Aptos, Calibri, "Microsoft YaHei", sans-serif;
+  letter-spacing: -0.015em;
+}
+
+.markdown-editor .ProseMirror h1 {
+  margin-top: 0;
+  font-size: 28px;
+  line-height: 1.3;
+}
+
+.markdown-editor .ProseMirror h2 {
+  margin-top: 1.8em;
+  font-size: 22px;
+}
+
+.markdown-editor .ProseMirror p {
+  margin: 0 0 0.85em;
+}
+
+.markdown-editor .ProseMirror img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.25rem auto 0.75rem;
+  object-fit: contain;
+  cursor: pointer;
+}
+
+.markdown-editor .ProseMirror img.markdown-review-commented-image {
+  outline: 2px solid color-mix(in srgb, var(--icon-interactive-base) 64%, transparent);
+  outline-offset: 4px;
+}
+
+.markdown-editor .ProseMirror img.ProseMirror-selectednode {
+  outline: 3px solid var(--icon-interactive-base);
+  outline-offset: 4px;
+}
+
+.markdown-editor .ProseMirror code,
+.markdown-editor .ProseMirror .markdown-frontmatter,
+.markdown-editor .ProseMirror .markdown-raw-html {
+  background: var(--surface-raised-base);
+}
+
+.markdown-editor .ProseMirror .markdown-frontmatter,
+.markdown-editor .ProseMirror .markdown-raw-html {
+  border: 1px solid var(--border-weak-base);
+  border-radius: 4px;
+  color: var(--text-weak);
+  font: 12px/1.5 var(--font-family-mono);
+  white-space: pre-wrap;
+}
+
+.markdown-editor .ProseMirror table {
+  width: 100%;
+  margin: 1em 0;
+  border-collapse: collapse;
+}
+
+.markdown-editor .ProseMirror th,
+.markdown-editor .ProseMirror td {
+  border: 1px solid var(--border-base);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-editor .ProseMirror th {
+  background: var(--surface-raised-base);
+  font-weight: 600;
+}
+
+.markdown-editor .ProseMirror li[data-checked] {
+  list-style: none;
+}
+
+.markdown-editor .ProseMirror li[data-checked]::before {
+  display: inline-block;
+  width: 1.4em;
+  margin-left: -1.4em;
+  content: "\2610";
+}
+
+.markdown-editor .ProseMirror li[data-checked="true"]::before {
+  content: "\2611";
+}
+
+.markdown-editor .markdown-review-insertion {
+  background: color-mix(in srgb, var(--syntax-diff-add) 12%, transparent);
+  color: var(--syntax-diff-add);
+  text-decoration: underline 1.5px currentColor;
+  text-underline-offset: 3px;
+}
+
+.markdown-editor .markdown-review-deletion {
+  background: color-mix(in srgb, var(--syntax-diff-delete) 8%, transparent);
+  color: var(--syntax-diff-delete);
+  text-decoration: line-through 1.5px currentColor;
+}
+
+.markdown-editor .markdown-review-commented-text {
+  background: color-mix(in srgb, var(--icon-interactive-base) 10%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--icon-interactive-base) 64%, transparent);
+}
+
+.markdown-editor .markdown-review-active {
+  background: color-mix(in srgb, var(--icon-interactive-base) 25%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--icon-interactive-base) 70%, transparent);
+  outline-offset: 3px;
+}
+
+.markdown-comments-sidebar {
+  position: relative;
+  width: 288px;
+  flex: 0 0 288px;
+  border-left: 1px solid var(--border-weak-base);
+  background: var(--background-base);
+}
+
+.markdown-comment-editor,
+.markdown-comment-card {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border-weak-base);
+  border-radius: 8px;
+  background: var(--surface-raised-base);
+  padding: 10px;
+}
+
+.markdown-comment-editor textarea {
+  min-height: 88px;
+  resize: vertical;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-base);
+  font: 13px/1.5 var(--font-family-sans);
+}
+
+.markdown-comment-card {
+  cursor: pointer;
+  color: var(--text-base);
+  text-align: left;
+}
+
+.markdown-comment-editor,
+.markdown-comment-card {
+  position: absolute;
+  right: 12px;
+  left: 12px;
+  width: auto;
+}
+
+.markdown-comment-card::before {
+  position: absolute;
+  top: 16px;
+  left: -13px;
+  width: 12px;
+  border-top: 1px solid var(--border-weak-base);
+  content: "";
+}
+
+.markdown-comment-card:hover {
+  border-color: var(--border-strong-base);
+}
+
+.markdown-comment-quote {
+  overflow: hidden;
+  color: var(--text-weak);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-comment-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  color: var(--text-interactive-base);
+  font-size: 12px;
+}
+
+.markdown-comment-actions button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.markdown-selection-actions {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border-strong-base);
+  border-radius: 7px;
+  background: var(--surface-raised-base);
+  box-shadow: 0 8px 24px color-mix(in srgb, black 18%, transparent);
+}
+
+.markdown-selection-actions button {
+  display: flex;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-right: 1px solid var(--border-weak-base);
+  background: transparent;
+  color: var(--text-base);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.markdown-selection-actions button:last-child {
+  border-right: 0;
+}
+
+.markdown-selection-actions button:hover {
+  background: var(--surface-base-hover);
+}
+
+@media (max-width: 720px) {
+  .markdown-review-layout {
+    display: block;
+  }
+
+  .markdown-document-workspace {
+    padding: 12px 8px 80px;
+  }
+
+  .markdown-document-page,
+  .markdown-document-host,
+  .markdown-editor .ProseMirror {
+    min-height: 100%;
+  }
+
+  .markdown-editor .ProseMirror {
+    padding: 24px 16px 80px;
+  }
+
+  .markdown-comments-sidebar {
+    position: static;
+    display: flex;
+    width: 100%;
+    max-height: none;
+    min-height: 0 !important;
+    flex-direction: column;
+    gap: 10px;
+    border-top: 1px solid var(--border-weak-base);
+    border-left: 0;
+    padding: 12px;
+  }
+
+  .markdown-comment-editor,
+  .markdown-comment-card {
+    position: static;
+    width: 100%;
+  }
+}

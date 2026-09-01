@@ -122,26 +122,27 @@ describe("plugin.codex", () => {
     })
   })
 
-  test("uses ChatGPT Codex context limits for GPT-5.6 models", async () => {
+  test("uses ChatGPT Codex context limits for GPT-5.5 and GPT-5.6 models", async () => {
     const hooks = await CodexAuthPlugin({} as never)
-    const models = await hooks.provider!.models!(
-      {
-        models: {
-          "gpt-5.6-sol": {
-            id: "gpt-5.6-sol",
-            api: { id: "gpt-5.6-sol" },
-            limit: { context: 1_050_000, input: 922_000, output: 128_000 },
-          },
-        },
-      } as never,
-      { auth: { type: "oauth" } } as never,
-    )
+    const limit = { context: 1_050_000, input: 922_000, output: 128_000 }
+    const provider = {
+      models: Object.fromEntries(
+        ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((id) => [
+          id,
+          { id, api: { id }, limit },
+        ]),
+      ),
+    }
 
-    expect(models["gpt-5.6-sol"]?.limit).toEqual({
-      context: 400_000,
-      input: 272_000,
-      output: 128_000,
-    })
+    const models = await hooks.provider!.models!(provider as never, { auth: { type: "oauth" } } as never)
+
+    expect(models["gpt-5.5"]?.limit).toEqual({ context: 400_000, input: 272_000, output: 128_000 })
+    expect(models["gpt-5.6-sol"]?.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
+    expect(models["gpt-5.6-terra"]?.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
+    expect(models["gpt-5.6-luna"]?.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
+    expect(await hooks.provider!.models!(provider as never, { auth: { type: "api" } } as never)).toBe(
+      provider.models as never,
+    )
   })
 
   test("deduplicates concurrent Codex token refreshes", async () => {
@@ -159,7 +160,7 @@ describe("plugin.codex", () => {
       resolveRefresh = resolve
     })
     let refreshRequests = 0
-    const apiRequests: { authorization: string | null; accountId: string | null }[] = []
+    const apiRequests: { authorization: string | null; accountId: string | null; body: unknown }[] = []
 
     using server = Bun.serve({
       port: 0,
@@ -181,6 +182,7 @@ describe("plugin.codex", () => {
           apiRequests.push({
             authorization: request.headers.get("authorization"),
             accountId: request.headers.get("ChatGPT-Account-Id"),
+            body: await request.json(),
           })
           return new Response("{}", { status: 200 })
         }
@@ -221,8 +223,16 @@ describe("plugin.codex", () => {
     )
     const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
 
-    const first = loaded.fetch!("https://api.openai.com/v1/responses")
-    const second = loaded.fetch!("https://api.openai.com/v1/responses")
+    const init = {
+      method: "POST",
+      body: JSON.stringify({
+        model: "gpt-5.6-sol",
+        prompt_cache_key: "session-123",
+        prompt_cache_options: { mode: "implicit", ttl: "30m" },
+      }),
+    }
+    const first = loaded.fetch!("https://api.openai.com/v1/responses", init)
+    const second = loaded.fetch!("https://api.openai.com/v1/responses", init)
 
     await waitFor(() => refreshRequests === 1)
     expect(apiRequests).toHaveLength(0)
@@ -236,8 +246,16 @@ describe("plugin.codex", () => {
     expect(authUpdates[0]?.body.access).toBe("access-new")
     expect(authUpdates[0]?.body.accountId).toBe("acc-123")
     expect(apiRequests).toEqual([
-      { authorization: "Bearer access-new", accountId: "acc-123" },
-      { authorization: "Bearer access-new", accountId: "acc-123" },
+      {
+        authorization: "Bearer access-new",
+        accountId: "acc-123",
+        body: { model: "gpt-5.6-sol", prompt_cache_key: "session-123" },
+      },
+      {
+        authorization: "Bearer access-new",
+        accountId: "acc-123",
+        body: { model: "gpt-5.6-sol", prompt_cache_key: "session-123" },
+      },
     ])
   })
 })

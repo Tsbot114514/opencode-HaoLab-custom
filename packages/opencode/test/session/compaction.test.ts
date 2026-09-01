@@ -902,7 +902,8 @@ describe("session.compaction.process", () => {
         metadata: { compaction_continue: true },
       })
       if (last?.parts[0]?.type === "text") {
-        expect(last.parts[0].text).toContain("Continue if you have next steps")
+        expect(last.parts[0].text).toContain("Continue only an unambiguously pending action")
+        expect(last.parts[0].text).toContain("not as authorization to start new work")
       }
     }),
   )
@@ -914,7 +915,7 @@ describe("session.compaction.process", () => {
       const session = yield* ssn.create({})
       yield* createUserMessage(session.id, "first")
       const keep = yield* createUserMessage(session.id, "second")
-      yield* createUserMessage(session.id, "third")
+      const latest = yield* createUserMessage(session.id, "third")
       yield* createSummaryCompaction(session.id)
 
       const msgs = yield* ssn.messages({ sessionID: session.id })
@@ -930,6 +931,8 @@ describe("session.compaction.process", () => {
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
+      expect(part?.tail_text_only).toBe(true)
+      expect(part?.tail_full_start_id).toBe(latest.id)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }) })),
   )
 
@@ -956,7 +959,9 @@ describe("session.compaction.process", () => {
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
-    }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 100 }) })),
+      expect(part?.tail_text_only).toBe(true)
+      expect(part?.tail_full_start_id).toBeUndefined()
+    }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 500 }) })),
   )
 
   itCompaction.instance(
@@ -1029,7 +1034,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "retains a split turn suffix when a later message fits the preserve token budget",
+    "downgrades the latest full turn before dropping dialogue turns",
     () => {
       const stub = llm()
       let captured = ""
@@ -1038,23 +1043,31 @@ describe("session.compaction.process", () => {
         const test = yield* TestInstance
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
-        yield* createUserMessage(session.id, "older")
+        const older = yield* createUserMessage(session.id, "older")
         const recent = yield* createUserMessage(session.id, "recent turn")
-        const large = yield* createAssistantMessage(session.id, recent.id, test.directory)
+        const assistant = yield* createAssistantMessage(session.id, recent.id, test.directory)
         yield* ssn.updatePart({
           id: PartID.ascending(),
-          messageID: large.id,
+          messageID: assistant.id,
           sessionID: session.id,
-          type: "text",
-          text: "z".repeat(2_000),
+          type: "tool",
+          callID: "large-latest-tool",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: { filePath: "large.txt" },
+            output: "z".repeat(8_000),
+            title: "Read large.txt",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
         })
-        const keep = yield* createAssistantMessage(session.id, recent.id, test.directory)
         yield* ssn.updatePart({
           id: PartID.ascending(),
-          messageID: keep.id,
+          messageID: assistant.id,
           sessionID: session.id,
           type: "text",
-          text: "keep tail",
+          text: "latest reply",
         })
         yield* createSummaryCompaction(session.id)
 
@@ -1065,16 +1078,21 @@ describe("session.compaction.process", () => {
 
         const part = yield* readCompactionPart(session.id)
         expect(part?.type).toBe("compaction")
-        expect(part?.tail_start_id).toBe(keep.id)
+        expect(part?.tail_start_id).toBe(older.id)
+        expect(part?.tail_text_only).toBe(true)
+        expect(part?.tail_full_start_id).toBeUndefined()
         expect(captured).toContain("zzzz")
-        expect(captured).toContain("keep tail")
+        expect(captured).toContain("latest reply")
 
         const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
-        expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
+        expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), older.id])
         expect(filtered[1]?.info.role).toBe("assistant")
         expect(filtered[1]?.info.role === "assistant" ? filtered[1].info.summary : false).toBe(true)
-        expect(filtered.map((msg) => msg.info.id)).not.toContain(large.id)
-      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
+        expect(filtered.find((msg) => msg.info.id === assistant.id)?.parts).toMatchObject([
+          { type: "text", text: "latest reply" },
+        ])
+        expect(filtered.some((msg) => msg.parts.some((item) => item.type === "tool"))).toBe(false)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 2, preserve_recent_tokens: 1_000 }) }))
     },
     { git: true },
   )
@@ -1104,7 +1122,10 @@ describe("session.compaction.process", () => {
           (msg) =>
             msg.info.role === "user" &&
             msg.parts.some(
-              (part) => part.type === "text" && part.synthetic && part.text.includes("Continue if you have next steps"),
+              (part) =>
+                part.type === "text" &&
+                part.synthetic &&
+                part.text.includes("Continue only an unambiguously pending action"),
             ),
         ),
       ).toBe(false)
@@ -1376,7 +1397,7 @@ describe("session.compaction.process", () => {
 
         expect(captured).toContain("older context")
         expect(captured).toContain("keep this turn")
-        expect(captured).toContain("and this one too")
+        expect(captured).not.toContain("and this one too")
         expect(captured).not.toContain("What did we do so far?")
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 2 }) }))
     },
@@ -1397,8 +1418,9 @@ describe("session.compaction.process", () => {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
         yield* createUserMessage(session.id, "summarize this oldest turn")
-        yield* Effect.forEach(Array.from({ length: 20 }, (_, index) => index + 1), (index) =>
-          createUserMessage(session.id, `retained turn ${index}`),
+        yield* Effect.forEach(
+          Array.from({ length: 20 }, (_, index) => index + 1),
+          (index) => createUserMessage(session.id, `retained turn ${index}`),
         )
         yield* createCompactionMarker(session.id)
 
@@ -1409,14 +1431,14 @@ describe("session.compaction.process", () => {
 
         expect(captured).toContain("summarize this oldest turn")
         expect(captured).toContain("retained turn 1")
-        expect(captured).toContain("retained turn 20")
+        expect(captured).not.toContain("retained turn 20")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },
   )
 
   itCompaction.instance(
-    "summarizes recent tool calls while retaining only recent dialogue",
+    "summarizes older tool calls while retaining the latest full turn",
     () => {
       const stub = llm()
       let captured = ""
@@ -1429,12 +1451,11 @@ describe("session.compaction.process", () => {
         const test = yield* TestInstance
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
-        yield* createUserMessage(session.id, "older context")
-        const recent = yield* createUserMessage(session.id, "recent request")
-        const assistant = yield* createAssistantMessage(session.id, recent.id, test.directory)
+        const older = yield* createUserMessage(session.id, "older context")
+        const olderAssistant = yield* createAssistantMessage(session.id, older.id, test.directory)
         yield* ssn.updatePart({
           id: PartID.ascending(),
-          messageID: assistant.id,
+          messageID: olderAssistant.id,
           sessionID: session.id,
           type: "tool",
           callID: "call-1",
@@ -1450,10 +1471,35 @@ describe("session.compaction.process", () => {
         })
         yield* ssn.updatePart({
           id: PartID.ascending(),
-          messageID: assistant.id,
+          messageID: olderAssistant.id,
           sessionID: session.id,
           type: "text",
-          text: "assistant reply",
+          text: "older assistant reply",
+        })
+        const recent = yield* createUserMessage(session.id, "recent request")
+        const recentAssistant = yield* createAssistantMessage(session.id, recent.id, test.directory)
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: recentAssistant.id,
+          sessionID: session.id,
+          type: "tool",
+          callID: "call-2",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: { filePath: "recent.txt" },
+            output: "latest tool output",
+            title: "Read recent.txt",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        })
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: recentAssistant.id,
+          sessionID: session.id,
+          type: "text",
+          text: "recent assistant reply",
         })
         yield* createCompactionMarker(session.id)
 
@@ -1466,19 +1512,27 @@ describe("session.compaction.process", () => {
         expect(captured).toContain("secret.txt")
         expect(captured).toContain("tool output must be omitted")
         expect(captured).toContain("## Recent Tool Calls")
+        expect(captured).not.toContain("latest tool output")
 
         const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const part = yield* readCompactionPart(session.id)
+        expect(part?.tail_start_id).toBe(older.id)
+        expect(part?.tail_text_only).toBe(true)
+        expect(part?.tail_full_start_id).toBe(recent.id)
         expect(filtered.find((msg) => msg.info.id === recent.id)?.parts).toMatchObject([
           { type: "text", text: "recent request" },
         ])
-        expect(filtered.find((msg) => msg.info.id === assistant.id)?.parts).toMatchObject([
-          { type: "text", text: "assistant reply" },
+        expect(filtered.map((msg) => msg.info.id)).toContain(olderAssistant.id)
+        expect(filtered.find((msg) => msg.info.id === olderAssistant.id)?.parts).toMatchObject([
+          { type: "text", text: "older assistant reply" },
         ])
-        expect(filtered.some((msg) => msg.parts.some((part) => part.type === "tool"))).toBe(false)
+        expect(
+          filtered.find((msg) => msg.info.id === recentAssistant.id)?.parts.some((part) => part.type === "tool"),
+        ).toBe(true)
       }).pipe(
         withCompaction({
           llm: stub.layer,
-          config: cfg({ tail_turns: 1, preserve_recent_tokens: 10_000 }),
+          config: cfg({ tail_turns: 2, preserve_recent_tokens: 100_000 }),
         }),
       )
     },
@@ -1523,6 +1577,8 @@ describe("session.compaction.process", () => {
         expect(captured).toContain("## Constraints & Preferences")
         expect(captured).toContain("## Progress")
         expect(captured).toContain("## Recent Tool Calls")
+        expect(captured).toContain("Never infer requirements, decisions, or work that was not stated")
+        expect(captured).toContain("Do not turn suggestions, optional improvements, or your own ideas into Next Steps")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },

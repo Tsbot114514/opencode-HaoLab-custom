@@ -12,8 +12,8 @@ export type Event =
   | EventServerConnected
   | EventGlobalDisposed
   | EventServerInstanceDisposed
-  | EventFileEdited
   | EventFileWatcherUpdated
+  | EventFileEdited
   | EventLspClientDiagnostics
   | EventLspUpdated
   | EventMessagePartDelta
@@ -719,6 +719,8 @@ export type CompactionPart = {
   auto: boolean
   overflow?: boolean
   tail_start_id?: string
+  tail_text_only?: boolean
+  tail_full_start_id?: string
 }
 
 export type Part =
@@ -814,8 +816,8 @@ export type GlobalEvent = {
     | EventServerConnected
     | EventGlobalDisposed
     | EventServerInstanceDisposed
-    | EventFileEdited
     | EventFileWatcherUpdated
+    | EventFileEdited
     | EventLspClientDiagnostics
     | EventLspUpdated
     | EventMessagePartDelta
@@ -1576,6 +1578,17 @@ export type FileContent = {
   }
   encoding?: "base64"
   mimeType?: string
+}
+
+export type EditableFile = {
+  content: string
+  revision: string
+}
+
+export type ConflictError = {
+  _tag: "ConflictError"
+  message: string
+  resource?: string
 }
 
 export type File = {
@@ -2495,20 +2508,20 @@ export type EventServerInstanceDisposed = {
   }
 }
 
-export type EventFileEdited = {
-  id: string
-  type: "file.edited"
-  properties: {
-    file: string
-  }
-}
-
 export type EventFileWatcherUpdated = {
   id: string
   type: "file.watcher.updated"
   properties: {
     file: string
     event: "add" | "change" | "unlink"
+  }
+}
+
+export type EventFileEdited = {
+  id: string
+  type: "file.edited"
+  properties: {
+    file: string
   }
 }
 
@@ -4721,6 +4734,71 @@ export type FileReadResponses = {
 }
 
 export type FileReadResponse = FileReadResponses[keyof FileReadResponses]
+
+export type FileEditableData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    path: string
+  }
+  url: "/file/editable"
+}
+
+export type FileEditableErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type FileEditableError = FileEditableErrors[keyof FileEditableErrors]
+
+export type FileEditableResponses = {
+  /**
+   * Editable file content
+   */
+  200: EditableFile
+}
+
+export type FileEditableResponse = FileEditableResponses[keyof FileEditableResponses]
+
+export type FileWriteData = {
+  body?: {
+    path: string
+    content: string
+    expectedRevision: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/file/editable"
+}
+
+export type FileWriteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * ConflictError
+   */
+  409: ConflictError
+}
+
+export type FileWriteError = FileWriteErrors[keyof FileWriteErrors]
+
+export type FileWriteResponses = {
+  /**
+   * Saved file content
+   */
+  200: EditableFile
+}
+
+export type FileWriteResponse = FileWriteResponses[keyof FileWriteResponses]
 
 export type FileStatusData = {
   body?: never

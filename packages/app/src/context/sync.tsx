@@ -2,6 +2,7 @@ import { Binary } from "@opencode-ai/core/util/binary"
 import { useGlobalSync } from "./global-sync"
 import { useSDK } from "./sdk"
 import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import { compareMessages, findMessage } from "@/utils/message-order"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 
@@ -66,9 +67,9 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
   const confirmed: string[] = []
 
   for (const item of items) {
-    const result = Binary.search(session, item.message.id, (message) => message.id)
-    const found = result.found
-    if (!found) session.splice(result.index, 0, item.message)
+    const index = findMessage(session, item.message.id)
+    const found = index >= 0
+    if (!found) session.push(item.message)
 
     const current = part.get(item.message.id)
     if (found && hasParts(current, item.parts)) {
@@ -82,7 +83,7 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
   return {
     cursor: page.cursor,
     complete: page.complete,
-    session,
+    session: session.sort(compareMessages),
     part: [...part.entries()].sort((a, b) => cmp(a[0], b[0])).map(([id, part]) => ({ id, part })),
     confirmed,
   }
@@ -91,8 +92,8 @@ export function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) 
 export function applyOptimisticAdd(draft: OptimisticStore, input: OptimisticAddInput) {
   const messages = draft.message[input.sessionID]
   if (messages) {
-    const result = Binary.search(messages, input.message.id, (m) => m.id)
-    messages.splice(result.index, 0, input.message)
+    messages.push(input.message)
+    messages.sort(compareMessages)
   } else {
     draft.message[input.sessionID] = [input.message]
   }
@@ -102,8 +103,8 @@ export function applyOptimisticAdd(draft: OptimisticStore, input: OptimisticAddI
 export function applyOptimisticRemove(draft: OptimisticStore, input: OptimisticRemoveInput) {
   const messages = draft.message[input.sessionID]
   if (messages) {
-    const result = Binary.search(messages, input.messageID, (m) => m.id)
-    if (result.found) messages.splice(result.index, 1)
+    const index = findMessage(messages, input.messageID)
+    if (index >= 0) messages.splice(index, 1)
   }
   delete draft.part[input.messageID]
 }

@@ -48,7 +48,7 @@ function id(prefix: string, value: number) {
 }
 
 function userMessage(sessionID: string, index: number, textLength: number, diffs: unknown[] = []): Message {
-  const messageID = id("msg_user", index)
+  const messageID = index === 36 ? "msg_z_before_wrap" : index === 37 ? "msg_a_after_wrap" : id("msg_user", index)
   return {
     info: {
       id: messageID,

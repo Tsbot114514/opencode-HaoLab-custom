@@ -4,11 +4,11 @@ import { applyOptimisticAdd, applyOptimisticRemove, mergeOptimisticPage } from "
 
 type Text = Extract<Part, { type: "text" }>
 
-const userMessage = (id: string, sessionID: string): Message => ({
+const userMessage = (id: string, sessionID: string, created = 1): Message => ({
   id,
   sessionID,
   role: "user",
-  time: { created: 1 },
+  time: { created },
   agent: "assistant",
   model: { providerID: "openai", modelID: "gpt" },
 })
@@ -37,6 +37,25 @@ describe("sync optimistic reducers", () => {
 
     expect(draft.message[sessionID]?.map((x) => x.id)).toEqual(["msg_1", "msg_2"])
     expect(draft.part.msg_1?.map((x) => x.id)).toEqual(["prt_1", "prt_2"])
+  })
+
+  test("applyOptimisticAdd keeps rollover messages in creation order", () => {
+    const sessionID = "ses_1"
+    const draft = {
+      message: { [sessionID]: [userMessage("msg_fffffffff001old", sessionID, 1)] },
+      part: {} as Record<string, Part[] | undefined>,
+    }
+
+    applyOptimisticAdd(draft, {
+      sessionID,
+      message: userMessage("msg_000000000001new", sessionID, 2),
+      parts: [],
+    })
+
+    expect(draft.message[sessionID]?.map((x) => x.id)).toEqual([
+      "msg_fffffffff001old",
+      "msg_000000000001new",
+    ])
   })
 
   test("applyOptimisticRemove removes message and part entries", () => {
@@ -71,6 +90,20 @@ describe("sync optimistic reducers", () => {
     expect(page.part.find((x) => x.id === "msg_2")?.part.map((x) => x.id)).toEqual(["prt_2"])
     expect(page.confirmed).toEqual([])
     expect(page.complete).toBe(true)
+  })
+
+  test("mergeOptimisticPage keeps rollover messages in creation order", () => {
+    const sessionID = "ses_1"
+    const page = mergeOptimisticPage(
+      {
+        session: [userMessage("msg_fffffffff001old", sessionID, 1)],
+        part: [],
+        complete: true,
+      },
+      [{ message: userMessage("msg_000000000001new", sessionID, 2), parts: [] }],
+    )
+
+    expect(page.session.map((x) => x.id)).toEqual(["msg_fffffffff001old", "msg_000000000001new"])
   })
 
   test("mergeOptimisticPage keeps missing optimistic parts until the server has them", () => {

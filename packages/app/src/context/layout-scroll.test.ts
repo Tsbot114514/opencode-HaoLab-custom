@@ -61,4 +61,23 @@ describe("createScrollPersistence", () => {
     expect(scroll.scroll("session", "review")).toEqual({ x: 12, y: 34 })
     scroll.dispose()
   })
+
+  test("flushes pending scroll writes when disposed", () => {
+    vi.useFakeTimers()
+    try {
+      const writes: Array<Record<string, { x: number; y: number }>> = []
+      const scroll = createScrollPersistence({
+        debounceMs: 250,
+        getSnapshot: () => undefined,
+        onFlush: (_sessionKey, next) => writes.push(next),
+      })
+
+      scroll.setScroll("session", "file://report.md", { x: 0, y: 840 })
+      scroll.dispose()
+
+      expect(writes).toEqual([{ "file://report.md": { x: 0, y: 840 } }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

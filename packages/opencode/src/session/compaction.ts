@@ -61,7 +61,7 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 - [decision and why, or "(none)"]
 
 ## Next Steps
-- [ordered next actions or "(none)"]
+- [only unambiguously pending actions explicitly requested by the user or already started, or "(none)"]
 
 ## Critical Context
 - [important technical facts, errors, open questions, or "(none)"]
@@ -76,17 +76,16 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 Rules:
 - Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs.
+- Ground every bullet in the conversation or tool results. Never infer requirements, decisions, or work that was not stated.
+- In Next Steps, include only unfinished actions explicitly requested by the user or necessary to finish work already in progress.
+- Do not turn suggestions, optional improvements, or your own ideas into Next Steps. Use "(none)" when no pending action is unambiguous.
+- The user's latest explicit instruction takes precedence over older plans and previous summaries.
 - Preserve exact file paths, commands, error strings, and identifiers when known.
 - For recent tool calls, preserve the tool name, important inputs, outcome, and any information needed to continue without repeating work.
 - Do not mention the summary process or that context was compacted.`
 type Turn = {
   start: number
   end: number
-  id: MessageID
-}
-
-type Tail = {
-  start: number
   id: MessageID
 }
 
@@ -162,28 +161,11 @@ function turns(messages: MessageV2.WithParts[]) {
   return result
 }
 
-function splitTurn(input: {
-  messages: MessageV2.WithParts[]
-  turn: Turn
-  model: Provider.Model
-  budget: number
-  estimate: (input: { messages: MessageV2.WithParts[]; model: Provider.Model }) => Effect.Effect<number>
-}) {
-  return Effect.gen(function* () {
-    if (input.budget <= 0) return undefined
-    if (input.turn.end - input.turn.start <= 1) return undefined
-    for (let start = input.turn.start + 1; start < input.turn.end; start++) {
-      const size = yield* input.estimate({
-        messages: input.messages.slice(start, input.turn.end),
-        model: input.model,
-      })
-      if (size > input.budget) continue
-      return {
-        start,
-        id: input.messages[start]!.info.id,
-      } satisfies Tail
-    }
-    return undefined
+function projectTail(input: { messages: MessageV2.WithParts[]; turns: Turn[]; full?: Turn }) {
+  return input.turns.flatMap((turn) => {
+    const messages = input.messages.slice(turn.start, turn.end)
+    if (turn.id === input.full?.id) return messages
+    return MessageV2.dialogueOnly(messages)
   })
 }
 
@@ -242,7 +224,7 @@ export const layer = Layer.effect(
       messages: MessageV2.WithParts[]
       model: Provider.Model
     }) {
-      const msgs = yield* MessageV2.toModelMessagesEffect(MessageV2.dialogueOnly(input.messages), input.model)
+      const msgs = yield* MessageV2.toModelMessagesEffect(input.messages, input.model)
       return Token.estimate(JSON.stringify(msgs))
     })
 
@@ -256,44 +238,27 @@ export const layer = Layer.effect(
       const budget = preserveRecentBudget({ cfg: input.cfg, model: input.model })
       const all = turns(input.messages)
       if (!all.length) return { head: input.messages, tail_start_id: undefined }
-      const recent = all.slice(-limit)
-      const sizes = yield* Effect.forEach(
-        recent,
-        (turn) =>
-          estimate({
-            messages: input.messages.slice(turn.start, turn.end),
-            model: input.model,
-          }),
-        { concurrency: 1 },
-      )
-
-      let total = 0
-      let keep: Tail | undefined
-      for (let i = recent.length - 1; i >= 0; i--) {
-        const turn = recent[i]!
-        const size = sizes[i]
-        if (total + size <= budget) {
-          total += size
-          keep = { start: turn.start, id: turn.id }
-          continue
-        }
-        const remaining = budget - total
-        const split = yield* splitTurn({
-          messages: input.messages,
-          turn,
-          model: input.model,
-          budget: remaining,
-          estimate,
-        })
-        if (split) keep = split
-        else if (!keep) log.info("tail fallback", { budget, size, total })
-        break
+      let recent = all.slice(-limit)
+      let full = recent.at(-1)
+      let projected = projectTail({ messages: input.messages, turns: recent, full })
+      if ((yield* estimate({ messages: projected, model: input.model })) > budget) {
+        full = undefined
+        projected = projectTail({ messages: input.messages, turns: recent })
+      }
+      while (recent.length && (yield* estimate({ messages: projected, model: input.model })) > budget) {
+        recent = recent.slice(1)
+        projected = projectTail({ messages: input.messages, turns: recent, full })
       }
 
-      if (!keep || keep.start === 0) return { head: input.messages, tail_start_id: undefined }
+      const keep = recent[0]
+      if (!keep) return { head: input.messages, tail_start_id: undefined }
       return {
-        head: input.messages.slice(0, keep.start),
+        // Text-only turns overlap the summary so omitted tool and reasoning details
+        // remain represented. Only the latest full turn stays outside the head.
+        head: full ? input.messages.slice(0, full.start) : input.messages,
         tail_start_id: keep.id,
+        tail_text_only: true as const,
+        tail_full_start_id: full?.id,
       }
     })
 
@@ -406,7 +371,7 @@ export const layer = Layer.effect(
         { context: [], prompt: undefined },
       )
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
-      const msgs = structuredClone(relevant)
+      const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
         stripMedia: true,
@@ -472,10 +437,12 @@ export const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      if (compactionPart) {
         yield* session.updatePart({
           ...compactionPart,
           tail_start_id: selected.tail_start_id,
+          tail_text_only: selected.tail_text_only,
+          tail_full_start_id: selected.tail_full_start_id,
         })
       }
 
@@ -542,7 +509,7 @@ export const layer = Layer.effect(
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+              "Continue only an unambiguously pending action that the user explicitly requested or that was already in progress before compaction. Treat the summary's Next Steps as a record, not as authorization to start new work. Do not act on inferred, optional, or newly suggested tasks. If no such action exists or the intended action is unclear, stop and ask for clarification."
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,

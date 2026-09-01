@@ -113,6 +113,7 @@ const addCompactionPart = Effect.fn("Test.addCompactionPart")(function* (
   sessionID: SessionID,
   messageID: MessageID,
   tailStartID?: MessageID,
+  tail?: { textOnly: boolean; fullStartID?: MessageID },
 ) {
   const session = yield* SessionNs.Service
   yield* session.updatePart({
@@ -122,6 +123,8 @@ const addCompactionPart = Effect.fn("Test.addCompactionPart")(function* (
     type: "compaction",
     auto: true,
     tail_start_id: tailStartID,
+    tail_text_only: tail?.textOnly,
+    tail_full_start_id: tail?.fullStartID,
   } as any)
 })
 
@@ -702,7 +705,7 @@ describe("MessageV2.filterCompacted", () => {
     ),
   )
 
-  it.instance("retains original tail when compaction stores tail_start_id", () =>
+  it.instance("retains a dialogue-only tail for legacy compaction checkpoints", () =>
     withSession(({ session, sessionID }) =>
       Effect.gen(function* () {
         const u1 = yield* addUser(sessionID, "first")
@@ -723,6 +726,22 @@ describe("MessageV2.filterCompacted", () => {
           messageID: a2,
           type: "text",
           text: "second reply",
+        })
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          sessionID,
+          messageID: a2,
+          type: "tool",
+          callID: "legacy-tool",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: {},
+            output: "legacy output",
+            title: "Legacy tool",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
         })
 
         const c1 = yield* addUser(sessionID)
@@ -749,6 +768,73 @@ describe("MessageV2.filterCompacted", () => {
         const result = MessageV2.filterCompacted(MessageV2.stream(sessionID))
 
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
+        expect(result.find((message) => message.info.id === a2)?.parts.map((part) => part.type)).toEqual(["text"])
+      }),
+    ),
+  )
+
+  it.instance("retains dialogue text plus the latest full turn", () =>
+    withSession(({ session, sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const a1 = yield* addAssistant(sessionID, u1, { finish: "end_turn" })
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          sessionID,
+          messageID: a1,
+          type: "text",
+          text: "first reply",
+        })
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          sessionID,
+          messageID: a1,
+          type: "tool",
+          callID: "older-tool",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: {},
+            output: "older output",
+            title: "Older tool",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        })
+
+        const u2 = yield* addUser(sessionID, "second")
+        const a2 = yield* addAssistant(sessionID, u2, { finish: "end_turn" })
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          sessionID,
+          messageID: a2,
+          type: "text",
+          text: "second reply",
+        })
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          sessionID,
+          messageID: a2,
+          type: "tool",
+          callID: "latest-tool",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: {},
+            output: "latest output",
+            title: "Latest tool",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        })
+
+        const compact = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, compact, u1, { textOnly: true, fullStartID: u2 })
+        yield* addAssistant(sessionID, compact, { summary: true, finish: "end_turn" })
+
+        const result = MessageV2.filterCompacted(MessageV2.stream(sessionID))
+        expect(result.find((message) => message.info.id === a1)?.parts.some((part) => part.type === "tool")).toBe(false)
+        expect(result.find((message) => message.info.id === a2)?.parts.some((part) => part.type === "tool")).toBe(true)
       }),
     ),
   )
@@ -779,7 +865,7 @@ describe("MessageV2.filterCompacted", () => {
       })
 
       const c1 = yield* addUser(created.id)
-      yield* addCompactionPart(created.id, c1, u2)
+      yield* addCompactionPart(created.id, c1, u2, { textOnly: true, fullStartID: u2 })
       const s1 = yield* addAssistant(created.id, c1, { summary: true, finish: "end_turn" })
       yield* session.updatePart({
         id: PartID.ascending(),
@@ -811,6 +897,8 @@ describe("MessageV2.filterCompacted", () => {
       if (!tailPart || tailPart.type !== "compaction") throw new Error("Expected forked compaction part")
       expect(tailPart.tail_start_id).toBeDefined()
       expect(childFiltered.some((m) => m.info.id === tailPart.tail_start_id)).toBe(true)
+      expect(tailPart.tail_full_start_id).toBeDefined()
+      expect(childFiltered.some((m) => m.info.id === tailPart.tail_full_start_id)).toBe(true)
 
       yield* session.remove(forked.id)
       yield* session.remove(created.id)

@@ -138,7 +138,7 @@ export function SessionHeader() {
   const settings = useSettings()
   const sync = useSync()
   const terminal = useTerminal()
-  const { params, view } = useSessionLayout()
+  const { params, tabs, view } = useSessionLayout()
 
   const projectDirectory = createMemo(() => decode64(params.dir) ?? "")
   const project = createMemo(() => {
@@ -158,6 +158,15 @@ export function SessionHeader() {
   const tree = createMemo(() => !isDesktopBeta || settings.general.showFileTree())
   const term = createMemo(() => !isDesktopBeta || settings.general.showTerminal())
   const status = createMemo(() => !isDesktopBeta || settings.general.showStatus())
+  const reviewActive = createMemo(() => view().reviewPanel.opened() && tabs().active() === "review")
+  const toggleReview = () => {
+    if (reviewActive()) {
+      view().reviewPanel.close()
+      return
+    }
+    tabs().setActive("review")
+    view().reviewPanel.open()
+  }
 
   const [exists, setExists] = createStore<Partial<Record<OpenApp, boolean>>>({
     finder: true,
@@ -457,16 +466,16 @@ export function SessionHeader() {
                     <Button
                       variant="ghost"
                       class="group/review-toggle titlebar-icon w-8 h-6 p-0 box-border"
-                      onClick={() => view().reviewPanel.toggle()}
+                      onClick={toggleReview}
                       aria-label={language.t("command.review.toggle")}
-                      aria-expanded={view().reviewPanel.opened()}
+                      aria-expanded={reviewActive()}
                       aria-controls="review-panel"
                     >
-                      <Icon size="small" name={view().reviewPanel.opened() ? "review-active" : "review"} />
+                      <Icon size="small" name={reviewActive() ? "review-active" : "review"} />
                     </Button>
                   </TooltipKeybind>
 
-                  <Show when={tree()}>
+                   <Show when={tree()}>
                     <TooltipKeybind
                       title={language.t("command.fileTree.toggle")}
                       keybind={command.keybind("fileTree.toggle")}

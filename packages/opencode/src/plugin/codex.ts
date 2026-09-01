@@ -394,13 +394,19 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                   output: 0,
                   cache: { read: 0, write: 0 },
                 },
-                limit: /^gpt-5\.(?:5|6)(?:-|$)/.test(model.api.id)
+                limit: /^gpt-5\.5(?:-|$)/.test(model.api.id)
                   ? {
                       context: 400_000,
                       input: 272_000,
                       output: 128_000,
                     }
-                  : model.limit,
+                  : /^gpt-5\.6(?:-|$)/.test(model.api.id)
+                    ? {
+                        context: 500_000,
+                        input: 372_000,
+                        output: 128_000,
+                      }
+                    : model.limit,
               },
             ]),
         )
@@ -507,9 +513,17 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                 ? new URL(codexApiEndpoint)
                 : parsed
 
+            const body = (() => {
+              if (url.href === parsed.href || typeof init?.body !== "string") return init?.body
+              const value = JSON.parse(init.body)
+              delete value.prompt_cache_options
+              return JSON.stringify(value)
+            })()
+
             return fetch(url, {
               ...init,
               headers,
+              body,
             })
           },
         }

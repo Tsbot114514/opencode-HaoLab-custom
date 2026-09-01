@@ -3,6 +3,8 @@ import { serviceUse } from "@/effect/service-use"
 import { InstanceState } from "@/effect/instance-state"
 
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { Hash } from "@opencode-ai/core/util/hash"
+import { Bus } from "@/bus"
 import { Git } from "@/git"
 import { Effect, Layer, Context, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
@@ -15,6 +17,9 @@ import { containsPath } from "../project/instance-context"
 import * as Log from "@opencode-ai/core/util/log"
 import { Protected } from "./protected"
 import { Ripgrep } from "./ripgrep"
+import { FileWatcher } from "./watcher"
+import { withFileLock } from "./lock"
+import * as Bom from "@/util/bom"
 import { NonNegativeInt, type DeepMutable } from "@opencode-ai/core/schema"
 
 export const Info = Schema.Struct({
@@ -60,6 +65,18 @@ export const Content = Schema.Struct({
   mimeType: Schema.optional(Schema.String),
 }).annotate({ identifier: "FileContent" })
 export type Content = DeepMutable<Schema.Schema.Type<typeof Content>>
+
+export const Editable = Schema.Struct({
+  content: Schema.String,
+  revision: Schema.String,
+}).annotate({ identifier: "EditableFile" })
+export type Editable = DeepMutable<Schema.Schema.Type<typeof Editable>>
+
+export class Conflict extends Schema.TaggedErrorClass<Conflict>()("FileConflictError", {
+  path: Schema.String,
+  content: Schema.String,
+  revision: Schema.String,
+}) {}
 
 export const Event = {
   Edited: BusEvent.define(
@@ -316,6 +333,12 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Info[]>
   readonly read: (file: string) => Effect.Effect<Content>
+  readonly readEditable: (file: string) => Effect.Effect<Editable>
+  readonly writeEditable: (input: {
+    path: string
+    content: string
+    expectedRevision: string
+  }) => Effect.Effect<Editable, Conflict>
   readonly list: (dir?: string) => Effect.Effect<Node[]>
   readonly search: (input: {
     query: string
@@ -335,6 +358,7 @@ export const layer = Layer.effect(
     const appFs = yield* AppFileSystem.Service
     const rg = yield* Ripgrep.Service
     const git = yield* Git.Service
+    const bus = yield* Bus.Service
     const scope = yield* Scope.Scope
 
     const state = yield* InstanceState.make<State>(
@@ -567,6 +591,46 @@ export const layer = Layer.effect(
       return { type: "text" as const, content }
     })
 
+    const readEditable: Interface["readEditable"] = Effect.fn("File.readEditable")(function* (file: string) {
+      const ctx = yield* InstanceState.context
+      const full = path.join(ctx.directory, file)
+      if (!containsPath(full, ctx)) throw new Error("Access denied: path escapes project directory")
+
+      const source = (yield* appFs.existsSafe(full))
+        ? yield* Bom.readFile(appFs, full).pipe(Effect.orDie)
+        : { bom: false, text: "" }
+      return {
+        content: source.text,
+        revision: Hash.fast(Bom.join(source.text, source.bom)),
+      }
+    })
+
+    const writeEditable: Interface["writeEditable"] = Effect.fn("File.writeEditable")(function* (input) {
+      const ctx = yield* InstanceState.context
+      const full = path.join(ctx.directory, input.path)
+      if (!containsPath(full, ctx)) throw new Error("Access denied: path escapes project directory")
+
+      return yield* withFileLock(
+        full,
+        Effect.gen(function* () {
+          const exists = yield* appFs.existsSafe(full)
+          const source = exists ? yield* Bom.readFile(appFs, full).pipe(Effect.orDie) : { bom: false, text: "" }
+          const revision = Hash.fast(Bom.join(source.text, source.bom))
+          if (revision !== input.expectedRevision) {
+            return yield* new Conflict({ path: input.path, content: source.text, revision })
+          }
+
+          yield* appFs.writeWithDirs(full, Bom.join(input.content, source.bom)).pipe(Effect.orDie)
+          yield* bus.publish(Event.Edited, { file: full })
+          yield* bus.publish(FileWatcher.Event.Updated, { file: full, event: exists ? "change" : "add" })
+          return {
+            content: input.content,
+            revision: Hash.fast(Bom.join(input.content, source.bom)),
+          }
+        }),
+      )
+    })
+
     const list = Effect.fn("File.list")(function* (dir?: string) {
       const ctx = yield* InstanceState.context
       const exclude = [".git", ".DS_Store"]
@@ -641,7 +705,7 @@ export const layer = Layer.effect(
     })
 
     log.info("init")
-    return Service.of({ init, status, read, list, search })
+    return Service.of({ init, status, read, readEditable, writeEditable, list, search })
   }),
 )
 
@@ -649,6 +713,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Ripgrep.defaultLayer),
   Layer.provide(AppFileSystem.defaultLayer),
   Layer.provide(Git.defaultLayer),
+  Layer.provide(Bus.defaultLayer),
 )
 
 export * as File from "."

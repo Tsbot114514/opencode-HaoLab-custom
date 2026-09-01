@@ -118,6 +118,23 @@ describe("getTabReorderIndex", () => {
 })
 
 describe("createSessionTabs", () => {
+  test("normalizes file tabs and ignores markdown workspace tab", () => {
+    createRoot((dispose) => {
+      const [state] = createStore({ active: "markdown" as string | undefined, all: ["markdown", "file://notes.md"] })
+      const tabs = createMemo(() => ({ active: () => state.active, all: () => state.all }))
+      const result = createSessionTabs({
+        tabs,
+        pathFromTab: (tab) => (tab.startsWith("file://") ? tab.slice("file://".length) : undefined),
+        normalizeTab: (tab) => tab,
+      })
+
+      expect(result.activeTab()).toBe("file://notes.md")
+      expect(result.openedTabs()).toEqual(["file://notes.md"])
+      expect(result.activeFileTab()).toBe("file://notes.md")
+      dispose()
+    })
+  })
+
   test("normalizes the effective file tab", () => {
     createRoot((dispose) => {
       const [state] = createStore({

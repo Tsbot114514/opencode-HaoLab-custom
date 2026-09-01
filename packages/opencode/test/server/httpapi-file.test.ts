@@ -11,14 +11,16 @@ void Log.init({ print: false })
 
 const context = Context.empty() as Context.Context<unknown>
 
-function request(route: string, directory: string, query?: Record<string, string>) {
+function request(route: string, directory: string, query?: Record<string, string>, init?: RequestInit) {
   const url = new URL(`http://localhost${route}`)
   for (const [key, value] of Object.entries(query ?? {})) {
     url.searchParams.set(key, value)
   }
   return HttpApiApp.webHandler().handler(
     new Request(url, {
+      ...init,
       headers: {
+        ...init?.headers,
         "x-opencode-directory": directory,
       },
     }),
@@ -72,5 +74,30 @@ describe("file HttpApi", () => {
 
     expect(symbols.status).toBe(200)
     expect(await symbols.json()).toEqual([])
+  })
+
+  test("writes exact content and rejects stale revisions", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Bun.write(path.join(tmp.path, "notes.md"), "# Notes\n\n")
+
+    const loaded = await request(FilePaths.editable, tmp.path, { path: "notes.md" })
+    const editable = (await loaded.json()) as { content: string; revision: string }
+    expect(editable.content).toBe("# Notes\n\n")
+
+    const saved = await request(FilePaths.editable, tmp.path, undefined, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "notes.md", content: "# Saved\n", expectedRevision: editable.revision }),
+    })
+    expect(saved.status).toBe(200)
+    expect(await Bun.file(path.join(tmp.path, "notes.md")).text()).toBe("# Saved\n")
+
+    const stale = await request(FilePaths.editable, tmp.path, undefined, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "notes.md", content: "stale", expectedRevision: editable.revision }),
+    })
+    expect(stale.status).toBe(409)
+    expect(await Bun.file(path.join(tmp.path, "notes.md")).text()).toBe("# Saved\n")
   })
 })

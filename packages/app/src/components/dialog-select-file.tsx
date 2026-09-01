@@ -261,7 +261,11 @@ function createSessionEntries(props: {
   return { sessions }
 }
 
-export function DialogSelectFile(props: { mode?: DialogSelectFileMode; onOpenFile?: (path: string) => void }) {
+export function DialogSelectFile(props: {
+  mode?: DialogSelectFileMode
+  activate?: boolean
+  onOpenFile?: (path: string) => void
+}) {
   const command = useCommand()
   const language = useLanguage()
   const layout = useLayout()
@@ -348,6 +352,10 @@ export function DialogSelectFile(props: { mode?: DialogSelectFileMode; onOpenFil
   }
 
   const open = (path: string) => {
+    if (props.activate === false) {
+      props.onOpenFile?.(path)
+      return
+    }
     const value = file.tab(path)
     void tabs().open(value)
     void file.load(path)

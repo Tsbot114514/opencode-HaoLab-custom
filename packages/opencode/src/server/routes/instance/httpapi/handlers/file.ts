@@ -4,6 +4,7 @@ import { Ripgrep } from "@/file/ripgrep"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import { ConflictError } from "../errors"
 
 export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handlers) =>
   Effect.gen(function* () {
@@ -39,6 +40,22 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       return yield* svc.read(ctx.query.path)
     })
 
+    const editable = Effect.fn("FileHttpApi.editable")(function* (ctx: { query: { path: string } }) {
+      return yield* svc.readEditable(ctx.query.path)
+    })
+
+    const write = Effect.fn("FileHttpApi.write")(function* (ctx: {
+      payload: { path: string; content: string; expectedRevision: string }
+    }) {
+      return yield* svc
+        .writeEditable(ctx.payload)
+        .pipe(
+          Effect.mapError(
+            (error) => new ConflictError({ message: "File changed since it was opened", resource: error.path }),
+          ),
+        )
+    })
+
     const status = Effect.fn("FileHttpApi.status")(function* () {
       return yield* svc.status()
     })
@@ -49,6 +66,8 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       .handle("findSymbol", findSymbol)
       .handle("list", list)
       .handle("content", content)
+      .handle("editable", editable)
+      .handle("write", write)
       .handle("status", status)
   }),
 )

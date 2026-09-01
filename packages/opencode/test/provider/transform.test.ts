@@ -101,6 +101,42 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.store).toBe(false)
   })
 
+  test("should use GPT-5.6 prompt cache options for the OpenAI SDK", () => {
+    const result = ProviderTransform.options({
+      model: {
+        ...mockModel,
+        providerID: "openai",
+        api: {
+          id: "gpt-5.6-sol",
+          url: "https://api.openai.com",
+          npm: "@ai-sdk/openai",
+        },
+      },
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.promptCacheOptions).toEqual({ mode: "implicit", ttl: "30m" })
+  })
+
+  test("should not use GPT-5.6 prompt cache options for earlier models", () => {
+    const result = ProviderTransform.options({
+      model: {
+        ...mockModel,
+        providerID: "openai",
+        api: {
+          id: "gpt-5.5",
+          url: "https://api.openai.com",
+          npm: "@ai-sdk/openai",
+        },
+      },
+      sessionID,
+      providerOptions: {},
+    })
+
+    expect(result.promptCacheOptions).toBeUndefined()
+  })
+
   test("should set store=false for azure provider by default", () => {
     const azureModel = {
       ...mockModel,

@@ -11,10 +11,17 @@ import {
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
 import { described } from "./metadata"
+import { ConflictError } from "../errors"
 
 export const FileQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
   path: Schema.String,
+})
+
+export const FileWritePayload = Schema.Struct({
+  path: Schema.String,
+  content: Schema.String,
+  expectedRevision: Schema.String,
 })
 
 export const FindTextQuery = Schema.Struct({
@@ -43,6 +50,7 @@ export const FilePaths = {
   findSymbol: "/find/symbol",
   list: "/file",
   content: "/file/content",
+  editable: "/file/editable",
   status: "/file/status",
 } as const
 
@@ -98,6 +106,28 @@ export const FileApi = HttpApi.make("file")
             identifier: "file.read",
             summary: "Read file",
             description: "Read the content of a specified file.",
+          }),
+        ),
+        HttpApiEndpoint.get("editable", FilePaths.editable, {
+          query: FileQuery,
+          success: described(File.Editable, "Editable file content"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "file.editable",
+            summary: "Read editable file",
+            description: "Read exact text content and its current revision.",
+          }),
+        ),
+        HttpApiEndpoint.put("write", FilePaths.editable, {
+          query: WorkspaceRoutingQuery,
+          payload: FileWritePayload,
+          success: described(File.Editable, "Saved file content"),
+          error: ConflictError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "file.write",
+            summary: "Write editable file",
+            description: "Save text content if its expected revision is still current.",
           }),
         ),
         HttpApiEndpoint.get("status", FilePaths.status, {

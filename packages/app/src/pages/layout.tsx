@@ -54,6 +54,7 @@ import { retry } from "@opencode-ai/core/util/retry"
 import { playSoundById } from "@/utils/sound"
 import { createAim } from "@/utils/aim"
 import { setNavigate } from "@/utils/notification-click"
+import { compareMessages } from "@/utils/message-order"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { setSessionHandoff } from "@/pages/session/handoff"
 
@@ -774,7 +775,7 @@ export default function Layout(props: ParentProps) {
             const merged = mergeByID(
               current.filter((item): item is Message => !!item?.id),
               sorted,
-            )
+            ).sort(compareMessages)
 
             if (!isSessionPrefetchCurrent(directory, sessionID, rev)) return
 

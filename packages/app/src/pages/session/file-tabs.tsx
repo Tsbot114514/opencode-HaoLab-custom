@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, Match, on, onCleanup, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
 import { makeEventListener } from "@solid-primitives/event-listener"
@@ -19,6 +19,9 @@ import { usePrompt } from "@/context/prompt"
 import { getSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionTabs } from "@/pages/session/helpers"
+import { MarkdownEditor } from "./markdown-editor"
+
+const isMarkdownFile = (path: string) => /\.(?:md|markdown)$/i.test(path)
 
 function FileCommentMenu(props: {
   moreLabel: string
@@ -59,6 +62,8 @@ function createScrollSync(input: { tab: () => string; view: ReturnType<typeof us
   let scroll: HTMLDivElement | undefined
   let scrollFrame: number | undefined
   let restoreFrame: number | undefined
+  let settleFrame: number | undefined
+  let restoring = false
   let pending: ScrollPos | undefined
   const [code, setCode] = createSignal<HTMLElement[]>([])
 
@@ -78,6 +83,7 @@ function createScrollSync(input: { tab: () => string; view: ReturnType<typeof us
   }
 
   const save = (next: ScrollPos) => {
+    if (restoring) return
     pending = next
     if (scrollFrame !== undefined) return
 
@@ -112,12 +118,13 @@ function createScrollSync(input: { tab: () => string; view: ReturnType<typeof us
     setCode(next)
   }
 
-  const restore = () => {
+  const restore = (settle = true) => {
     const el = scroll
     if (!el) return
 
     const pos = input.view().scroll(input.tab())
     if (!pos) return
+    restoring = true
 
     sync()
 
@@ -128,8 +135,14 @@ function createScrollSync(input: { tab: () => string; view: ReturnType<typeof us
     }
 
     if (el.scrollTop !== pos.y) el.scrollTop = pos.y
-    if (code().length > 0) return
-    if (el.scrollLeft !== pos.x) el.scrollLeft = pos.x
+    if (code().length === 0 && el.scrollLeft !== pos.x) el.scrollLeft = pos.x
+    if (!settle) return
+
+    if (settleFrame !== undefined) cancelAnimationFrame(settleFrame)
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = undefined
+      restoring = false
+    })
   }
 
   const queueRestore = () => {
@@ -156,12 +169,19 @@ function createScrollSync(input: { tab: () => string; view: ReturnType<typeof us
 
   const setViewport = (el: HTMLDivElement) => {
     scroll = el
-    restore()
+    restore(false)
   }
 
   onCleanup(() => {
-    if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
+    if (scrollFrame !== undefined) {
+      cancelAnimationFrame(scrollFrame)
+      scrollFrame = undefined
+      const out = pending
+      pending = undefined
+      if (out) input.view().setScroll(input.tab(), out)
+    }
     if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame)
+    if (settleFrame !== undefined) cancelAnimationFrame(settleFrame)
   })
 
   return {
@@ -239,6 +259,7 @@ export function FileTabContent(props: { tab: string }) {
       selection: input.selection,
       comment: input.comment,
     })
+    if (isMarkdownFile(input.file)) return
     prompt.context.add({
       type: "file",
       path: input.file,
@@ -257,6 +278,7 @@ export function FileTabContent(props: { tab: string }) {
     comment: string
   }) => {
     comments.update(input.file, input.id, input.comment)
+    if (isMarkdownFile(input.file)) return
     const preview = input.file === path() ? buildPreview(input.file, selectionFromLines(input.selection)) : undefined
     prompt.context.updateComment(input.file, input.id, {
       comment: input.comment,
@@ -266,6 +288,7 @@ export function FileTabContent(props: { tab: string }) {
 
   const removeCommentFromContext = (input: { id: string; file: string }) => {
     comments.remove(input.file, input.id)
+    if (isMarkdownFile(input.file)) return
     prompt.context.removeComment(input.file, input.id)
   }
 
@@ -290,6 +313,11 @@ export function FileTabContent(props: { tab: string }) {
   }
 
   const activeSelection = () => note.selected ?? selectedLines()
+  const markdownPath = createMemo(() => {
+    const value = path()
+    if (!value || !isMarkdownFile(value)) return
+    return value
+  })
 
   const commentsUi = createLineCommentController({
     comments: fileComments,
@@ -394,62 +422,75 @@ export function FileTabContent(props: { tab: string }) {
     scrollSync.queueRestore()
   })
 
-  const renderFile = (source: string) => (
-    <div class="relative overflow-hidden pb-40">
-      <Dynamic
-        component={fileComponent}
-        mode="text"
-        file={{
-          name: path() ?? "",
-          contents: source,
-          cacheKey: cacheKey(),
-        }}
-        enableLineSelection
-        enableHoverUtility
-        selectedLines={activeSelection()}
-        commentedLines={commentedLines()}
-        onRendered={() => {
-          scrollSync.queueRestore()
-        }}
-        annotations={commentsUi.annotations()}
-        renderAnnotation={commentsUi.renderAnnotation}
-        renderHoverUtility={commentsUi.renderHoverUtility}
-        onLineSelected={(range: SelectedLineRange | null) => {
-          commentsUi.onLineSelected(range)
-        }}
-        onLineNumberSelectionEnd={commentsUi.onLineNumberSelectionEnd}
-        onLineSelectionEnd={(range: SelectedLineRange | null) => {
-          commentsUi.onLineSelectionEnd(range)
-        }}
-        search={search}
-        class="select-text"
-        media={{
-          mode: "auto",
-          path: path(),
-          current: state()?.content,
-          onLoad: scrollSync.queueRestore,
-          onError: (args: { kind: "image" | "audio" | "svg" }) => {
-            if (args.kind !== "svg") return
-            showToast({
-              variant: "error",
-              title: language.t("toast.file.loadFailed.title"),
-            })
-          },
-        }}
-      />
-    </div>
-  )
+  const renderFile = (source: string) => {
+    return (
+      <div class="relative overflow-hidden pb-40">
+        <Dynamic
+          component={fileComponent}
+          mode="text"
+          file={{
+            name: path() ?? "",
+            contents: source,
+            cacheKey: cacheKey(),
+          }}
+          enableLineSelection
+          enableHoverUtility
+          selectedLines={activeSelection()}
+          commentedLines={commentedLines()}
+          onRendered={() => {
+            scrollSync.queueRestore()
+          }}
+          annotations={commentsUi.annotations()}
+          renderAnnotation={commentsUi.renderAnnotation}
+          renderHoverUtility={commentsUi.renderHoverUtility}
+          onLineSelected={(range: SelectedLineRange | null) => {
+            commentsUi.onLineSelected(range)
+          }}
+          onLineNumberSelectionEnd={commentsUi.onLineNumberSelectionEnd}
+          onLineSelectionEnd={(range: SelectedLineRange | null) => {
+            commentsUi.onLineSelectionEnd(range)
+          }}
+          search={search}
+          class="select-text"
+          media={{
+            mode: "auto",
+            path: path(),
+            current: state()?.content,
+            onLoad: scrollSync.queueRestore,
+            onError: (args: { kind: "image" | "audio" | "svg" }) => {
+              if (args.kind !== "svg") return
+              showToast({
+                variant: "error",
+                title: language.t("toast.file.loadFailed.title"),
+              })
+            },
+          }}
+        />
+      </div>
+    )
+  }
 
   return (
     <Tabs.Content value={props.tab} class="mt-3 relative h-full">
       <ScrollView class="h-full" viewportRef={scrollSync.setViewport} onScroll={scrollSync.handleScroll as any}>
-        <Switch>
-          <Match when={state()?.loaded}>{renderFile(contents())}</Match>
-          <Match when={state()?.loading}>
-            <div class="px-6 py-4 text-text-weak">{language.t("common.loading")}...</div>
-          </Match>
-          <Match when={state()?.error}>{(err) => <div class="px-6 py-4 text-text-weak">{err()}</div>}</Match>
-        </Switch>
+        <Show
+          when={markdownPath()}
+          fallback={
+            <Switch>
+              <Match when={state()?.loaded}>{renderFile(contents())}</Match>
+              <Match when={state()?.loading}>
+                <div class="px-6 py-4 text-text-weak">{language.t("common.loading")}...</div>
+              </Match>
+              <Match when={state()?.error}>{(err) => <div class="px-6 py-4 text-text-weak">{err()}</div>}</Match>
+            </Switch>
+          }
+        >
+          {(markdown) => (
+            <div class="relative pb-40">
+              <MarkdownEditor path={markdown()} onReady={scrollSync.queueRestore} />
+            </div>
+          )}
+        </Show>
       </ScrollView>
     </Tabs.Content>
   )

@@ -274,7 +274,8 @@ function init(info: Info) {
           },
           session_local_tools: {
             path: path.join(dir, "tool", "README.md"),
-            usage: "Before creating or editing session-local tools, read this README for the supported tool shape and schema contract.",
+            usage:
+              "Before creating or editing session-local tools, read this README for the supported tool shape and schema contract.",
           },
           time: info.time,
         },
@@ -855,6 +856,7 @@ export const layer: Layer.Layer<
           }
           if (p.type === "compaction" && p.tail_start_id) {
             p.tail_start_id = idMap.get(p.tail_start_id)
+            p.tail_full_start_id = p.tail_full_start_id ? idMap.get(p.tail_full_start_id) : undefined
           }
           yield* updatePart(p)
         }
