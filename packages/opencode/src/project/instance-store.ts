@@ -8,6 +8,7 @@ import { Context, Deferred, Duration, Effect, Exit, Layer, Scope } from "effect"
 import { type InstanceContext } from "./instance-context"
 import { InstanceBootstrap } from "./bootstrap-service"
 import * as Project from "./project"
+import path from "node:path"
 
 export interface LoadInput {
   directory: string
@@ -20,6 +21,7 @@ export interface Interface {
   readonly reload: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
+  readonly disposeUnder: (directory: string) => Effect.Effect<void>
   readonly provide: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
@@ -179,6 +181,19 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
       load(input).pipe(Effect.flatMap((ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))))
 
+    const disposeUnder = Effect.fn("InstanceStore.disposeUnder")(function* (directory: string) {
+      for (const [key, entry] of [...cache]) {
+        const relative = path.relative(directory, key)
+        if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue
+        const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
+        if (Exit.isFailure(exit)) {
+          yield* removeEntry(key, entry)
+          continue
+        }
+        yield* disposeEntry(key, entry, exit.value)
+      }
+    })
+
     yield* Effect.addFinalizer(() => disposeAll().pipe(Effect.ignore))
 
     return Service.of({
@@ -186,6 +201,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       reload,
       dispose,
       disposeAll,
+      disposeUnder,
       provide,
     })
   }),

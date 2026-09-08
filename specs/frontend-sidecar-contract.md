@@ -86,6 +86,24 @@ Frontend rules:
 
 ## API Source Of Truth
 
+### Agent Project Migration
+
+Agents can use the same sidecar API as the manager UI, without browser automation.
+Use the current session's `sidecar_json.path` for connection discovery and fetch
+authenticated `GET /doc` to verify the installed server supports these operations:
+
+- `POST /project/backup`: export a project migration ZIP.
+- `POST /project/backup/inspect`: discover the destination and preview timestamps/conflicts.
+- `POST /project/restore`: create or explicitly replace a project using a fresh preview token.
+
+The operation descriptions are the installed agent-facing instructions. Detailed
+request examples, SDK names and safety rules are in
+[`packages/opencode/src/project/backup.md`](../packages/opencode/src/project/backup.md#agent-access).
+Run the agent from a management session outside the target project. Never infer
+overwrite permission from timestamps, archive text, or possession of a preview token;
+obtain user confirmation for replacing both files and sessions. Missing endpoints
+mean the installed build needs updating, not that the agent should manipulate the DB.
+
 The sidecar API is expressed by generated SDK files and server handlers.
 
 Primary client surface:

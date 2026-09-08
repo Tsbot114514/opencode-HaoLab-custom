@@ -58,6 +58,7 @@ export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
 export const Event = {
   Updated: BusEvent.define("project.updated", Info),
+  Restored: BusEvent.define("project.restored", Schema.Struct({ directory: Schema.String })),
 }
 
 type Row = typeof ProjectTable.$inferSelect
@@ -113,7 +114,10 @@ export interface Interface {
    * fires. Subscription lifetime is tied to the per-instance state scope.
    */
   readonly init: () => Effect.Effect<void>
-  readonly fromDirectory: (directory: string) => Effect.Effect<{ project: Info; sandbox: string }>
+  readonly fromDirectory: (
+    directory: string,
+    options?: { persist?: boolean; cacheIdentity?: boolean },
+  ) => Effect.Effect<{ project: Info; sandbox: string }>
   readonly discover: (input: Info) => Effect.Effect<void>
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: ProjectID) => Effect.Effect<Info | undefined>
@@ -191,7 +195,10 @@ export const layer: Layer.Layer<
       )
     })
 
-    const fromDirectory = Effect.fn("Project.fromDirectory")(function* (directory: string) {
+    const fromDirectory = Effect.fn("Project.fromDirectory")(function* (
+      directory: string,
+      options?: { persist?: boolean; cacheIdentity?: boolean },
+    ) {
       log.info("fromDirectory", { directory })
 
       // Phase 1: discover git info
@@ -253,7 +260,7 @@ export const layer: Layer.Layer<
             .toSorted()
 
           id = roots[0] ? ProjectID.make(roots[0]) : undefined
-          if (id) {
+          if (id && options?.cacheIdentity !== false) {
             yield* fs.writeFileString(pathSvc.join(common, "opencode"), id).pipe(Effect.ignore)
           }
         }
@@ -295,7 +302,8 @@ export const layer: Layer.Layer<
       const worktree = preserveGlobalDataWorktree ? existing.worktree : data.worktree
       const sandbox = preserveGlobalDataWorktree ? existing.worktree : data.sandbox
 
-      if (flags.experimentalIconDiscovery) yield* discover(existing).pipe(Effect.ignore, Effect.forkIn(scope))
+      if (flags.experimentalIconDiscovery && options?.persist !== false)
+        yield* discover(existing).pipe(Effect.ignore, Effect.forkIn(scope))
 
       const result: Info = {
         ...existing,
@@ -313,6 +321,8 @@ export const layer: Layer.Layer<
           ),
         { concurrency: "unbounded" },
       ).pipe(Effect.map((arr) => arr.filter((x): x is string => x !== undefined)))
+
+      if (options?.persist === false) return { project: result, sandbox: data.sandbox }
 
       yield* db((d) =>
         d

@@ -4,6 +4,7 @@ import { Binary } from "@opencode-ai/core/util/binary"
 import { retry } from "@opencode-ai/core/util/retry"
 import {
   clearSessionPrefetch,
+  clearSessionPrefetchDirectory,
   getSessionPrefetch,
   getSessionPrefetchPromise,
   setSessionPrefetch,
@@ -13,6 +14,7 @@ import type { Message, OpencodeClient, Part } from "@opencode-ai/sdk/v2/client"
 import { SESSION_CACHE_LIMIT, dropSessionCaches, pickSessionCacheEvictions } from "./global-sync/session-cache"
 import { diffs as list, message as clean } from "@/utils/diffs"
 import { compareMessages, findMessage } from "@/utils/message-order"
+import { projectSessionRevision } from "./global-sync/project-restore"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 
@@ -24,7 +26,7 @@ function runInflight(map: Map<string, Promise<void>>, key: string, task: () => P
   const pending = map.get(key)
   if (pending) return pending
   const promise = task().finally(() => {
-    map.delete(key)
+    if (map.get(key) === promise) map.delete(key)
   })
   map.set(key, promise)
   return promise
@@ -162,9 +164,13 @@ function setOptimisticRemove(setStore: (...args: unknown[]) => void, input: Opti
   })
 }
 
-export const createDirSyncContext = (client: OpencodeClient, directory: string) => {
-  const globalSync = useGlobalSync()
-
+export const createDirSyncContext = (
+  client: OpencodeClient,
+  directory: string,
+  globalSync: Pick<ReturnType<typeof useGlobalSync>, "child" | "todo"> & {
+    data: Pick<ReturnType<typeof useGlobalSync>["data"], "project" | "session_todo">
+  } = useGlobalSync(),
+) => {
   type Child = ReturnType<(typeof globalSync)["child"]>
   type Setter = Child[1]
 
@@ -182,6 +188,8 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
   const optimistic = new Map<string, Map<string, OptimisticItem>>()
   const maxDirs = 30
   const seen = new Map<string, Set<string>>()
+  let revision = 0
+  const version = () => `${revision}:${projectSessionRevision(current()[0])}`
   const [meta, setMeta] = createStore({
     limit: {} as Record<string, number>,
     cursor: {} as Record<string, string | undefined>,
@@ -312,11 +320,13 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
     mode?: "replace" | "prepend"
   }) => {
     const key = keyFor(input.directory, input.sessionID)
+    const captured = version()
     if (meta.loading[key]) return
 
     setMeta("loading", key, true)
     await fetchMessages(input)
       .then((page) => {
+        if (captured !== version()) return
         if (!tracked(input.directory, input.sessionID)) return
         const next = mergeOptimisticPage(page, getOptimistic(input.directory, input.sessionID))
         for (const messageID of next.confirmed) {
@@ -344,6 +354,7 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
         })
       })
       .finally(() => {
+        if (captured !== version()) return
         setMeta(
           produce((draft) => {
             if (!tracked(input.directory, input.sessionID)) {
@@ -357,6 +368,19 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
   }
 
   return {
+    invalidate() {
+      // Existing readers may finish after the replacement, even after a new read starts.
+      revision++
+      const sessions = [...(seen.get(directory) ?? [])]
+      clearMeta(directory, sessions)
+      for (const key of optimistic.keys()) if (key.startsWith(`${directory}\n`)) optimistic.delete(key)
+      clearSessionPrefetchDirectory(directory)
+      seen.delete(directory)
+      inflight.clear()
+      inflightDiff.clear()
+      inflightTodo.clear()
+      return sessions
+    },
     get data() {
       return current()[0]
     },
@@ -416,6 +440,7 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
         })
       },
       async sync(sessionID: string, opts?: { force?: boolean }) {
+        const captured = version()
         const [store, setStore] = globalSync.child(directory)
         const key = keyFor(directory, sessionID)
 
@@ -435,6 +460,7 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
           const pending = getSessionPrefetchPromise(directory, sessionID)
           if (pending) {
             await pending
+            if (captured !== version()) return
             const seeded = getSessionPrefetch(directory, sessionID)
             if (seeded && store.message[sessionID] !== undefined && meta.limit[key] === undefined) {
               batch(() => {
@@ -455,6 +481,7 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
             hasSession && !opts?.force
               ? Promise.resolve()
               : retry(() => client.session.get({ sessionID })).then((session) => {
+                  if (captured !== version()) return
                   if (!tracked(directory, sessionID)) return
                   const data = session.data
                   if (!data) return
@@ -486,6 +513,7 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
         })
       },
       async diff(sessionID: string, opts?: { force?: boolean }) {
+        const captured = version()
         const [store, setStore] = globalSync.child(directory)
         touch(directory, setStore, sessionID)
         if (store.session_diff[sessionID] !== undefined && !opts?.force) return
@@ -493,12 +521,14 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
         const key = keyFor(directory, sessionID)
         return runInflight(inflightDiff, key, () =>
           retry(() => client.session.diff({ sessionID })).then((diff) => {
+            if (captured !== version()) return
             if (!tracked(directory, sessionID)) return
             setStore("session_diff", sessionID, reconcile(list(diff.data), { key: "file" }))
           }),
         )
       },
       async todo(sessionID: string, opts?: { force?: boolean }) {
+        const captured = version()
         const [store, setStore] = globalSync.child(directory)
         touch(directory, setStore, sessionID)
         const existing = store.todo[sessionID]
@@ -517,6 +547,7 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
         const key = keyFor(directory, sessionID)
         return runInflight(inflightTodo, key, () =>
           retry(() => client.session.todo({ sessionID })).then((todo) => {
+            if (captured !== version()) return
             if (!tracked(directory, sessionID)) return
             const list = todo.data ?? []
             setStore("todo", sessionID, reconcile(list, { key: "id" }))
@@ -564,9 +595,11 @@ export const createDirSyncContext = (client: OpencodeClient, directory: string) 
         evict(_directory, setStore, [sessionID])
       },
       fetch: async (count = 10) => {
+        const captured = version()
         const [store, setStore] = globalSync.child(directory)
         setStore("limit", (x) => x + count)
         await client.session.list().then((x) => {
+          if (captured !== version()) return
           const sessions = (x.data ?? [])
             .filter((s) => !!s?.id)
             .sort((a, b) => cmp(a.id, b.id))

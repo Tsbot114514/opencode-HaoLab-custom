@@ -15,6 +15,7 @@ import { createEffect, createMemo, createResource, createSignal, For, onCleanup,
 import { createStore } from "solid-js/store"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { DialogSelectProvider } from "@/components/dialog-select-provider"
+import { ProjectBackup } from "@/components/project-backup"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
@@ -1109,7 +1110,7 @@ export default function ManagerPage() {
             </Show>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
-            <div class="text-12-medium text-v2-text-text-base mb-2">数据存储</div>
+            <div class="text-12-medium text-v2-text-text-base mb-2">数据存储（全局迁移）</div>
             <p class="text-12-regular text-v2-text-text-muted leading-5">
               修改 OpenCode 全局数据目录。迁移会复制默认数据文件夹，并自动重启后从新位置读取。
             </p>
@@ -1152,6 +1153,7 @@ export default function ManagerPage() {
               <p class="mt-2 text-12-regular text-v2-text-text-muted leading-5 break-words">{storage.message}</p>
             </Show>
           </section>
+          <ProjectBackup />
         </div>
       </aside>
     </main>

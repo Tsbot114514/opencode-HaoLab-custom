@@ -3,12 +3,18 @@ import { OpenApi } from "effect/unstable/httpapi"
 import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 
 type Method = "get" | "post" | "put" | "delete" | "patch"
-type OpenApiSchema = { readonly $ref?: string }
+type OpenApiSchema = {
+  readonly $ref?: string
+  readonly properties?: Record<string, OpenApiSchema>
+  readonly anyOf?: OpenApiSchema[]
+  readonly required?: string[]
+}
 type OpenApiResponse = {
   readonly description?: string
   readonly content?: Record<string, { readonly schema?: OpenApiSchema }>
 }
 type OpenApiOperation = {
+  readonly description?: string
   readonly responses?: Record<string, OpenApiResponse>
   readonly security?: unknown
 }
@@ -18,6 +24,46 @@ type OpenApiSpec = { readonly paths: Record<string, OpenApiPathItem> }
 const methods = ["get", "post", "put", "delete", "patch"] as const
 
 const allowedV2BuiltInEndpointErrors: string[] = []
+
+test("migration OpenAPI documents agent discovery and explicit overwrite consent", () => {
+  const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+  const backup = spec.paths["/project/backup"].post?.description
+  const inspect = spec.paths["/project/backup/inspect"].post?.description
+  const restore = spec.paths["/project/restore"].post?.description
+
+  expect(backup).toContain("GET /doc")
+  expect(backup).toContain("management session outside the source")
+  expect(inspect).toContain("15 minutes")
+  expect(inspect).toContain("Times are advisory")
+  expect(restore).toContain("explicit user confirmation")
+  expect(restore).toContain("BOTH files and sessions")
+  expect(restore).toContain("do not prove human consent")
+  expect(restore).toContain("never blindly retry")
+})
+
+test("migration responses preserve genuine nulls without making fields optional", () => {
+  const spec = OpenApi.fromApi(PublicApi)
+  const paths = (spec as OpenApiSpec).paths
+  const inspect = paths["/project/backup/inspect"].post?.responses?.["200"].content?.["application/json"].schema
+  const restore = paths["/project/restore"].post?.responses?.["200"].content?.["application/json"].schema
+  const nil = { $ref: "#/components/schemas/ProjectMigrationNull" }
+
+  expect(spec.components.schemas.ProjectMigrationNull).toEqual({ type: "null" })
+  for (const key of ["directory", "local", "previewToken"]) {
+    expect(inspect?.properties?.[key].anyOf).toContainEqual(nil)
+    expect(inspect?.required).toContain(key)
+  }
+  const local = inspect?.properties?.local.anyOf?.find((schema) => schema.properties)
+  for (const summary of [inspect?.properties?.package, local]) {
+    for (const key of ["filesUpdatedAt", "sessionsUpdatedAt"]) {
+      expect(summary?.properties?.[key].anyOf).toContainEqual(nil)
+      expect(summary?.required).toContain(key)
+    }
+  }
+  expect(restore?.properties?.safetyPath.anyOf).toContainEqual(nil)
+  expect(restore?.required).toContain("safetyPath")
+  expect(restore?.properties?.directory.anyOf).toBeUndefined()
+})
 
 function v2Operations(spec: OpenApiSpec) {
   return Object.entries(spec.paths).flatMap(([path, item]) =>

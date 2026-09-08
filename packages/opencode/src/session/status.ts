@@ -52,6 +52,7 @@ export const Event = {
 export interface Interface {
   readonly get: (sessionID: SessionID) => Effect.Effect<Info>
   readonly list: () => Effect.Effect<Map<SessionID, Info>>
+  readonly active: () => Effect.Effect<ReadonlySet<string>>
   readonly set: (sessionID: SessionID, status: Info) => Effect.Effect<void>
 }
 
@@ -61,9 +62,19 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+    const states = new Set<Map<SessionID, Info>>()
 
-    const state = yield* InstanceState.make(
-      Effect.fn("SessionStatus.state")(() => Effect.succeed(new Map<SessionID, Info>())),
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        const data = new Map<SessionID, Info>()
+        states.add(data)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            states.delete(data)
+          }),
+        )
+        return data
+      }),
     )
 
     const get = Effect.fn("SessionStatus.get")(function* (sessionID: SessionID) {
@@ -86,7 +97,14 @@ export const layer = Layer.effect(
       data.set(sessionID, status)
     })
 
-    return Service.of({ get, list, set })
+    const active = () =>
+      Effect.sync(
+        () =>
+          new Set(
+            [...states].flatMap((state) => [...state].filter(([, status]) => status.type !== "idle").map(([id]) => id)),
+          ),
+      )
+    return Service.of({ get, list, set, active })
   }),
 )
 

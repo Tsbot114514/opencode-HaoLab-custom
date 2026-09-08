@@ -27,6 +27,7 @@ import { formatServerError } from "@/utils/server-errors"
 import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/solid-query"
 import { createRefreshQueue } from "./global-sync/queue"
 import { directoryKey } from "./global-sync/utils"
+import { projectRestoreDirectories, projectSessionRevision, resetProjectSessions } from "./global-sync/project-restore"
 import { useServer } from "./server"
 import { PathKey } from "@/utils/path-key"
 import { createDirSyncContext } from "./directory-sync"
@@ -228,6 +229,7 @@ function createGlobalSync() {
 
     children.pin(key)
     const [store, setStore] = children.child(directory, { bootstrap: false })
+    const revision = projectSessionRevision(store)
     const meta = sessionMeta.get(key)
     if (meta && meta.limit >= store.limit) {
       const next = trimSessions(store.session, {
@@ -253,6 +255,7 @@ function createGlobalSync() {
             list: (query) => globalSDK.client.session.list(query),
           })
             .then((x) => {
+              if (projectSessionRevision(store) !== revision) return
               const nonArchived = (x.data ?? [])
                 .filter((s) => !!s?.id)
                 .filter((s) => !s.time?.archived)
@@ -292,7 +295,7 @@ function createGlobalSync() {
 
     sessionLoads.set(key, promise)
     void promise.finally(() => {
-      sessionLoads.delete(key)
+      if (sessionLoads.get(key) === promise) sessionLoads.delete(key)
       children.unpin(key)
     })
     return promise
@@ -307,6 +310,7 @@ function createGlobalSync() {
     children.pin(key)
     const promise = Promise.resolve().then(async () => {
       const child = children.ensureChild(directory)
+      const revision = projectSessionRevision(child[0])
       const cache = children.vcsCache.get(key)
       if (!cache) return
       const sdk = sdkFor(directory)
@@ -320,7 +324,10 @@ function createGlobalSync() {
         },
         sdk,
         store: child[0],
-        setStore: child[1],
+        setStore: ((...args: unknown[]) => {
+          if (projectSessionRevision(child[0]) !== revision) return
+          return (child[1] as (...args: unknown[]) => unknown)(...args)
+        }) as (typeof child)[1],
         vcsCache: cache,
         loadSessions,
         translate: language.t,
@@ -353,7 +360,8 @@ function createGlobalSync() {
 
   function openDirectoryEvent(directory: string, event: { type: string; properties?: unknown }) {
     if (event.type !== "session.created" && event.type !== "session.updated") return
-    const session = (event.properties as { info?: { directory?: string; time?: { archived?: number } } } | undefined)?.info
+    const session = (event.properties as { info?: { directory?: string; time?: { archived?: number } } } | undefined)
+      ?.info
     if (session?.time?.archived) return
     openProjectFromEvent(session?.directory ?? directory)
   }
@@ -365,6 +373,33 @@ function createGlobalSync() {
     const recent = bootingRoot || Date.now() - bootedAt < 1500
 
     if (directory === "global") {
+      for (const key of projectRestoreDirectories(event, Object.keys(children.children))) {
+        const contexts = [...dirSyncContexts.entries()]
+          .filter(([directory]) => directoryKey(directory) === key)
+          .map(([, context]) => ({ context, sessions: context.invalidate() }))
+        const [store, setStore] = children.children[key]
+        resetProjectSessions({
+          directory: key,
+          store,
+          setStore,
+          sessionMeta,
+          sessionLoads,
+          clearTodo: (id) => setSessionTodo(id, undefined),
+          clearQuery: (directory) =>
+            queryClient.removeQueries({ ...queryOptionsApi.sessions(directoryKey(directory)), exact: true }),
+        })
+        void loadSessions(key).then(() =>
+          Promise.allSettled(
+            contexts.flatMap(({ context, sessions }) =>
+              sessions.map((id) =>
+                context.session
+                  .sync(id, { force: true })
+                  .then(() => Promise.all([context.session.diff(id), context.session.todo(id)])),
+              ),
+            ),
+          ),
+        )
+      }
       applyGlobalEvent({
         event,
         project: globalStore.project,

@@ -31,6 +31,7 @@ export type Event =
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
   | EventProjectUpdated
+  | EventProjectRestored
   | EventSessionCompacted
   | EventVcsBranchUpdated
   | EventWorkspaceReady
@@ -835,6 +836,7 @@ export type GlobalEvent = {
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
     | EventProjectUpdated
+    | EventProjectRestored
     | EventSessionCompacted
     | EventVcsBranchUpdated
     | EventWorkspaceReady
@@ -1713,6 +1715,12 @@ export type McpStatus =
 export type McpUnsupportedOAuthError = {
   error: string
 }
+
+export type ProjectBackupError = {
+  message: string
+}
+
+export type ProjectMigrationNull = null
 
 export type NotFoundError = {
   name: "NotFoundError"
@@ -2671,6 +2679,14 @@ export type EventProjectUpdated = {
   id: string
   type: "project.updated"
   properties: Project
+}
+
+export type EventProjectRestored = {
+  id: string
+  type: "project.restored"
+  properties: {
+    directory: string
+  }
 }
 
 export type EventSessionCompacted = {
@@ -5439,6 +5455,166 @@ export type McpDisconnectResponses = {
 }
 
 export type McpDisconnectResponse = McpDisconnectResponses[keyof McpDisconnectResponses]
+
+export type ProjectBackupData = {
+  body?: {
+    path: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/project/backup"
+}
+
+export type ProjectBackupErrors = {
+  /**
+   * ProjectBackupError | InvalidRequestError
+   */
+  400: ProjectBackupError | InvalidRequestError
+}
+
+export type ProjectBackupError2 = ProjectBackupErrors[keyof ProjectBackupErrors]
+
+export type ProjectBackupResponses = {
+  /**
+   * Success
+   */
+  200: {
+    path: string
+    sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    warnings: Array<string>
+  }
+}
+
+export type ProjectBackupResponse = ProjectBackupResponses[keyof ProjectBackupResponses]
+
+export type ProjectInspectBackupData = {
+  body?: {
+    path: string
+    directory?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/project/backup/inspect"
+}
+
+export type ProjectInspectBackupErrors = {
+  /**
+   * ProjectBackupError | InvalidRequestError
+   */
+  400: ProjectBackupError | InvalidRequestError
+}
+
+export type ProjectInspectBackupError = ProjectInspectBackupErrors[keyof ProjectInspectBackupErrors]
+
+export type ProjectInspectBackupResponses = {
+  /**
+   * Success
+   */
+  200: {
+    package: {
+      name: string
+      identity: string
+      createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      filesUpdatedAt:
+        | number
+        | "NaN"
+        | "Infinity"
+        | "-Infinity"
+        | "Infinity"
+        | "-Infinity"
+        | "NaN"
+        | ProjectMigrationNull
+      sessionsUpdatedAt:
+        | number
+        | "NaN"
+        | "Infinity"
+        | "-Infinity"
+        | "Infinity"
+        | "-Infinity"
+        | "NaN"
+        | ProjectMigrationNull
+      files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+    candidates: Array<string>
+    directory: string | ProjectMigrationNull
+    action: "select-target" | "create" | "replace"
+    local:
+      | {
+          filesUpdatedAt:
+            | number
+            | "NaN"
+            | "Infinity"
+            | "-Infinity"
+            | "Infinity"
+            | "-Infinity"
+            | "NaN"
+            | ProjectMigrationNull
+          sessionsUpdatedAt:
+            | number
+            | "NaN"
+            | "Infinity"
+            | "-Infinity"
+            | "Infinity"
+            | "-Infinity"
+            | "NaN"
+            | ProjectMigrationNull
+          files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      | ProjectMigrationNull
+    previewToken: string | ProjectMigrationNull
+    warnings: Array<string>
+  }
+}
+
+export type ProjectInspectBackupResponse = ProjectInspectBackupResponses[keyof ProjectInspectBackupResponses]
+
+export type ProjectRestoreData = {
+  body?: {
+    path: string
+    directory: string
+    previewToken: string
+    overwrite: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/project/restore"
+}
+
+export type ProjectRestoreErrors = {
+  /**
+   * ProjectBackupError | InvalidRequestError
+   */
+  400: ProjectBackupError | InvalidRequestError
+}
+
+export type ProjectRestoreError = ProjectRestoreErrors[keyof ProjectRestoreErrors]
+
+export type ProjectRestoreResponses = {
+  /**
+   * Success
+   */
+  200: {
+    directory: string
+    sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    warnings: Array<string>
+    safetyPath: string | ProjectMigrationNull
+  }
+}
+
+export type ProjectRestoreResponse = ProjectRestoreResponses[keyof ProjectRestoreResponses]
 
 export type ProjectListData = {
   body?: never
