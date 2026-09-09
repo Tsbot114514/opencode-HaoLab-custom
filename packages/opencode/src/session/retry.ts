@@ -173,7 +173,7 @@ function parseJSON(value: unknown) {
   })
 }
 
-export function policy(opts: {
+type PolicyOptions = {
   provider: string
   parse: (error: unknown) => Err
   maxAttempts?: number
@@ -184,28 +184,47 @@ export function policy(opts: {
     action?: Retryable["action"]
     next: number
   }) => Effect.Effect<void>
-}) {
+}
+
+function makePolicy(opts: PolicyOptions, attempt: (meta: Schedule.InputMetadata<unknown>) => number) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
-      if (!retry) return Cause.done(meta.attempt)
+      const currentAttempt = attempt(meta)
+      if (!retry) return Cause.done(currentAttempt)
       const maxAttempts = opts.maxAttempts ?? RETRY_DEFAULT_MAX_ATTEMPTS
-      if (meta.attempt > maxAttempts) return Cause.done(meta.attempt)
+      if (currentAttempt > maxAttempts) return Cause.done(currentAttempt)
       return Effect.gen(function* () {
-        const wait = delay(meta.attempt, MessageV2.APIError.isInstance(error) ? error : undefined)
+        const wait = delay(currentAttempt, MessageV2.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
-          attempt: meta.attempt,
+          attempt: currentAttempt,
           maxAttempts,
           message: retry.message,
           action: retry.action,
           next: now + wait,
         })
-        return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
+        return [currentAttempt, Duration.millis(wait)] as [number, Duration.Duration]
       })
     }),
   )
+}
+
+export function policy(opts: PolicyOptions) {
+  return makePolicy(opts, (meta) => meta.attempt)
+}
+
+export function resettablePolicy(opts: PolicyOptions) {
+  const state = { attempt: 0 }
+  return {
+    schedule: makePolicy(opts, () => ++state.attempt),
+    reset() {
+      const retried = state.attempt > 0
+      state.attempt = 0
+      return retried
+    },
+  }
 }
 
 export * as SessionRetry from "./retry"

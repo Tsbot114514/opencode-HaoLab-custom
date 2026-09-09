@@ -142,6 +142,29 @@ describe("session.retry.delay", () => {
     }),
   )
 
+  it.live("resettable policy restarts attempts after recovery", () =>
+    Effect.gen(function* () {
+      const attempts: number[] = []
+      const retry = SessionRetry.resettablePolicy({
+        provider: "test",
+        parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+        maxAttempts: 2,
+        set: (info) => Effect.sync(() => attempts.push(info.attempt)),
+      })
+      const step = yield* Schedule.toStepWithMetadata(retry.schedule)
+      const error = apiError({ "retry-after-ms": "0" })
+
+      yield* step(error)
+      yield* step(error)
+      expect(retry.reset()).toBe(true)
+      yield* step(error)
+
+      expect(attempts).toEqual([1, 2, 1])
+      expect(retry.reset()).toBe(true)
+      expect(retry.reset()).toBe(false)
+    }),
+  )
+
   it.live("policy disables retries when the configured limit is zero", () =>
     Effect.gen(function* () {
       const attempts: number[] = []

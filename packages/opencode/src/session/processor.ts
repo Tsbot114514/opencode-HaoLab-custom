@@ -783,6 +783,38 @@ export const layer = Layer.effect(
         const cfg = yield* config.get()
         ctx.shouldBreak = cfg.experimental?.continue_loop_on_deny !== true
 
+        const retry = SessionRetry.resettablePolicy({
+          provider: input.model.providerID,
+          parse,
+          maxAttempts: cfg.retry?.maxAttempts,
+          set: (info) => {
+            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            const event = flags.experimentalEventSystem
+              ? events.publish(SessionEvent.Retried, {
+                  sessionID: ctx.sessionID,
+                  attempt: info.attempt,
+                  error: {
+                    message: info.message,
+                    isRetryable: true,
+                  },
+                  timestamp: DateTime.makeUnsafe(Date.now()),
+                })
+              : Effect.void
+            return event.pipe(
+              Effect.andThen(
+                status.set(ctx.sessionID, {
+                  type: "retry",
+                  attempt: info.attempt,
+                  maxAttempts: info.maxAttempts,
+                  message: info.message,
+                  action: info.action,
+                  next: info.next,
+                }),
+              ),
+            )
+          },
+        })
+
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
@@ -793,7 +825,12 @@ export const layer = Layer.effect(
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) =>
+                Effect.gen(function* () {
+                  yield* handleEvent(event)
+                  if (retry.reset()) yield* status.set(ctx.sessionID, { type: "busy" })
+                }),
+              ),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
@@ -810,39 +847,7 @@ export const layer = Layer.effect(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
             ),
-            Effect.retry(
-              SessionRetry.policy({
-                provider: input.model.providerID,
-                parse,
-                maxAttempts: cfg.retry?.maxAttempts,
-                set: (info) => {
-                  // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                  const event = flags.experimentalEventSystem
-                    ? events.publish(SessionEvent.Retried, {
-                        sessionID: ctx.sessionID,
-                        attempt: info.attempt,
-                        error: {
-                          message: info.message,
-                          isRetryable: true,
-                        },
-                        timestamp: DateTime.makeUnsafe(Date.now()),
-                      })
-                    : Effect.void
-                  return event.pipe(
-                    Effect.andThen(
-                      status.set(ctx.sessionID, {
-                        type: "retry",
-                        attempt: info.attempt,
-                        maxAttempts: info.maxAttempts,
-                        message: info.message,
-                        action: info.action,
-                        next: info.next,
-                      }),
-                    ),
-                  )
-                },
-              }),
-            ),
+            Effect.retry(retry.schedule),
             Effect.catch(halt),
             Effect.ensuring(cleanup()),
           )
