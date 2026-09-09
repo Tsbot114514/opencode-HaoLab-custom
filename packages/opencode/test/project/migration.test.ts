@@ -315,8 +315,12 @@ describe("confirmed project migration", () => {
         const safety = (await fs.readdir(safetyDir)).filter((name) => !before.has(name) && name.endsWith(".zip"))
         expect(safety.length).toBe(1)
         expect(
-          (await ProjectBackup.inspect({ path: path.join(safetyDir, safety[0]), directory: f.target })).package
-            .sessions,
+          (
+            await ProjectBackup.inspect({
+              path: path.join(await fs.realpath(safetyDir), safety[0]),
+              directory: f.target,
+            })
+          ).package.sessions,
         ).toBe(1)
         expect(await present(path.join(safetyDir, "apply.lock"))).toBe(false)
       } finally {

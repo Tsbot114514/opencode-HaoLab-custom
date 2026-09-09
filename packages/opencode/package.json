@@ -30,6 +30,11 @@
       "node": "./src/storage/db.node.ts",
       "default": "./src/storage/db.bun.ts"
     },
+    "#sqlite": {
+      "bun": "./src/storage/sqlite.bun.ts",
+      "node": "./src/storage/sqlite.node.ts",
+      "default": "./src/storage/sqlite.bun.ts"
+    },
     "#pty": {
       "bun": "./src/pty/pty.bun.ts",
       "node": "./src/pty/pty.node.ts",

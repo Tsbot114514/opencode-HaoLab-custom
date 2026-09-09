@@ -29,5 +29,6 @@ target
 opencode-dev
 UPCOMING_CHANGELOG.md
 logs/
+/backup/
 *.bun-build
 tsconfig.tsbuildinfo

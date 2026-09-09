@@ -163,6 +163,26 @@ describe("Git", () => {
     }),
   )
 
+  it.live("skips untracked files larger than the patch budget", () =>
+    Effect.gen(function* () {
+      const tmp = yield* scopedTmpdir({ git: true })
+      const file = "large.bin"
+      yield* Effect.promise(async () => {
+        await fs.writeFile(path.join(tmp.path, file), "")
+        await fs.truncate(path.join(tmp.path, file), 10_000_001)
+      })
+
+      const git = yield* Git.Service
+      const [patch, stat] = yield* Effect.all([
+        git.patchUntracked(tmp.path, file),
+        git.statUntracked(tmp.path, file),
+      ])
+
+      expect(patch).toEqual({ text: "", truncated: true })
+      expect(stat).toBeUndefined()
+    }),
+  )
+
   it.live("show() returns empty text for binary blobs", () =>
     Effect.gen(function* () {
       const tmp = yield* scopedTmpdir({ git: true })

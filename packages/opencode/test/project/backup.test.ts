@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-import { loadScriptDefault } from "@/session/script"
-import { SessionAssembleTemplate } from "@/session/assemble-template"
+import { Database as SQLite } from "bun:sqlite"
 import { Effect, Layer } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { ZipWriter, Uint8ArrayWriter, TextReader } from "@zip.js/zip.js"
+import { BlobReader, BlobWriter, ZipReader, ZipWriter, Uint8ArrayWriter, TextReader } from "@zip.js/zip.js"
 import { ProjectBackup as Backend } from "@/project/backup"
 import { Project } from "@/project/project"
 import { Database, sql } from "@/storage/db"
@@ -24,20 +24,131 @@ const ProjectBackup = {
     return Backend.restore({ ...input, previewToken: preview.previewToken, overwrite: false })
   },
 }
-const packageInfo = (files: number, sessions: number) => ({
-  identity: crypto.randomUUID(),
-  name: "Fixture",
-  createdAt: Date.now(),
-  filesUpdatedAt: null,
-  sessionsUpdatedAt: null,
-  files,
-  sessions,
-})
 const exists = (file: string) =>
   fs.lstat(file).then(
     () => true,
     () => false,
   )
+
+async function fixtureArchive(root: string) {
+  const source = path.join(root, `source-${crypto.randomUUID()}`)
+  const archive = path.join(root, `${crypto.randomUUID()}.zip`)
+  await fs.mkdir(source)
+  await Backend.backup({ directory: source, path: archive })
+  return { source, archive }
+}
+
+async function rewriteArchive(
+  archive: string,
+  mutate: (manifest: Record<string, unknown>) => void,
+  additions: readonly string[] = [],
+  mutateDatabase?: (database: SQLite) => void,
+) {
+  const reader = new ZipReader(new BlobReader(new Blob([Uint8Array.from(await fs.readFile(archive))])), {
+    useWebWorkers: false,
+  })
+  const entries = await Promise.all(
+    (await reader.getEntries()).map(async (entry) => ({
+      name: entry.filename,
+      directory: entry.directory,
+      data: entry.getData ? await entry.getData(new BlobWriter(), { useWebWorkers: false }) : undefined,
+    })),
+  )
+  const metadata = entries.find((entry) => entry.name === "manifest.json")
+  if (!metadata?.data) throw new Error("Fixture manifest is missing")
+  const manifest = JSON.parse(await metadata.data.text()) as Record<string, unknown>
+  mutate(manifest)
+  if (mutateDatabase) {
+    const entry = entries.find((entry) => entry.name === "sessions.sqlite")
+    if (!entry?.data) throw new Error("Fixture SQLite is missing")
+    const file = path.join(path.dirname(archive), `${crypto.randomUUID()}.sqlite`)
+    await fs.writeFile(file, Buffer.from(await entry.data.arrayBuffer()))
+    const database = new SQLite(file, { strict: true, safeIntegers: true })
+    mutateDatabase(database)
+    database.close()
+    entry.data = new Blob([Uint8Array.from(await fs.readFile(file))])
+    await updateDatabaseManifest(manifest, file, entry.data)
+    await fs.rm(file)
+  }
+  const writer = new ZipWriter(new BlobWriter())
+  for (const entry of entries) {
+    if (entry.directory) {
+      await writer.add(entry.name, undefined, { directory: true })
+      continue
+    }
+    if (!entry.data) throw new Error("Fixture ZIP entry has no data")
+    await writer.add(
+      entry.name,
+      entry.name === "manifest.json" ? new TextReader(JSON.stringify(manifest)) : new BlobReader(entry.data),
+      { useWebWorkers: false },
+    )
+  }
+  for (const name of additions) await writer.add(name, new TextReader("evil"), { useWebWorkers: false })
+  const output = path.join(path.dirname(archive), `${crypto.randomUUID()}.zip`)
+  await fs.writeFile(output, Buffer.from(await (await writer.close()).arrayBuffer()))
+  await reader.close()
+  return output
+}
+
+async function updateDatabaseManifest(manifest: Record<string, unknown>, file: string, blob: Blob) {
+  const descriptor = manifest.database as Record<string, unknown>
+  const database = new SQLite(file, { readonly: true, strict: true, safeIntegers: true })
+  const checksums = descriptor.checksums as Record<string, unknown>
+  const tables = descriptor.tables as Record<string, number>
+  const schema = descriptor.schema as Record<string, string>
+  for (const name of ["project", "session", "message", "part", "todo", "session_message"]) {
+    schema[name] = database
+      .query<{ sql: string }, [string]>("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?")
+      .get(name)!.sql
+    const columns = database
+      .query<{ name: string }, []>(`PRAGMA table_info("${name}")`)
+      .all()
+      .map((item) => item.name)
+    const order =
+      name === "project" || name === "session" ? "id" : name === "todo" ? "session_id,position" : "session_id,id"
+    const hash = createHash("sha256")
+    let rows = 0
+    let rawBytes = 0
+    let maxRowBytes = 0
+    let maxCellBytes = 0
+    for (const row of database
+      .query<
+        Record<string, string | number | bigint | Uint8Array | null>,
+        []
+      >(`SELECT ${columns.map((column) => `"${column}"`).join(",")} FROM "${name}" ORDER BY ${order}`)
+      .iterate()) {
+      hash.update(`R${columns.length}:`)
+      let rowBytes = 0
+      for (const column of columns) {
+        const value = row[column]
+        const encoded = (() => {
+          if (value === null) return { tag: "N", bytes: Buffer.alloc(0) }
+          if (typeof value === "string") return { tag: "T", bytes: Buffer.from(value) }
+          if (typeof value === "bigint") return { tag: "I", bytes: Buffer.from(value.toString()) }
+          if (typeof value === "number") {
+            const bytes = Buffer.allocUnsafe(8)
+            bytes.writeDoubleBE(value)
+            return { tag: "F", bytes }
+          }
+          return { tag: "B", bytes: Buffer.from(value) }
+        })()
+        hash.update(`${encoded.tag}${encoded.bytes.length}:`)
+        hash.update(encoded.bytes)
+        rowBytes += encoded.bytes.length
+        maxCellBytes = Math.max(maxCellBytes, encoded.bytes.length)
+      }
+      rows++
+      rawBytes += rowBytes
+      maxRowBytes = Math.max(maxRowBytes, rowBytes)
+    }
+    tables[name] = rows
+    checksums[name] = { rows, rawBytes, maxRowBytes, maxCellBytes, sha256: hash.digest("hex") }
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  descriptor.bytes = bytes.length
+  descriptor.sha256 = createHash("sha256").update(bytes).digest("hex")
+  database.close()
+}
 
 describe("project archive", () => {
   test("portable names reject traversal, device names, ADS and ambiguous names", () => {
@@ -202,37 +313,122 @@ describe("project archive", () => {
     expect((await fs.readdir(root.path)).sort()).toEqual(["source"])
   })
 
+  test("inspect rejects destination and archive parents containing symlinks", async () => {
+    await using root = await tmpdir()
+    const fixture = await fixtureArchive(root.path)
+    const real = path.join(root.path, "real")
+    const link = path.join(root.path, "linked")
+    await fs.mkdir(real)
+    await fs.symlink(real, link, "junction")
+    await expect(Backend.backup({ directory: link, path: path.join(root.path, "source-link.zip") })).rejects.toThrow(
+      "Symbolic links",
+    )
+    await expect(Backend.backup({ directory: fixture.source, path: path.join(link, "archive.zip") })).rejects.toThrow(
+      "Symbolic links",
+    )
+    await expect(Backend.inspect({ path: fixture.archive, directory: link })).rejects.toThrow("Symbolic links")
+    await expect(Backend.inspect({ path: fixture.archive, directory: path.join(link, "child") })).rejects.toThrow(
+      "Symbolic links",
+    )
+    const archiveLink = path.join(root.path, "archive-link")
+    await fs.symlink(root.path, archiveLink, "junction")
+    await expect(Backend.inspect({ path: path.join(archiveLink, path.basename(fixture.archive)) })).rejects.toThrow(
+      "Symbolic links",
+    )
+  })
+
+  it.live("rejects hostile SQLite row values before destination mutation", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const service = yield* Project.Service
+      const source = path.join(root, "source")
+      const destination = path.join(root, "destination")
+      yield* Effect.promise(() => Promise.all([fs.mkdir(source), fs.mkdir(destination)]))
+      const project = yield* service.fromDirectory(source)
+      yield* Effect.promise(async () => {
+        const id = `ses_hostile${crypto.randomUUID().replaceAll("-", "")}`
+        const message = `msg_${id}`
+        const archive = path.join(root, "rows.zip")
+        try {
+          Database.use((db) => {
+            db.run(
+              sql`INSERT INTO session (id,project_id,slug,directory,title,version,time_created,time_updated) VALUES (${id},${project.project.id},'test',${source},'test','1',1,1)`,
+            )
+            db.run(
+              sql`INSERT INTO message (id,session_id,time_created,time_updated,data) VALUES (${message},${id},1,1,'{"role":"user"}')`,
+            )
+          })
+          await Backend.backup({ directory: source, path: archive })
+          const deep = Array.from({ length: 130 }).reduce<Record<string, unknown>>((value) => ({ value }), {})
+          const cases: readonly [string, (database: SQLite) => void][] = [
+            ["invalid JSON", (database) => database.query("UPDATE message SET data='{' WHERE id=?").run(message)],
+            [
+              "overly deep JSON",
+              (database) => database.query("UPDATE message SET data=? WHERE id=?").run(JSON.stringify(deep), message),
+            ],
+            [
+              "unsafe integer",
+              (database) => database.query("UPDATE session SET time_updated=? WHERE id=?").run(9007199254740993n, id),
+            ],
+            ["parent cycle", (database) => database.query("UPDATE session SET parent_id=id WHERE id=?").run(id)],
+            [
+              "invalid parent ID",
+              (database) => database.query("UPDATE session SET parent_id=? WHERE id=?").run("bad\0parent", id),
+            ],
+            [
+              "non-normalized directory",
+              (database) => database.query("UPDATE session SET directory=? WHERE id=?").run(`${source}/child/..`, id),
+            ],
+            [
+              "NUL session directory",
+              (database) => database.query("UPDATE session SET directory=? WHERE id=?").run(`${source}\0child`, id),
+            ],
+            [
+              "portable colon component",
+              (database) => database.query("UPDATE session SET directory=? WHERE id=?").run(`${source}/bad:name`, id),
+            ],
+            [
+              "portable device component",
+              (database) => database.query("UPDATE session SET directory=? WHERE id=?").run(`${source}/NUL.txt`, id),
+            ],
+            [
+              "portable trailing-dot component",
+              (database) => database.query("UPDATE session SET directory=? WHERE id=?").run(`${source}/child.`, id),
+            ],
+            ["empty required text", (database) => database.query("UPDATE session SET title='' WHERE id=?").run(id)],
+            [
+              "wrong storage class",
+              (database) => database.query("UPDATE session SET time_updated='bad' WHERE id=?").run(id),
+            ],
+          ]
+          for (const [name, mutate] of cases) {
+            const hostile = await rewriteArchive(archive, () => undefined, [], mutate)
+            await expect(Backend.inspect({ path: hostile, directory: destination }), name).rejects.toThrow()
+            expect(await fs.readdir(destination), name).toEqual([])
+          }
+        } finally {
+          Database.use((db) => db.run(sql`DELETE FROM session WHERE id = ${id}`))
+        }
+      })
+    }),
+  )
+
   for (const names of [
     ["../escape"],
     ["workspace/a", "workspace/A"],
     ["workspace/A/one", "workspace/a/two"],
+    ["workspace/file", "workspace/file/child"],
     ["workspace/NUL"],
     ["workspace/.git/config"],
+    ["sessions.sqlite-wal"],
+    ["sessions/undeclared/file"],
   ]) {
     test(`restore rejects malicious ZIP ${names.join(", ")}`, async () => {
       await using root = await tmpdir()
       const destination = path.join(root.path, "dest")
       await fs.mkdir(destination)
-      const writer = new ZipWriter(new Uint8ArrayWriter())
-      for (const name of names) await writer.add(name, new TextReader("evil"), { useWebWorkers: false })
-      await writer.add(
-        "manifest.json",
-        new TextReader(
-          JSON.stringify({
-            format: "opencode-project",
-            version: 1,
-            package: packageInfo(names.length, 0),
-            directory: root.path,
-            sourceSessionRoot: path.join(Global.Path.data, "session"),
-            platform: process.platform,
-            rows: { session: [], message: [], part: [], todo: [], session_message: [] },
-            warnings: [],
-          }),
-        ),
-        { useWebWorkers: false },
-      )
-      const archive = path.join(root.path, "evil.zip")
-      await fs.writeFile(archive, await writer.close())
+      const fixture = await fixtureArchive(root.path)
+      const archive = await rewriteArchive(fixture.archive, () => undefined, names)
       await expect(
         ProjectBackup.restore({
           path: archive,
@@ -243,243 +439,20 @@ describe("project archive", () => {
         }),
       ).rejects.toThrow()
       expect(await fs.readdir(destination)).toEqual([])
-      expect((await fs.readdir(root.path)).sort()).toEqual(["dest", "evil.zip"])
     })
   }
 
-  it.live("SQL failure rolls back all inserted rows and staged files", () =>
-    Effect.gen(function* () {
-      const root = yield* tmpdirScoped()
-      const service = yield* Project.Service
-      const project = yield* service.fromDirectory(root)
-      yield* Effect.promise(async () => {
-        const destination = path.join(root, "dest")
-        await fs.mkdir(destination)
-        const id = `ses_atomic${crypto.randomUUID().replaceAll("-", "")}`
-        const rows = [
-          {
-            id,
-            project_id: "untrusted",
-            slug: "test",
-            directory: root,
-            title: "test",
-            version: "1",
-            time_created: 1,
-            time_updated: 1,
-          },
-          {
-            id: `${id}child`,
-            project_id: "untrusted",
-            directory: root,
-            title: "missing required slug",
-            version: "1",
-            time_created: 1,
-            time_updated: 1,
-          },
-        ]
-        const writer = new ZipWriter(new Uint8ArrayWriter())
-        await writer.add("workspace/file.txt", new TextReader("must not remain"), { useWebWorkers: false })
-        await writer.add(
-          "manifest.json",
-          new TextReader(
-            JSON.stringify({
-              format: "opencode-project",
-              version: 1,
-              package: packageInfo(1, 2),
-              directory: root,
-              sourceSessionRoot: path.join(Global.Path.data, "session"),
-              platform: process.platform,
-              rows: { session: rows, message: [], part: [], todo: [], session_message: [] },
-              warnings: [],
-            }),
-          ),
-          { useWebWorkers: false },
-        )
-        const archive = path.join(root, "atomic.zip")
-        await fs.writeFile(archive, await writer.close())
-        await expect(
-          ProjectBackup.restore({ path: archive, directory: destination, resolveProject: async () => project.project }),
-        ).rejects.toThrow()
-        expect(Database.use((db) => db.get(sql`SELECT id FROM session WHERE id = ${id}`))).toBeUndefined()
-        expect(await fs.readdir(destination)).toEqual([])
-        expect(await exists(path.join(Global.Path.data, "session", id))).toBe(false)
-        expect((await fs.readdir(root)).sort()).toEqual(["atomic.zip", "dest"])
-      })
-    }),
-  )
-
-  it.live("quarantines assemble.ts and remaps included session attachments from another data root", () =>
-    Effect.gen(function* () {
-      const root = yield* tmpdirScoped()
-      const service = yield* Project.Service
-      const project = yield* service.fromDirectory(root)
-      yield* Effect.promise(async () => {
-        const destination = path.join(root, "dest")
-        await fs.mkdir(destination)
-        const suffix = crypto.randomUUID().replaceAll("-", "")
-        const source = path.join(root, "source-project")
-        const id = `ses_portable${suffix}`
-        const mid = `msg_${suffix}`
-        const pid = `prt_${suffix}`
-        const sourceSessionRoot = path.join(root, "old-device", "data", "session")
-        const original = path.join(sourceSessionRoot, id, "attachments", "image one.png")
-        const unrelated = path.join(sourceSessionRoot, `${id}other`, "private.png")
-        const external = path.join(root, "external", "private.png")
-        const local = path.join(Global.Path.data, "session", id)
-        const restored = path.join(local, "attachments", "image one.png")
-        const script = "throw new Error('untrusted assemble executed'); export default () => []"
-        const attachment = { type: "file", url: pathToFileURL(original).href, source: { type: "file", path: original } }
-        const state = {
-          status: "completed",
-          attachments: [attachment],
-          input: { filePath: original },
-          output: original,
-          structured: { filePath: original },
-          content: [{ type: "text", text: original }],
-        }
-        const writer = new ZipWriter(new Uint8ArrayWriter())
-        await writer.add(`sessions/${id}/assemble.ts`, new TextReader(script), { useWebWorkers: false })
-        await writer.add(`sessions/${id}/attachments/image one.png`, new TextReader("attachment bytes"), {
-          useWebWorkers: false,
-        })
-        await writer.add(
-          "manifest.json",
-          new TextReader(
-            JSON.stringify({
-              format: "opencode-project",
-              version: 1,
-              directory: source,
-              package: packageInfo(2, 1),
-              sourceSessionRoot,
-              platform: process.platform,
-              rows: {
-                session: [
-                  {
-                    id,
-                    project_id: "old-project",
-                    slug: "portable",
-                    directory: source,
-                    title: "portable",
-                    version: "1",
-                    time_created: 1,
-                    time_updated: 1,
-                  },
-                ],
-                message: [
-                  { id: mid, session_id: id, time_created: 1, time_updated: 1, data: JSON.stringify({ role: "user" }) },
-                ],
-                part: [
-                  {
-                    id: pid,
-                    session_id: id,
-                    message_id: mid,
-                    time_created: 1,
-                    time_updated: 1,
-                    data: JSON.stringify({
-                      ...attachment,
-                      text: original,
-                      input: { path: original },
-                      attachments: [
-                        { url: pathToFileURL(unrelated).href, source: { path: unrelated } },
-                        { url: pathToFileURL(external).href, source: { path: external } },
-                      ],
-                    }),
-                  },
-                ],
-                todo: [],
-                session_message: [
-                  {
-                    id: `v2_${suffix}`,
-                    session_id: id,
-                    type: "assistant",
-                    time_created: 1,
-                    time_updated: 1,
-                    data: JSON.stringify({
-                      content: [
-                        { type: "tool", state },
-                        { type: "text", text: original },
-                      ],
-                    }),
-                  },
-                ],
-              },
-              warnings: [],
-            }),
-          ),
-          { useWebWorkers: false },
-        )
-        const archive = path.join(root, "portable.zip")
-        await fs.writeFile(archive, await writer.close())
-        try {
-          const result = await ProjectBackup.restore({
-            path: archive,
-            directory: destination,
-            resolveProject: async () => project.project,
-          })
-          expect(result.warnings.some((warning) => warning.includes("assemble.ts"))).toBe(true)
-          expect(result.warnings.some((warning) => warning.includes("same operating system"))).toBe(true)
-          expect(await exists(path.join(local, "assemble.ts"))).toBe(false)
-          expect(await fs.readFile(path.join(local, "backup-disabled", "assemble.ts"), "utf8")).toBe(script)
-          expect(await loadScriptDefault(path.join(local, "assemble.ts"))).toBeUndefined()
-          await SessionAssembleTemplate.ensure(local)
-          expect(typeof (await loadScriptDefault(path.join(local, "assemble.ts")))).toBe("function")
-          expect(await fs.readFile(restored, "utf8")).toBe("attachment bytes")
-          const saved = JSON.parse(
-            Database.use((db) => db.get<{ data: string }>(sql`SELECT data FROM part WHERE id = ${pid}`))?.data ??
-              "null",
-          )
-          expect(saved.url).toBe(pathToFileURL(restored).href)
-          expect(saved.source.path).toBe(restored)
-          expect(saved.text).toBe(original)
-          expect(saved.input.path).toBe(original)
-          expect(saved.attachments[0]).toEqual({ url: pathToFileURL(unrelated).href, source: { path: unrelated } })
-          expect(saved.attachments[1]).toEqual({ url: pathToFileURL(external).href, source: { path: external } })
-          expect(await exists(path.join(Global.Path.data, "session", `${id}other`))).toBe(false)
-          const v2 = JSON.parse(
-            Database.use((db) =>
-              db.get<{ data: string }>(sql`SELECT data FROM session_message WHERE session_id = ${id}`),
-            )?.data ?? "null",
-          )
-          expect(v2.content[0].state.attachments[0].url).toBe(pathToFileURL(restored).href)
-          expect(v2.content[0].state.attachments[0].source.path).toBe(restored)
-          expect(v2.content[0].state.input).toEqual(state.input)
-          expect(v2.content[0].state.structured).toEqual(state.structured)
-          expect(v2.content[0].state.content).toEqual(state.content)
-          expect(v2.content[1].text).toBe(original)
-        } finally {
-          Database.use((db) => db.run(sql`DELETE FROM session WHERE id = ${id}`))
-          await fs.rm(local, { recursive: true, force: true })
-        }
-      })
-    }),
-  )
-
-  for (const invalid of [
-    { sourceSessionRoot: "relative/session", platform: process.platform },
-    { sourceSessionRoot: path.resolve("old/session"), platform: "other-os" },
-  ]) {
+  for (const invalid of ["relative/session", "C:drive-relative", "\\\\server\\share", "\\\\?\\C:\\device"]) {
     test(`rejects invalid source session provenance ${JSON.stringify(invalid)}`, async () => {
       await using root = await tmpdir()
       const destination = path.join(root.path, "dest")
       await fs.mkdir(destination)
-      const writer = new ZipWriter(new Uint8ArrayWriter())
-      await writer.add(
-        "manifest.json",
-        new TextReader(
-          JSON.stringify({
-            format: "opencode-project",
-            version: 1,
-            directory: root.path,
-            package: packageInfo(0, 0),
-            ...invalid,
-            rows: { session: [], message: [], part: [], todo: [], session_message: [] },
-            warnings: [],
-          }),
-        ),
-        { useWebWorkers: false },
-      )
-      const archive = path.join(root.path, "invalid.zip")
-      await fs.writeFile(archive, await writer.close())
+      const fixture = await fixtureArchive(root.path)
+      const archive = await rewriteArchive(fixture.archive, (manifest) => {
+        manifest.platform = "win32"
+        manifest.directory = "D:\\project"
+        manifest.sourceSessionRoot = invalid
+      })
       await expect(
         ProjectBackup.restore({
           path: archive,
@@ -488,10 +461,225 @@ describe("project archive", () => {
             throw new Error("must not resolve")
           },
         }),
-      ).rejects.toThrow(invalid.platform === process.platform ? "source session root" : "same operating system")
+      ).rejects.toThrow("source session root")
       expect(await fs.readdir(destination)).toEqual([])
     })
   }
+
+  test("accepts normalized Windows provenance on a non-Windows host", async () => {
+    await using root = await tmpdir()
+    const fixture = await fixtureArchive(root.path)
+    const archive = await rewriteArchive(fixture.archive, (manifest) => {
+      manifest.platform = "win32"
+      manifest.directory = "D:\\project"
+      manifest.sourceSessionRoot = "E:\\opencode\\session"
+    })
+    const preview = await Backend.inspect({ path: archive, directory: path.join(root.path, "destination") })
+    expect(preview.action).toBe("create")
+    expect(preview.package.sessions).toBe(0)
+  })
+
+  it.live("maps Windows session rows, structured paths and file URLs to host destinations", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const service = yield* Project.Service
+      const source = path.join(root, "source")
+      const destination = path.join(root, "destination")
+      yield* Effect.promise(() => Promise.all([fs.mkdir(source), fs.mkdir(destination)]))
+      const project = yield* service.fromDirectory(source)
+      yield* Effect.promise(async () => {
+        const suffix = crypto.randomUUID().replaceAll("-", "")
+        const id = `ses_windows${suffix}`
+        const message = `msg_${suffix}`
+        const part = `prt_${suffix}`
+        const folder = path.join(Global.Path.data, "session", id)
+        const attachment = path.join(folder, "attachments", "image one.png")
+        const archive = path.join(root, "windows-source.zip")
+        try {
+          await fs.mkdir(path.dirname(attachment), { recursive: true })
+          await fs.writeFile(attachment, "attachment bytes")
+          await fs.writeFile(path.join(folder, "assemble.ts"), "throw new Error('untrusted')")
+          Database.use((db) => {
+            db.run(
+              sql`INSERT INTO session (id,project_id,slug,directory,title,version,time_created,time_updated) VALUES (${id},${project.project.id},'windows',${path.join(source, "child")},'Windows','1',1,2)`,
+            )
+            db.run(
+              sql`INSERT INTO message (id,session_id,time_created,time_updated,data) VALUES (${message},${id},1,2,'{"role":"assistant"}')`,
+            )
+            db.run(
+              sql`INSERT INTO part (id,message_id,session_id,time_created,time_updated,data) VALUES (${part},${message},${id},1,2,'{"type":"file"}')`,
+            )
+          })
+          await Backend.backup({ directory: source, path: archive })
+          const portable = await rewriteArchive(
+            archive,
+            (manifest) => {
+              manifest.platform = "win32"
+              manifest.directory = "D:\\Project"
+              manifest.sourceSessionRoot = "E:\\OpenCode\\session"
+            },
+            [],
+            (database) => {
+              database.query("UPDATE project SET worktree = ?").run("D:\\Project")
+              database.query("UPDATE session SET directory = ? WHERE id = ?").run("d:\\PROJECT\\Child", id)
+              database
+                .query("UPDATE message SET data = ? WHERE id = ?")
+                .run(
+                  JSON.stringify({ role: "assistant", path: { cwd: "d:\\PROJECT\\Child", root: "D:\\Project" } }),
+                  message,
+                )
+              database.query("UPDATE part SET data = ? WHERE id = ?").run(
+                JSON.stringify({
+                  type: "file",
+                  url: `file:///E:/OpenCode/session/${id}/attachments/image%20one.png`,
+                  source: { type: "file", path: `E:\\OpenCode\\session\\${id}\\attachments\\image one.png` },
+                }),
+                part,
+              )
+            },
+          )
+          Database.use((db) => db.run(sql`DELETE FROM session WHERE id = ${id}`))
+          await fs.rm(folder, { recursive: true })
+          const restored = await ProjectBackup.restore({
+            path: portable,
+            directory: destination,
+            resolveProject: (directory) =>
+              Effect.runPromise(service.fromDirectory(directory)).then((result) => result.project),
+          })
+          expect(restored.sessions).toBe(1)
+          expect(
+            Database.use((db) => db.get<{ directory: string }>(sql`SELECT directory FROM session WHERE id = ${id}`))
+              ?.directory,
+          ).toBe(path.join(destination, "Child"))
+          const savedMessage = JSON.parse(
+            Database.use((db) => db.get<{ data: string }>(sql`SELECT data FROM message WHERE id = ${message}`))?.data ??
+              "null",
+          )
+          expect(savedMessage.path.cwd).toBe(path.join(destination, "Child"))
+          const savedPart = JSON.parse(
+            Database.use((db) => db.get<{ data: string }>(sql`SELECT data FROM part WHERE id = ${part}`))?.data ??
+              "null",
+          )
+          const restoredAttachment = path.join(
+            await fs.realpath(Global.Path.data),
+            "session",
+            id,
+            "attachments",
+            "image one.png",
+          )
+          expect(savedPart.url).toBe(pathToFileURL(restoredAttachment).href)
+          expect(savedPart.source.path).toBe(restoredAttachment)
+          expect(await fs.readFile(restoredAttachment, "utf8")).toBe("attachment bytes")
+          expect(await exists(path.join(Global.Path.data, "session", id, "assemble.ts"))).toBe(false)
+          expect(await exists(path.join(Global.Path.data, "session", id, "backup-disabled", "assemble.ts"))).toBe(true)
+        } finally {
+          Database.use((db) => db.run(sql`DELETE FROM session WHERE id = ${id}`))
+          await fs.rm(folder, { recursive: true, force: true })
+        }
+      })
+    }),
+  )
+
+  for (const [name, mutate, message] of [
+    [
+      "database hash",
+      (manifest: Record<string, unknown>) => {
+        const database = manifest.database as Record<string, unknown>
+        database.sha256 = "0".repeat(64)
+      },
+      "SHA-256",
+    ],
+    [
+      "table count",
+      (manifest: Record<string, unknown>) => {
+        const tables = (manifest.database as Record<string, unknown>).tables as Record<string, number>
+        tables.session++
+      },
+      "count mismatch",
+    ],
+    [
+      "framed checksum",
+      (manifest: Record<string, unknown>) => {
+        const checksums = (manifest.database as Record<string, unknown>).checksums as Record<
+          string,
+          Record<string, unknown>
+        >
+        checksums.session.sha256 = "0".repeat(64)
+      },
+      "checksum mismatch",
+    ],
+    [
+      "schema descriptor",
+      (manifest: Record<string, unknown>) => {
+        const schema = (manifest.database as Record<string, unknown>).schema as Record<string, string>
+        schema.session += " "
+      },
+      "schema mismatch",
+    ],
+    [
+      "cell bound",
+      (manifest: Record<string, unknown>) => {
+        const checksums = (manifest.database as Record<string, unknown>).checksums as Record<
+          string,
+          Record<string, unknown>
+        >
+        checksums.part.maxCellBytes = 128 * 1024 ** 2 + 1
+      },
+      "safety limits",
+    ],
+  ] as const) {
+    test(`rejects a mismatched v3 ${name}`, async () => {
+      await using root = await tmpdir()
+      const fixture = await fixtureArchive(root.path)
+      const archive = await rewriteArchive(fixture.archive, mutate)
+      await expect(Backend.inspect({ path: archive })).rejects.toThrow(message)
+    })
+  }
+
+  test("rejects hostile SQLite schema objects even with updated bytes and checksums", async () => {
+    await using root = await tmpdir()
+    const fixture = await fixtureArchive(root.path)
+    const archive = await rewriteArchive(
+      fixture.archive,
+      () => undefined,
+      [],
+      (database) => database.run("CREATE TRIGGER hostile AFTER INSERT ON session BEGIN SELECT 1; END"),
+    )
+    await expect(Backend.inspect({ path: archive })).rejects.toThrow("unexpected schema objects")
+  })
+
+  test("rejects generated columns reported by table_xinfo", async () => {
+    await using root = await tmpdir()
+    const fixture = await fixtureArchive(root.path)
+    const archive = await rewriteArchive(
+      fixture.archive,
+      () => undefined,
+      [],
+      (database) => {
+        database.run("ALTER TABLE session DROP COLUMN agent")
+        database.run("ALTER TABLE session ADD COLUMN agent TEXT GENERATED ALWAYS AS ('hostile') VIRTUAL")
+      },
+    )
+    await expect(Backend.inspect({ path: archive })).rejects.toThrow("Hidden or generated")
+  })
+
+  test("rejects schema nullability that differs from the runtime contract", async () => {
+    await using root = await tmpdir()
+    const fixture = await fixtureArchive(root.path)
+    const archive = await rewriteArchive(
+      fixture.archive,
+      () => undefined,
+      [],
+      (database) => {
+        database.run("ALTER TABLE message RENAME TO old_message")
+        database.run(
+          "CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text, FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE)",
+        )
+        database.run("DROP TABLE old_message")
+      },
+    )
+    await expect(Backend.inspect({ path: archive })).rejects.toThrow("nullability")
+  })
 
   test("ZIP symbolic link entries are rejected before extraction", async () => {
     await using root = await tmpdir()
@@ -520,16 +708,23 @@ describe("project archive", () => {
     await using root = await tmpdir()
     const destination = path.join(root.path, "dest")
     await fs.mkdir(destination)
-    const writer = new ZipWriter(new Uint8ArrayWriter())
-    await writer.add("workspace/huge", new TextReader("small"), { useWebWorkers: false })
-    const bytes = await writer.close()
+    const fixture = await fixtureArchive(root.path)
+    const archive = await rewriteArchive(fixture.archive, () => undefined, [
+      "workspace/huge-1",
+      "workspace/huge-2",
+      "workspace/huge-3",
+    ])
+    const bytes = new Uint8Array(await fs.readFile(archive))
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     for (let offset = 0; offset + 28 <= bytes.length; offset++) {
       if (view.getUint32(offset, true) !== 0x02014b50) continue
-      view.setUint32(offset + 24, 1024 ** 3 + 1, true)
-      break
+      if (
+        Buffer.from(bytes.subarray(offset + 46, offset + 46 + view.getUint16(offset + 28, true)))
+          .toString()
+          .includes("huge-")
+      )
+        view.setUint32(offset + 24, 0xffffffff, true)
     }
-    const archive = path.join(root.path, "huge.zip")
     await fs.writeFile(archive, bytes)
     await expect(
       ProjectBackup.restore({

@@ -11,7 +11,9 @@ the same migration identity. Timestamps inform the decision; they never decide i
 `POST /project/backup?directory=<source>` accepts `{ "path": "<absolute ZIP path>" }`
 and returns `{ path, sessions, files, warnings }`. Output must not already exist and
 must be outside the source. All paths are server filesystem paths; these endpoints
-do not upload, download or restart a server.
+do not upload, download or restart a server. User-facing `files` counts include only
+portable workspace, session-folder and diff files; `manifest.json` and the transport
+`sessions.sqlite` are excluded.
 
 `POST /project/backup/inspect?directory=<manager>` accepts
 `{ "path": "<absolute ZIP path>", "directory": "<optional absolute target>" }` and returns:
@@ -149,25 +151,30 @@ also examines known project worktrees/sandboxes and session directories, verifyi
 their actual markers. A marker is identification metadata, not a cryptographic
 signature or proof of package trust. Export therefore requires a writable source.
 
-Version 1 ZIPs contain `manifest.json`, `workspace/`, `sessions/<id>/`, and
-`diffs/<id>.json`. The manifest requires `package`, `sourceSessionRoot`, and `platform`
-metadata. Only the same OS and compatible database schemas are supported. Workspace
-and application-data paths may differ between devices. Cross-OS path conversion is
-not implemented. Source paths describe remapping; restore never reads files from them.
+Version 3 ZIPs contain `manifest.json`, `sessions.sqlite`, `workspace/`,
+`sessions/<id>/`, and `diffs/<id>.json`. The SQLite database contains only scoped
+`project`, `session`, `message`, `part`, `todo`, and `session_message` rows. The
+manifest records its exact bytes, SHA-256, table counts, exact schema text, and
+streamed `framed-cells-v1` checksums; rows are never embedded in manifest JSON.
+Windows, macOS, and Linux packages can restore across platforms. Source paths are
+validated and interpreted with their source platform's path rules, then relative
+segments are mapped to host destinations. Source paths describe remapping; restore
+never reads files from them.
 
 All sessions whose directory is the selected directory or a descendant are captured
 in a consistent read-only SQL transaction, without list pagination or archived/child
 filters. Legacy messages, parts, todos, v2 session messages, session-local files and
 session diffs are included. Non-Git sessions sharing the global project ID remain
-directory-isolated. Project rows, global permission grants, credentials, live DBs,
+directory-isolated. Referenced project rows are included as validation evidence only;
+restored sessions use the locally resolved project. Global permission grants, credentials, live DBs,
 event journals, sharing secrets and snapshots are not exported.
 
 Hidden/ignored workspace files, including project-local `.env` secrets, are included.
 Treat packages and safety ZIPs as sensitive; encryption is not provided. Excluded
 directories at every depth: `.git`, `node_modules`, `.cache`, `.next`, `.turbo`,
 `__pycache__`, `.venv`, `venv`. `.git` files / linked worktrees are refused. Package
-`files` counts all archived non-directory content except the manifest, including
-session files and the identity marker. File timestamps are retained where ZIP allows
+`files` counts portable archived non-directory content, including session files and
+the identity marker, but excludes both the manifest and `sessions.sqlite`. File timestamps are retained where ZIP allows
 (precision can be limited). The workspace update time excludes the identity marker;
 session update time includes SQL times and local context files, including metadata.
 
@@ -231,11 +238,12 @@ history, not usable snapshots. Out-of-scope imported parent links are cleared.
 ## Bounds And Recovery
 
 Traversal, duplicate/case-ambiguous paths, Windows-invalid filenames, encrypted ZIPs,
-portable links and special files are refused. Limits: 100,000 entries, 1 GiB per ZIP
-file, 10 GiB expanded state, 64 MiB manifest / individual session-diff JSON, and
+portable links and special files are refused. Limits: 100,000 entries, 10 GiB per ZIP
+file and expanded state, 64 MiB manifest / individual session-diff JSON, and
 256 MiB individual ZIP metadata reads. Preview hashing also has entry/byte bounds;
 very large local dependency trees may require cleanup before migration. Large files
-stream; relational metadata is held in memory. Ownership, ACLs and executable bits
+and imported SQLite rows stream; large tables are not converted to JSON or held in
+memory. Ownership, ACLs and executable bits
 are not preserved.
 
 `project-migrations/apply.lock` serializes applies across targets/processes. It is an
