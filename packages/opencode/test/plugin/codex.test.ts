@@ -122,12 +122,12 @@ describe("plugin.codex", () => {
     })
   })
 
-  test("uses ChatGPT Codex context limits for GPT-5.5 and GPT-5.6 models", async () => {
+  test("allows current ChatGPT Codex models and applies known context limits", async () => {
     const hooks = await CodexAuthPlugin({} as never)
     const limit = { context: 1_050_000, input: 922_000, output: 128_000 }
     const provider = {
       models: Object.fromEntries(
-        ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((id) => [
+        ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6"].map((id) => [
           id,
           { id, api: { id }, limit },
         ]),
@@ -140,6 +140,7 @@ describe("plugin.codex", () => {
     expect(models["gpt-5.6-sol"]?.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
     expect(models["gpt-5.6-terra"]?.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
     expect(models["gpt-5.6-luna"]?.limit).toEqual({ context: 500_000, input: 372_000, output: 128_000 })
+    expect(models["gpt-6"]?.limit).toEqual(limit)
     expect(await hooks.provider!.models!(provider as never, { auth: { type: "api" } } as never)).toBe(
       provider.models as never,
     )
