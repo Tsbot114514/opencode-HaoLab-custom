@@ -6,3 +6,5 @@ app.log
 script/build-*.ts
 temporary-*.md
 .artifacts
+src/provider/models-snapshot.js
+src/provider/models-snapshot.d.ts
