@@ -5545,7 +5545,7 @@ export type ProjectInspectBackupResponses = {
     }
     candidates: Array<string>
     directory: string | ProjectMigrationNull
-    action: "select-target" | "create" | "replace"
+    action: "select-target" | "create" | "merge" | "replace"
     local:
       | {
           filesUpdatedAt:
@@ -5581,8 +5581,10 @@ export type ProjectRestoreData = {
   body?: {
     path: string
     directory: string
-    previewToken: string
-    overwrite: boolean
+    mode?: "merge" | "replace"
+    verify?: boolean
+    safetyBackup?: boolean
+    previewToken?: string
   }
   path?: never
   query?: {
@@ -5610,6 +5612,8 @@ export type ProjectRestoreResponses = {
     sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     warnings: Array<string>
+    skippedSessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    skippedFiles: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     safetyPath: string | ProjectMigrationNull
   }
 }

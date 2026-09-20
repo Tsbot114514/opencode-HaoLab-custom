@@ -56,14 +56,16 @@ async function prepare(root: string, service: Project.Interface) {
     await fs.rm(folder(id), { recursive: true, force: true })
   }
   const archive = path.join(root, "A.zip")
-  const apply = async (file: string, directory: string, overwrite = false) => {
+  const apply = async (file: string, directory: string, replace = false) => {
+    if (!replace) return ProjectBackup.restore({ path: file, directory, resolveProject })
     const preview = await ProjectBackup.inspect({ path: file, directory })
     if (!preview.previewToken) throw new Error("Expected preview token")
     return ProjectBackup.restore({
       path: file,
       directory,
       previewToken: preview.previewToken,
-      overwrite,
+      mode: "replace",
+      safetyBackup: true,
       resolveProject,
     })
   }
@@ -94,6 +96,40 @@ function scenario(run: (fixture: Awaited<ReturnType<typeof prepare>>, root: stri
 }
 
 describe("confirmed project migration", () => {
+  it.live("incrementally imports absent and newer sessions while preserving local newer and local-only state", () =>
+    scenario(async (f) => {
+      const newerLocal = await f.seed(f.source, "incoming older")
+      const absent = await f.seed(f.source, "incoming absent")
+      await ProjectBackup.backup({ directory: f.source, path: f.archive })
+      await f.remove(newerLocal)
+      await f.remove(absent)
+
+      await f.apply(f.archive, f.target)
+      Database.use((db) =>
+        db.run(sql`UPDATE session SET title = 'local newer', time_updated = 200 WHERE id = ${newerLocal}`),
+      )
+      await fs.writeFile(path.join(folder(newerLocal), "notes.json"), '{"content":"keep local newer"}')
+      await f.remove(absent)
+      const localOnly = await f.seed(f.target, "local-only newest")
+      Database.use((db) => db.run(sql`UPDATE session SET time_updated = 999 WHERE id = ${localOnly}`))
+      await fs.writeFile(path.join(f.target, "project.txt"), "local workspace newer")
+      const future = new Date(Date.now() + 60_000)
+      await fs.utimes(path.join(f.target, "project.txt"), future, future)
+
+      const result = await f.apply(f.archive, f.target)
+      expect(result).toMatchObject({ sessions: 1, skippedSessions: 1, safetyPath: null })
+      expect(await fs.readFile(path.join(f.target, "project.txt"), "utf8")).toBe("local workspace newer")
+      expect(await fs.readFile(path.join(folder(newerLocal), "notes.json"), "utf8")).toContain("keep local newer")
+      Database.use((db) => {
+        expect(db.get<{ title: string }>(sql`SELECT title FROM session WHERE id = ${newerLocal}`)?.title).toBe(
+          "local newer",
+        )
+        expect(db.get(sql`SELECT id FROM session WHERE id = ${absent}`)).toBeDefined()
+        expect(db.get(sql`SELECT id FROM session WHERE id = ${localOnly}`)).toBeDefined()
+      })
+    }),
+  )
+
   it.live(
     "A to B to A retains identity, replaces all scoped state, preserves Git and creates readable safety package",
     () =>
@@ -110,7 +146,7 @@ describe("confirmed project migration", () => {
         await ProjectBackup.backup({ directory: f.source, path: f.archive })
         const first = await ProjectBackup.inspect({ path: f.archive })
         expect(first.directory).toBe(f.source)
-        expect(first.action).toBe("replace")
+        expect(first.action).toBe("merge")
         expect(first.candidates).toEqual([f.source])
         // Model separate devices in one isolated test DB: A goes offline before B imports its IDs.
         await f.remove(original)
@@ -160,7 +196,7 @@ describe("confirmed project migration", () => {
         await fs.writeFile(path.join(f.source, ".git", "HEAD"), "preserve local git")
         const preview = await ProjectBackup.inspect({ path: back })
         expect(preview.directory).toBe(f.source)
-        expect(preview.action).toBe("replace")
+        expect(preview.action).toBe("merge")
         expect(preview.local?.sessions).toBe(2)
         expect(preview.package.sessions).toBe(1)
         const input = {
@@ -169,12 +205,11 @@ describe("confirmed project migration", () => {
           previewToken: preview.previewToken ?? "",
           resolveProject: f.resolveProject,
         }
-        await expect(ProjectBackup.restore({ ...input, previewToken: "", overwrite: true })).rejects.toThrow(
+        await expect(ProjectBackup.restore({ ...input, previewToken: "", mode: "replace" })).rejects.toThrow(
           "preview token",
         )
-        await expect(ProjectBackup.restore({ ...input, overwrite: false })).rejects.toThrow("overwrite confirmation")
         expect(await fs.readFile(path.join(f.source, "only-a.txt"), "utf8")).toBe("must disappear")
-        const result = await ProjectBackup.restore({ ...input, overwrite: true })
+        const result = await ProjectBackup.restore({ ...input, mode: "replace", safetyBackup: true })
         expect(result.safetyPath).not.toBeNull()
         expect(await fs.readFile(path.join(f.source, "project.txt"), "utf8")).toBe("from B")
         expect(await present(path.join(f.source, "only-a.txt"))).toBe(false)
@@ -194,44 +229,27 @@ describe("confirmed project migration", () => {
         const safety = await ProjectBackup.inspect({ path: result.safetyPath ?? "", directory: f.source })
         expect(safety.package.sessions).toBe(2)
         expect(safety.package.identity).toBe(first.package.identity)
-        await expect(ProjectBackup.restore({ ...input, overwrite: true })).rejects.toThrow("preview token")
+        await expect(ProjectBackup.restore({ ...input, mode: "replace" })).rejects.toThrow("preview token")
       }),
   )
 
-  for (const changed of ["archive", "workspace", "database", "context"]) {
-    it.live(`rejects a content-stale ${changed} preview even with unchanged timestamps`, () =>
+  for (const changed of ["archive", "sessions"]) {
+    it.live(`rejects a stale ${changed} preview`, () =>
       scenario(async (f) => {
         await ProjectBackup.backup({ directory: f.source, path: f.archive })
         await fs.mkdir(f.target)
         await fs.writeFile(path.join(f.target, "local.txt"), "before")
         const id = await f.seed(f.target)
         const preview = await ProjectBackup.inspect({ path: f.archive, directory: f.target })
-        if (changed === "database")
-          Database.use((db) =>
-            db.run(sql`UPDATE message SET data = '{"role":"user","text":"changed"}' WHERE session_id = ${id}`),
-          )
-        const file =
-          changed === "archive"
-            ? f.archive
-            : changed === "workspace"
-              ? path.join(f.target, "local.txt")
-              : path.join(folder(id), "notes.json")
-        if (changed !== "database") {
-          const stat = await fs.stat(file)
-          if (changed === "archive") await fs.appendFile(file, "changed")
-          else
-            await fs.writeFile(
-              file,
-              changed === "workspace" ? "after!" : '{"content":"modified context","assemble":true}',
-            )
-          await fs.utimes(file, stat.atime, stat.mtime)
-        }
+        if (changed === "sessions")
+          Database.use((db) => db.run(sql`UPDATE session SET time_updated = time_updated + 1 WHERE id = ${id}`))
+        if (changed === "archive") await fs.appendFile(f.archive, "changed")
         await expect(
           ProjectBackup.restore({
             path: f.archive,
             directory: f.target,
             previewToken: preview.previewToken ?? "",
-            overwrite: true,
+            mode: "replace",
             resolveProject: f.resolveProject,
           }),
         ).rejects.toThrow("Stale preview")
@@ -241,38 +259,35 @@ describe("confirmed project migration", () => {
     )
   }
 
-  it.live(
-    "inspect does not mutate the DB, adopts only explicitly selected targets and rejects identity/external-ID collisions",
-    () =>
-      scenario(async (f, root) => {
-        const id = await f.seed(f.source)
-        await ProjectBackup.backup({ directory: f.source, path: f.archive })
-        const before = Database.use((db) => db.all(sql`SELECT * FROM project`))
-        await expect(ProjectBackup.inspect({ path: f.archive, directory: f.target })).rejects.toThrow("ID collision")
-        expect(Database.use((db) => db.all(sql`SELECT * FROM project`))).toEqual(before)
-        expect(await present(f.target)).toBe(false)
-        await f.remove(id)
-        const preview = await ProjectBackup.inspect({ path: f.archive, directory: f.target })
-        expect(preview.action).toBe("create")
-        expect(preview.warnings.some((text) => text.includes("unmarked"))).toBe(true)
-        expect(Database.use((db) => db.all(sql`SELECT * FROM project`))).toEqual(before)
-        await fs.mkdir(f.target)
-        await fs.writeFile(
-          path.join(f.target, ".opencode-project.json"),
-          JSON.stringify({ identity: crypto.randomUUID(), name: "Different" }),
-        )
-        await expect(ProjectBackup.inspect({ path: f.archive, directory: f.target })).rejects.toThrow(
-          "different project",
-        )
-        // Removing the only known marker must not cause fallback to the archive's source path/name.
-        await fs.rm(path.join(f.source, ".opencode-project.json"))
-        const unselected = await ProjectBackup.inspect({ path: f.archive })
-        expect(unselected.action).toBe("select-target")
-        expect(unselected.candidates).toEqual([])
-        expect(unselected.directory).toBeNull()
-        expect(unselected.local).toBeNull()
-        expect(await present(path.join(root, "unexpected"))).toBe(false)
-      }),
+  it.live("inspect does not mutate the DB and adopts only explicitly selected targets", () =>
+    scenario(async (f, root) => {
+      const id = await f.seed(f.source)
+      await ProjectBackup.backup({ directory: f.source, path: f.archive })
+      const before = Database.use((db) => db.all(sql`SELECT * FROM project`))
+      const collisionPreview = await ProjectBackup.inspect({ path: f.archive, directory: f.target })
+      expect(collisionPreview.action).toBe("create")
+      expect(Database.use((db) => db.all(sql`SELECT * FROM project`))).toEqual(before)
+      expect(await present(f.target)).toBe(false)
+      await f.remove(id)
+      const preview = await ProjectBackup.inspect({ path: f.archive, directory: f.target })
+      expect(preview.action).toBe("create")
+      expect(preview.warnings.some((text) => text.includes("unmarked"))).toBe(true)
+      expect(Database.use((db) => db.all(sql`SELECT * FROM project`))).toEqual(before)
+      await fs.mkdir(f.target)
+      await fs.writeFile(
+        path.join(f.target, ".opencode-project.json"),
+        JSON.stringify({ identity: crypto.randomUUID(), name: "Different" }),
+      )
+      await expect(ProjectBackup.inspect({ path: f.archive, directory: f.target })).rejects.toThrow("different project")
+      // Removing the only known marker must not cause fallback to the archive's source path/name.
+      await fs.rm(path.join(f.source, ".opencode-project.json"))
+      const unselected = await ProjectBackup.inspect({ path: f.archive })
+      expect(unselected.action).toBe("select-target")
+      expect(unselected.candidates).toEqual([])
+      expect(unselected.directory).toBeNull()
+      expect(unselected.local).toBeNull()
+      expect(await present(path.join(root, "unexpected"))).toBe(false)
+    }),
   )
 
   it.live("SQL failure after original renames restores files, context, sessions and events", () =>
@@ -340,7 +355,7 @@ describe("confirmed project migration", () => {
           path: f.archive,
           directory: f.target,
           previewToken: preview.previewToken ?? "",
-          overwrite: true,
+          mode: "replace",
           resolveProject: f.resolveProject,
           active: async () => new Set([id]),
         }),
@@ -354,7 +369,7 @@ describe("confirmed project migration", () => {
             path: f.archive,
             directory: f.target,
             previewToken: next.previewToken ?? "",
-            overwrite: true,
+            mode: "replace",
             resolveProject: f.resolveProject,
           }),
         ).rejects.toThrow("requires recovery")
@@ -411,7 +426,9 @@ describe("confirmed project migration", () => {
           path: f.archive,
           directory: f.target,
           previewToken: preview.previewToken ?? "",
-          overwrite: true,
+          mode: "replace",
+          verify: true,
+          safetyBackup: true,
           resolveProject: async (directory) => {
             await fs.writeFile(path.join(folder(id), "notes.json"), '{"content":"concurrent context update"}')
             return f.resolveProject(directory)
@@ -423,7 +440,7 @@ describe("confirmed project migration", () => {
     }),
   )
 
-  it.live("aborts replacement if the mandatory safety export fails", () =>
+  it.live("aborts replacement if a requested safety export fails", () =>
     scenario(async (f, root) => {
       await ProjectBackup.backup({ directory: f.source, path: f.archive })
       await fs.mkdir(f.target)
@@ -447,7 +464,7 @@ describe("confirmed project migration", () => {
       const old = await f.seed(f.target, "history from a removed directory")
       expect(await present(f.target)).toBe(false)
       const preview = await ProjectBackup.inspect({ path: f.archive, directory: f.target })
-      expect(preview.action).toBe("replace")
+      expect(preview.action).toBe("merge")
       expect(preview.local?.sessions).toBe(1)
       const result = await f.apply(f.archive, f.target, true)
       expect(await fs.readFile(path.join(f.target, "project.txt"), "utf8")).toBe("from A")

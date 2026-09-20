@@ -15,14 +15,10 @@ import { tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.mergeAll(Project.defaultLayer, CrossSpawnSpawner.defaultLayer))
-// Legacy archive-safety cases also go through the mandatory preview flow.
 const ProjectBackup = {
   ...Backend,
-  restore: async (input: Omit<Parameters<typeof Backend.restore>[0], "previewToken" | "overwrite">) => {
-    const preview = await Backend.inspect(input)
-    if (!preview.previewToken) throw new Error("Expected a target preview")
-    return Backend.restore({ ...input, previewToken: preview.previewToken, overwrite: false })
-  },
+  restore: async (input: Omit<Parameters<typeof Backend.restore>[0], "previewToken">) =>
+    Backend.restore({ ...input, verify: true }),
 }
 const exists = (file: string) =>
   fs.lstat(file).then(
@@ -238,10 +234,6 @@ describe("project archive", () => {
             const result = await ProjectBackup.backup({ directory: source, path: archive })
             expect(result.sessions).toBe(2)
             expect(result.warnings.length).toBeGreaterThan(0)
-            await expect(ProjectBackup.restore({ path: archive, directory: dest, resolveProject })).rejects.toThrow(
-              "ID collision",
-            )
-            expect(await fs.readdir(dest)).toEqual([])
             Database.use((db) => {
               db.run(sql`DELETE FROM session WHERE id IN (${parent}, ${child})`)
             })
@@ -403,7 +395,17 @@ describe("project archive", () => {
           ]
           for (const [name, mutate] of cases) {
             const hostile = await rewriteArchive(archive, () => undefined, [], mutate)
-            await expect(Backend.inspect({ path: hostile, directory: destination }), name).rejects.toThrow()
+            await expect(
+              Backend.restore({
+                path: hostile,
+                directory: destination,
+                verify: true,
+                resolveProject: async () => {
+                  throw new Error("must not resolve")
+                },
+              }),
+              name,
+            ).rejects.toThrow()
             expect(await fs.readdir(destination), name).toEqual([])
           }
         } finally {
@@ -632,7 +634,16 @@ describe("project archive", () => {
       await using root = await tmpdir()
       const fixture = await fixtureArchive(root.path)
       const archive = await rewriteArchive(fixture.archive, mutate)
-      await expect(Backend.inspect({ path: archive })).rejects.toThrow(message)
+      await expect(
+        Backend.restore({
+          path: archive,
+          directory: path.join(root.path, "destination"),
+          verify: true,
+          resolveProject: async () => {
+            throw new Error("must not resolve")
+          },
+        }),
+      ).rejects.toThrow(message)
     })
   }
 
@@ -645,7 +656,16 @@ describe("project archive", () => {
       [],
       (database) => database.run("CREATE TRIGGER hostile AFTER INSERT ON session BEGIN SELECT 1; END"),
     )
-    await expect(Backend.inspect({ path: archive })).rejects.toThrow("unexpected schema objects")
+    await expect(
+      Backend.restore({
+        path: archive,
+        directory: path.join(root.path, "destination"),
+        verify: true,
+        resolveProject: async () => {
+          throw new Error("must not resolve")
+        },
+      }),
+    ).rejects.toThrow("unexpected schema objects")
   })
 
   test("rejects generated columns reported by table_xinfo", async () => {
@@ -660,7 +680,16 @@ describe("project archive", () => {
         database.run("ALTER TABLE session ADD COLUMN agent TEXT GENERATED ALWAYS AS ('hostile') VIRTUAL")
       },
     )
-    await expect(Backend.inspect({ path: archive })).rejects.toThrow("Hidden or generated")
+    await expect(
+      Backend.restore({
+        path: archive,
+        directory: path.join(root.path, "destination"),
+        verify: true,
+        resolveProject: async () => {
+          throw new Error("must not resolve")
+        },
+      }),
+    ).rejects.toThrow("Hidden or generated")
   })
 
   test("rejects schema nullability that differs from the runtime contract", async () => {
@@ -678,7 +707,16 @@ describe("project archive", () => {
         database.run("DROP TABLE old_message")
       },
     )
-    await expect(Backend.inspect({ path: archive })).rejects.toThrow("nullability")
+    await expect(
+      Backend.restore({
+        path: archive,
+        directory: path.join(root.path, "destination"),
+        verify: true,
+        resolveProject: async () => {
+          throw new Error("must not resolve")
+        },
+      }),
+    ).rejects.toThrow("nullability")
   })
 
   test("ZIP symbolic link entries are rejected before extraction", async () => {

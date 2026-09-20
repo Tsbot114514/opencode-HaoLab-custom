@@ -1,10 +1,11 @@
 import fs from "node:fs/promises"
-import { mkdirSync, renameSync, rmSync, rmdirSync, existsSync, writeFileSync, fsyncSync } from "node:fs"
+import { mkdirSync, renameSync, rmSync, rmdirSync, existsSync, lstatSync, writeFileSync, fsyncSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import os from "node:os"
 import { pathToFileURL } from "node:url"
 import { Writable } from "node:stream"
+import { finished } from "node:stream/promises"
 import { createReadStream, createWriteStream } from "node:fs"
 import { Reader, ZipReader, ZipWriter, TextReader, type Entry } from "@zip.js/zip.js"
 import { Database as SQLite } from "#sqlite"
@@ -146,7 +147,7 @@ const warnings = [
   "Project configuration, session assemble.ts and session tools/skills/plugins are quarantined in backup-disabled directories; review before enabling. Project startup commands and global permissions are not imported.",
   "Version 3 SQLite packages restore across Windows, macOS and Linux; validated source paths are mapped to local destination paths.",
   "Filesystem capture is not a filesystem snapshot. Stop other writers before backing up; active sessions in the current instance are refused.",
-  "Timestamps are advisory, not an automatic conflict policy. Confirmed replacement removes all portable workspace content and scoped sessions, including local-only items; local root .git is preserved. Excluded dependencies/caches are removed after commit.",
+  "Incremental merge uses per-session update times and per-file ZIP mtimes while preserving local-only/newer content. Explicit replacement removes portable workspace content and scoped sessions, including local-only items; local root .git is preserved.",
 ]
 
 export function contains(root: string, target: string) {
@@ -271,23 +272,25 @@ function canonical(value: unknown): unknown {
 function databaseState(directory: string) {
   return Database.transaction((db) => {
     const rows = capture(directory)
-    const extras: Row[] = []
+    const hash = createHash("sha256")
+    const update = (name: string, row: Row) => {
+      const text = JSON.stringify(canonical(row))
+      hash.update(name).update("\0").update(String(Buffer.byteLength(text))).update(":").update(text)
+    }
+    for (const [name, records] of Object.entries(rows)) for (const record of records) update(name, record)
     const ids = rows.session.map((r) => r.id)
     for (const name of ["event_sequence", "event", "session_share"]) {
       const key = name === "session_share" ? "session_id" : "aggregate_id"
       for (let offset = 0; offset < ids.length; offset += 500)
-        extras.push(
-          ...db.all<Row>(
-            sql`SELECT * FROM ${sql.identifier(name)} WHERE ${sql.identifier(key)} IN (${sql.join(
-              ids.slice(offset, offset + 500).map((id) => sql`${id}`),
-              sql`, `,
-            )}) ORDER BY ${sql.identifier(name === "event" ? "id" : key)}`,
-          ),
-        )
+        for (const record of db.all<Row>(
+          sql`SELECT * FROM ${sql.identifier(name)} WHERE ${sql.identifier(key)} IN (${sql.join(
+            ids.slice(offset, offset + 500).map((id) => sql`${id}`),
+            sql`, `,
+          )}) ORDER BY ${sql.identifier(name === "event" ? "id" : key)}`,
+        ))
+          update(name, record)
     }
-    const text = JSON.stringify(canonical({ rows, extras }))
-    if (Buffer.byteLength(text) > maxManifest) throw new Error("Local session state exceeds the preview limit")
-    return { rows, hash: createHash("sha256").update(text).digest("hex") }
+    return { rows, hash: hash.digest("hex") }
   })
 }
 
@@ -385,6 +388,29 @@ async function localState(directory: string, wasMissing = false) {
   }
 }
 
+async function removeTemporary(input: string, retries = 20): Promise<void> {
+  return fs.rm(input, { recursive: true, force: true }).catch(async (error: NodeJS.ErrnoException) => {
+    if (!retries || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error.code ?? "")) throw error
+    await Bun.sleep(100)
+    return removeTemporary(input, retries - 1)
+  })
+}
+
+function localSummary(directory: string) {
+  const prefix = `${directory.replaceAll("!", "!!").replaceAll("%", "!%").replaceAll("_", "!_")}${path.sep}%`
+  const summary = Database.use((db) =>
+    db.get<{ sessions: number; sessions_updated_at: number | null }>(
+      sql`SELECT count(*) AS sessions,max(time_updated) AS sessions_updated_at FROM session WHERE directory = ${directory} OR directory LIKE ${prefix} ESCAPE '!'`,
+    ),
+  )
+  return {
+    filesUpdatedAt: null as number | null,
+    sessionsUpdatedAt: summary?.sessions_updated_at ?? null,
+    files: 0,
+    sessions: summary?.sessions ?? 0,
+  }
+}
+
 const previews = new Map<
   string,
   {
@@ -400,21 +426,19 @@ const previews = new Map<
 
 export async function inspect(input: { path: string; directory?: string }) {
   const archive = await absolute(input.path)
-  const archiveHash = await fileHash(archive)
-  const opened = await openPackage(archive)
+  const opened = await inspectPackage(archive)
   try {
     const candidates = new Set<string>()
     const discoveryWarnings: string[] = []
-    const known = new Set(
-      Database.use((db) => [
-        ...db
-          .select()
-          .from(ProjectTable)
-          .all()
-          .flatMap((r) => [r.worktree, ...r.sandboxes]),
-        ...db.all<{ directory: string }>(sql`SELECT DISTINCT directory FROM session`).map((r) => r.directory),
-      ]),
-    )
+    const known = new Set<string>()
+    Database.use((db) => {
+      for (const project of db.select().from(ProjectTable).all()) {
+        known.add(project.worktree)
+        for (const sandbox of project.sandboxes) known.add(sandbox)
+      }
+      for (const session of db.all<{ directory: string }>(sql`SELECT DISTINCT directory FROM session`))
+        known.add(session.directory)
+    })
     const registry = path.join((await applicationPaths()).migrations, "registry")
     if (await exists(registry)) {
       for (const name of await fs.readdir(registry)) {
@@ -435,34 +459,36 @@ export async function inspect(input: { path: string; directory?: string }) {
     }
     const selected = input.directory ?? (candidates.size === 1 ? [...candidates][0] : undefined)
     const directory = selected ? await destination(selected) : null
-    const local = directory ? await localState(directory) : null
+    const local = directory ? localSummary(directory) : null
+    const localPresent = directory ? await exists(directory) : false
+    const localReplace = directory
+      ? (localPresent && (await fs.readdir(directory)).length > 0) || !!local?.sessions
+      : false
     const identity = directory ? await marker(directory) : undefined
     if (identity && identity.identity !== opened.manifest.package.identity)
       throw new Error("Target is marked as a different project; choose its matching project or a new directory")
     if (directory) {
       if (contains(directory, archive)) throw new Error("The migration package must be outside the destination")
-      collisions(opened.database, opened.databaseColumns, new Set(local?.rows.session.map((r) => String(r.id))))
     }
-    if ((await fileHash(archive)) !== archiveHash) throw new Error("Package changed during inspection; inspect again")
     const previewToken = directory && local ? crypto.randomUUID() : null
     for (const [key, value] of previews) if (value.expires < Date.now()) previews.delete(key)
     if (previews.size >= 128) previews.delete(previews.keys().next().value ?? "")
     if (previewToken && directory && local)
       previews.set(previewToken, {
         archive,
-        archiveHash,
+        archiveHash: opened.fingerprint,
         directory,
-        stateHash: local.hash,
-        present: local.present,
-        replace: local.replace,
+        stateHash: JSON.stringify(local),
+        present: localPresent,
+        replace: localReplace,
         expires: Date.now() + 15 * 60_000,
       })
     return {
       package: opened.package,
       candidates: [...candidates].sort(),
       directory,
-      action: !directory ? ("select-target" as const) : local?.replace ? ("replace" as const) : ("create" as const),
-      local: local && (local.present || local.summary.sessions) ? local.summary : null,
+      action: !directory ? ("select-target" as const) : localReplace ? ("merge" as const) : ("create" as const),
+      local: local && (localPresent || local.sessions) ? local : null,
       previewToken,
       warnings: [
         ...new Set([
@@ -471,7 +497,7 @@ export async function inspect(input: { path: string; directory?: string }) {
           ...discoveryWarnings,
           ...(directory && !identity
             ? [
-                "The explicitly selected unmarked directory will be adopted as this project. Confirmation replaces any existing contents and scoped sessions.",
+                "The explicitly selected unmarked directory will be adopted as this project. Incremental merge preserves local-only and newer files and sessions.",
               ]
             : []),
         ]),
@@ -479,12 +505,7 @@ export async function inspect(input: { path: string; directory?: string }) {
     }
   } finally {
     const failures: unknown[] = []
-    for (const cleanup of [
-      () => opened.database.close(),
-      () => fs.rm(opened.temp, { recursive: true, force: true }),
-      () => opened.reader.close(),
-      () => opened.handle.close(),
-    ])
+    for (const cleanup of [() => opened.reader.close(), () => opened.handle.close()])
       try {
         await cleanup()
       } catch (error) {
@@ -545,14 +566,13 @@ function capture(directory: string): CapturedRows {
     }
     for (const name of ["message", "part", "todo", "session_message"] as const) {
       for (let offset = 0; offset < ids.length; offset += 500) {
-        rows[name].push(
-          ...db.all<Row>(
-            sql`SELECT * FROM ${sql.identifier(name)} WHERE session_id IN (${sql.join(
-              ids.slice(offset, offset + 500).map((id) => sql`${id}`),
-              sql`, `,
-            )})`,
-          ),
-        )
+        for (const record of db.all<Row>(
+          sql`SELECT * FROM ${sql.identifier(name)} WHERE session_id IN (${sql.join(
+            ids.slice(offset, offset + 500).map((id) => sql`${id}`),
+            sql`, `,
+          )})`,
+        ))
+          rows[name].push(record)
       }
     }
     return rows
@@ -645,6 +665,27 @@ function orderedRows(database: SQLite, name: TableName, names: readonly string[]
     .iterate()
 }
 
+function* selectedRows(
+  database: SQLite,
+  name: TableName,
+  names: readonly string[],
+  sessions: ReadonlySet<string>,
+) {
+  const ids = [...sessions]
+  const key = name === "session" ? "id" : "session_id"
+  for (let offset = 0; offset < ids.length; offset += 500) {
+    const batch = ids.slice(offset, offset + 500)
+    const statement = database.query<Row, string[]>(
+      `SELECT ${names.map(quote).join(",")} FROM ${quote(name)} WHERE ${quote(key)} IN (${batch.map(() => "?").join(",")}) ORDER BY ${tableConfig[name].order.map(quote).join(",")}`,
+    )
+    try {
+      yield* statement.iterate(...batch)
+    } finally {
+      if ("finalize" in statement && typeof statement.finalize === "function") statement.finalize()
+    }
+  }
+}
+
 function checksum(database: SQLite, name: TableName, names: readonly string[]) {
   const hash = createHash("sha256")
   let rows = 0
@@ -703,12 +744,14 @@ function openSQLite(file: string) {
   }
 }
 
-function verifyDatabase(file: string, manifest?: Manifest) {
+function verifyDatabase(file: string, manifest?: Manifest, thorough = true) {
   const database = openSQLite(file)
   try {
-    const quick = database.query<Record<string, string>, []>("PRAGMA quick_check").all()
-    if (quick.length !== 1 || Object.values(quick[0] ?? {})[0] !== "ok") throw new Error("SQLite quick_check failed")
-    if (database.query("PRAGMA foreign_key_check").all().length) throw new Error("SQLite foreign key check failed")
+    if (thorough) {
+      const quick = database.query<Record<string, string>, []>("PRAGMA quick_check").all()
+      if (quick.length !== 1 || Object.values(quick[0] ?? {})[0] !== "ok") throw new Error("SQLite quick_check failed")
+      if (database.query("PRAGMA foreign_key_check").all().length) throw new Error("SQLite foreign key check failed")
+    }
     const objects = database
       .query<
         { type: string; name: string; tbl_name: string; sql: string | null },
@@ -740,13 +783,21 @@ function verifyDatabase(file: string, manifest?: Manifest) {
       )
     )
       throw new Error("SQLite manifest descriptors exceed safety limits")
-    const checksums = Object.fromEntries(
-      tableNames.map((name) => [name, checksum(database, name, tableColumns[name])]),
-    ) as Record<TableName, ReturnType<typeof checksum>>
-    const tables = Object.fromEntries(tableNames.map((name) => [name, checksums[name].result.rows])) as Record<
-      TableName,
-      number
-    >
+    const checksums = thorough
+      ? (Object.fromEntries(tableNames.map((name) => [name, checksum(database, name, tableColumns[name])])) as Record<
+          TableName,
+          ReturnType<typeof checksum>
+        >)
+      : undefined
+    const tables = Object.fromEntries(
+      tableNames.map((name) => [
+        name,
+        checksums?.[name].result.rows ??
+          Number(
+            database.query<{ count: bigint }, []>(`SELECT count(*) AS count FROM ${quote(name)}`).get()?.count ?? 0,
+          ),
+      ]),
+    ) as Record<TableName, number>
     const sessionIds: string[] = []
     let sessionsUpdatedAt: number | null = null
     for (const row of orderedRows(database, "session", tableColumns.session)) {
@@ -767,10 +818,10 @@ function verifyDatabase(file: string, manifest?: Manifest) {
       for (const name of tableNames) {
         if (manifest.database.schema[name] !== schemas[name]) throw new Error(`SQLite ${name} schema mismatch`)
         if (manifest.database.tables[name] !== tables[name]) throw new Error(`SQLite ${name} count mismatch`)
-        if (JSON.stringify(manifest.database.checksums[name]) !== JSON.stringify(checksums[name].result))
+        if (checksums && JSON.stringify(manifest.database.checksums[name]) !== JSON.stringify(checksums[name].result))
           throw new Error(`SQLite ${name} checksum mismatch`)
       }
-      if (tableNames.some((name) => checksums[name].unsafeInteger))
+      if (checksums && tableNames.some((name) => checksums[name].unsafeInteger))
         throw new Error("SQLite integer is outside the JavaScript safe integer range")
       if (JSON.stringify(manifest.sessionIds) !== JSON.stringify(sessionIds))
         throw new Error("Session ID list mismatch")
@@ -808,9 +859,11 @@ function verifyDatabase(file: string, manifest?: Manifest) {
       database,
       columns: tableColumns,
       tables,
-      checksums: Object.fromEntries(
-        tableNames.map((name) => [name, checksums[name].result]),
-      ) as Manifest["database"]["checksums"],
+      checksums: checksums
+        ? (Object.fromEntries(
+            tableNames.map((name) => [name, checksums[name].result]),
+          ) as Manifest["database"]["checksums"])
+        : manifest!.database.checksums,
       schema: schemas as Manifest["database"]["schema"],
       sessionIds,
       sessionsUpdatedAt,
@@ -970,6 +1023,7 @@ function createBackupDatabase(directory: string, file: string) {
   return Database.transaction((db) => {
     const sessions = captureSessions(directory)
     const output = new SQLite(file, { create: true, strict: true })
+    const inserts = new Map<TableName, ReturnType<typeof output.query>>()
     try {
       output.run("PRAGMA foreign_keys = ON")
       const schemas = Object.fromEntries(
@@ -988,12 +1042,17 @@ function createBackupDatabase(directory: string, file: string) {
         return found
       })
       const insert = (name: TableName, row: Row) => {
-        const names = Object.keys(row)
-        output
-          .query(
-            `INSERT INTO ${quote(name)} (${names.map(quote).join(",")}) VALUES (${names.map(() => "?").join(",")})`,
-          )
-          .run(...Object.values(row))
+        const statement =
+          inserts.get(name) ??
+          (() => {
+            const names = Object.keys(row)
+            const created = output.query(
+              `INSERT INTO ${quote(name)} (${names.map(quote).join(",")}) VALUES (${names.map(() => "?").join(",")})`,
+            )
+            inserts.set(name, created)
+            return created
+          })()
+        statement.run(...Object.values(row))
       }
       output.transaction(() => {
         for (const row of projects) insert("project", row)
@@ -1005,6 +1064,8 @@ function createBackupDatabase(directory: string, file: string) {
       })()
       return sessions
     } finally {
+      for (const statement of inserts.values())
+        if ("finalize" in statement && typeof statement.finalize === "function") statement.finalize()
       output.close()
     }
   })
@@ -1087,6 +1148,7 @@ export async function backup(input: {
       metadata: { hashFormat: "framed-cells-v1" },
     }
     verified.database.close()
+    verified = undefined
   } catch (error) {
     verified?.database.close()
     await fs.rm(temp, { recursive: true, force: true })
@@ -1169,33 +1231,73 @@ export async function backup(input: {
     if (total + Buffer.byteLength(text) > maxTotal) throw new Error("Archive size limit exceeded")
     await zip.add("manifest.json", new TextReader(text), { useWebWorkers: false })
     await zip.close()
+    await finished(stream)
+    if (!stream.closed)
+      await new Promise<void>((resolve, reject) => stream.close((error) => (error ? reject(error) : resolve())))
+    // Bun SQLite can retain finalized statement handles until GC after close on Windows.
+    if (process.platform === "win32") Bun.gc(true)
     if (!input.safetyIdentity && JSON.stringify(await marker(directory)) !== JSON.stringify(identity))
       throw new Error("Project identity changed during export; retry")
     await fs.link(target, output)
+    await fs.unlink(target)
     return { path: output, sessions: manifest.sessionIds.length, files: files - 1, warnings: manifest.warnings }
   } finally {
     stream.destroy()
-    await fs.rm(temp, { recursive: true, force: true })
+    await removeTemporary(temp)
   }
 }
 
-function validateScope(manifest: Manifest, database: SQLite, tableColumns: Record<TableName, string[]>) {
+function validateScope(
+  manifest: Manifest,
+  database: SQLite,
+  tableColumns: Record<TableName, string[]>,
+  thorough = true,
+) {
   const source = sourcePaths(manifest)
-  const sessionPaths = validateRows(database, tableColumns, source)
+  const sessionPaths = thorough
+    ? validateRows(database, tableColumns, source)
+    : new Map(
+        database
+          .query<{ id: string; directory: string }, []>("SELECT id,directory FROM session")
+          .all()
+          .map((row) => {
+            if (typeof row.id !== "string" || !/^ses_[a-zA-Z0-9_-]+$/.test(row.id))
+              throw new Error("Invalid session ID")
+            if (typeof row.directory !== "string") throw new Error("Invalid session directory")
+            return [row.id, source.relative(source.directory, row.directory, "session directory")]
+          }),
+      )
   if (
     database
       .query("SELECT 1 FROM project p WHERE NOT EXISTS (SELECT 1 FROM session s WHERE s.project_id=p.id) LIMIT 1")
       .get()
   )
     throw new Error("SQLite contains an unrelated project row")
+  if (
+    database.query("SELECT 1 FROM session s LEFT JOIN project p ON p.id=s.project_id WHERE p.id IS NULL LIMIT 1").get() ||
+    database.query("SELECT 1 FROM part WHERE session_id NOT IN (SELECT id FROM session) LIMIT 1").get() ||
+    database
+      .query(
+        "SELECT 1 FROM part p LEFT JOIN message m ON m.id=p.message_id AND m.session_id=p.session_id WHERE m.id IS NULL LIMIT 1",
+      )
+      .get()
+  )
+    throw new Error("Invalid cross-table session data")
   return { source, sessionPaths }
 }
 
-function collisions(imported: SQLite, importedColumns: Record<TableName, string[]>, replace = new Set<string>()) {
+function collisions(
+  imported: SQLite,
+  importedColumns: Record<TableName, string[]>,
+  replace = new Set<string>(),
+  include?: ReadonlySet<string>,
+) {
   Database.use((db) => {
     for (const name of ["session", "message", "part", "session_message"] as const) {
       let batch: string[] = []
-      for (const r of orderedRows(imported, name, importedColumns[name])) {
+      for (const r of include
+        ? selectedRows(imported, name, importedColumns[name], include)
+        : orderedRows(imported, name, importedColumns[name])) {
         batch.push(String(r.id))
         if (batch.length < 500) continue
         check(batch)
@@ -1215,7 +1317,9 @@ function collisions(imported: SQLite, importedColumns: Record<TableName, string[
       }
     }
     let batch: string[] = []
-    for (const r of orderedRows(imported, "session", importedColumns.session)) {
+    for (const r of include
+      ? selectedRows(imported, "session", importedColumns.session, include)
+      : orderedRows(imported, "session", importedColumns.session)) {
       if (!replace.has(String(r.id))) batch.push(String(r.id))
       if (batch.length < 500) continue
       checkEvents(batch)
@@ -1235,7 +1339,127 @@ function collisions(imported: SQLite, importedColumns: Record<TableName, string[
   })
 }
 
-async function openPackage(archive: string) {
+async function inspectPackage(archive: string) {
+  const handle = await fs.open(archive, "r")
+  let reader: ZipReader<fs.FileHandle> | undefined
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile() || stat.size > maxTotal + maxEntries * 4096)
+      throw new Error("Archive must be a regular file within the size limit")
+    reader = new ZipReader(new FileReader(handle, stat.size), { useWebWorkers: false })
+    const entries: Entry[] = []
+    const seen = new Set<string>()
+    const files = new Set<string>()
+    const prefixes = new Map<string, string>()
+    let total = 0
+    for await (const entry of reader.getEntriesGenerator()) {
+      if (entries.length >= maxEntries) throw new Error("Too many archive entries")
+      entries.push(entry)
+      const name = safeName(entry.filename)
+      if (seen.has(name.toLowerCase())) throw new Error(`Duplicate archive path: ${name}`)
+      seen.add(name.toLowerCase())
+      const parts = name.split("/")
+      for (let index = 1; index < parts.length; index++)
+        if (files.has(parts.slice(0, index).join("/").toLowerCase()))
+          throw new Error(`Archive file/directory prefix conflict: ${name}`)
+      if (!entry.directory && prefixes.has(name.toLowerCase()))
+        throw new Error(`Archive file/directory prefix conflict: ${name}`)
+      for (let index = 1; index <= parts.length; index++) {
+        const prefix = parts.slice(0, index).join("/")
+        const previous = prefixes.get(prefix.toLowerCase())
+        if (previous && previous !== prefix) throw new Error(`Case-ambiguous archive path: ${name}`)
+        prefixes.set(prefix.toLowerCase(), prefix)
+      }
+      const mode = (entry.externalFileAttributes >>> 16) & 0xf000
+      if ((mode && mode !== 0x8000 && mode !== 0x4000) || entry.externalFileAttributes & 0x400 || entry.encrypted)
+        throw new Error("Archive links, special files and encryption are not supported")
+      if (entry.uncompressedSize > maxFile || (total += entry.uncompressedSize) > maxTotal)
+        throw new Error("Archive size limit exceeded")
+      if (name.startsWith("diffs/") && entry.uncompressedSize > maxManifest)
+        throw new Error("Session diff exceeds the 64 MiB limit")
+      if (!entry.directory) files.add(name.toLowerCase())
+    }
+    const meta = entries.find((entry) => entry.filename === "manifest.json")
+    if (!meta?.getData || meta.uncompressedSize > maxManifest) throw new Error("Missing or oversized backup manifest")
+    const chunks: Uint8Array[] = []
+    let size = 0
+    await meta.getData(
+      new WritableStream<Uint8Array>({
+        write(chunk) {
+          size += chunk.length
+          if (size > maxManifest || size > meta.uncompressedSize) throw new Error("Manifest exceeded size limit")
+          chunks.push(chunk)
+        },
+      }),
+      { checkSignature: true },
+    )
+    const manifest = manifestSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")))
+    sourcePaths(manifest)
+    const ids = new Set(manifest.sessionIds)
+    const sqliteEntry = entries.find((entry) => entry.filename === "sessions.sqlite")
+    if (!sqliteEntry?.getData || sqliteEntry.directory) throw new Error("Missing sessions.sqlite")
+    if (sqliteEntry.uncompressedSize !== manifest.database.bytes) throw new Error("SQLite byte count mismatch")
+    for (const entry of entries) {
+      if (entry === meta) continue
+      const parts = safeName(entry.filename).split("/")
+      if (
+        entry !== sqliteEntry &&
+        !(parts[0] === "workspace" && (entry.directory || parts.length > 1)) &&
+        !(parts[0] === "sessions" && ids.has(parts[1]) && (entry.directory || parts.length > 2)) &&
+        !(parts[0] === "diffs" && parts.length === 2 && parts[1].endsWith(".json") && ids.has(parts[1].slice(0, -5)))
+      )
+        throw new Error(`Unexpected archive entry: ${entry.filename}`)
+      if (parts.some((part) => part.toLowerCase() === ".git"))
+        throw new Error("Git metadata is not supported in this archive version")
+    }
+    const regular = entries.filter((entry) => entry !== meta && entry !== sqliteEntry && !entry.directory)
+    const workspaceFiles = regular.filter((entry) => entry.filename.startsWith("workspace/")).length
+    const sessionFiles = regular.filter((entry) => entry.filename.startsWith("sessions/")).length
+    const diffFiles = regular.filter((entry) => entry.filename.startsWith("diffs/")).length
+    const sessionFolders = new Set(
+      entries
+        .filter((entry) => entry.filename.startsWith("sessions/"))
+        .map((entry) => safeName(entry.filename).split("/")[1]),
+    ).size
+    if (
+      manifest.counts.workspaceFiles !== workspaceFiles ||
+      manifest.counts.sessionFiles !== sessionFiles ||
+      manifest.counts.diffFiles !== diffFiles ||
+      manifest.counts.sessionFolders !== sessionFolders ||
+      manifest.package.sessions !== ids.size
+    )
+      throw new Error("Package file counts do not match its contents")
+    let filesUpdatedAt: number | null = null
+    let sessionsUpdatedAt: number | null = null
+    for (const entry of entries) {
+      const time = entry.lastModDate?.getTime()
+      if (entry.directory || time === undefined || !Number.isFinite(time)) continue
+      if (entry.filename.startsWith("workspace/") && entry.filename !== `workspace/${markerName}`)
+        filesUpdatedAt = Math.max(filesUpdatedAt ?? 0, time)
+      if (entry.filename.startsWith("sessions/") || entry.filename.startsWith("diffs/"))
+        sessionsUpdatedAt = Math.max(sessionsUpdatedAt ?? 0, time)
+    }
+    return {
+      reader,
+      handle,
+      manifest,
+      fingerprint: `${stat.size}:${stat.mtimeMs}`,
+      package: {
+        ...manifest.package,
+        filesUpdatedAt,
+        sessionsUpdatedAt,
+        files: regular.length,
+        sessions: manifest.package.sessions,
+      },
+    }
+  } catch (error) {
+    await reader?.close().catch(() => undefined)
+    await handle.close().catch(() => undefined)
+    throw error
+  }
+}
+
+async function openPackage(archive: string, verify = false) {
   const handle = await fs.open(archive, "r")
   let reader: ZipReader<fs.FileHandle> | undefined
   let temp: string | undefined
@@ -1330,13 +1554,13 @@ async function openPackage(archive: string) {
     temp = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-package-"))
     const databaseFile = path.join(temp, "sessions.sqlite")
     const stream = createWriteStream(databaseFile, { flags: "wx", mode: 0o600 })
-    const hash = createHash("sha256")
+    const hash = verify ? createHash("sha256") : undefined
     let databaseBytes = 0
     const bound = new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         databaseBytes += chunk.length
         if (databaseBytes > manifest.database.bytes) throw new Error("SQLite exceeded declared size")
-        hash.update(chunk)
+        hash?.update(chunk)
         controller.enqueue(chunk)
       },
     })
@@ -1346,12 +1570,13 @@ async function openPackage(archive: string) {
     } finally {
       stream.destroy()
     }
-    if (databaseBytes !== manifest.database.bytes || hash.digest("hex") !== manifest.database.sha256) {
+    const databaseHash = hash?.digest("hex")
+    if (databaseBytes !== manifest.database.bytes || (verify && databaseHash !== manifest.database.sha256)) {
       throw new Error("SQLite bytes or SHA-256 mismatch")
     }
-    const verified = verifyDatabase(databaseFile, manifest)
+    const verified = verifyDatabase(databaseFile, manifest, verify)
     imported = verified.database
-    const scope = validateScope(manifest, verified.database, verified.columns)
+    const scope = validateScope(manifest, verified.database, verified.columns, verify)
     if (
       (await exists(`${databaseFile}-wal`)) ||
       (await exists(`${databaseFile}-shm`)) ||
@@ -1474,19 +1699,24 @@ function remap(
 export async function restore(input: {
   path: string
   directory: string
-  previewToken: string
-  overwrite: boolean
+  mode?: "merge" | "replace"
+  verify?: boolean
+  safetyBackup?: boolean
+  previewToken?: string
   resolveProject: (directory: string) => Promise<Project.Info>
   active?: () => Promise<ReadonlySet<string>>
   invalidate?: (directory: string) => Promise<void>
 }) {
   const archive = await absolute(input.path)
   const directory = await destination(input.directory)
-  const preview = previews.get(input.previewToken)
-  if (!preview || preview.expires < Date.now() || preview.directory !== directory || preview.archive !== archive)
-    throw new Error("Missing, expired or mismatched preview token; inspect the package again")
-  if (preview.replace && input.overwrite !== true)
-    throw new Error("Replacement requires explicit overwrite confirmation")
+  if (contains(directory, archive)) throw new Error("The migration package must be outside the destination")
+  const mode = input.mode ?? "merge"
+  const preview = input.previewToken ? previews.get(input.previewToken) : undefined
+  if (
+    mode === "replace" &&
+    (!preview || preview.expires < Date.now() || preview.directory !== directory || preview.archive !== archive)
+  )
+    throw new Error("Replacement requires a fresh matching preview token; inspect the package again")
   const application = await applicationPaths()
   await fs.mkdir(application.migrations, { recursive: true, mode: 0o700 })
   await absolute(application.migrations)
@@ -1496,7 +1726,7 @@ export async function restore(input: {
       throw new Error(`Another migration is running or requires recovery. Review ${journal} before retrying`)
     throw error
   })
-  previews.delete(input.previewToken)
+  if (input.previewToken) previews.delete(input.previewToken)
   let stage: string | undefined
   let dataStage: string | undefined
   let handle: fs.FileHandle | undefined
@@ -1510,6 +1740,7 @@ export async function restore(input: {
   let recovered = true
   let safetyPath: string | null = null
   const resultWarnings: string[] = []
+  let verifiedStateHash: string | undefined
   function record(phase: string, details: Record<string, unknown> = {}) {
     writeFileSync(
       journal,
@@ -1518,12 +1749,41 @@ export async function restore(input: {
     fsyncSync(lock.fd)
   }
   async function check() {
-    const archiveHash = await fileHash(archive)
+    if (mode === "merge" || !input.verify) {
+      const sessions = captureSessions(directory)
+      const rows: CapturedRows = { session: sessions, message: [], part: [], todo: [], session_message: [] }
+      if (mode === "replace") {
+        const stat = await fs.stat(archive)
+        if (
+          preview?.archiveHash !== `${stat.size}:${stat.mtimeMs}` ||
+          preview.stateHash !== JSON.stringify(localSummary(directory))
+        )
+          throw new Error("Stale preview: package or scoped session summary changed; inspect again")
+        const active = await input.active?.()
+        if (rows.session.some((row) => active?.has(String(row.id))))
+          throw new Error("Stop active target sessions before migration")
+      }
+      return {
+        hash: "",
+        dbHash: "",
+        summary: localSummary(directory),
+        rows,
+        present: await exists(directory),
+        replace: rows.session.length > 0 || ((await exists(directory)) && (await fs.readdir(directory)).length > 0),
+      }
+    }
+    const stat = await fs.stat(archive)
+    if (
+      preview?.archiveHash !== `${stat.size}:${stat.mtimeMs}` ||
+      preview.stateHash !== JSON.stringify(localSummary(directory))
+    )
+      throw new Error("Stale preview: package or scoped session summary changed; inspect again")
     const local = await localState(directory, created)
-    if (local.hash !== preview?.stateHash || archiveHash !== preview.archiveHash)
-      throw new Error("Stale preview: package, workspace, session data or session context changed; inspect again")
+    if (verifiedStateHash && verifiedStateHash !== local.hash)
+      throw new Error("Stale preview: workspace, session data or session context changed during verification")
+    verifiedStateHash = local.hash
     const active = await input.active?.()
-    if (local.rows.session.some((r) => active?.has(String(r.id))))
+    if (mode === "replace" && local.rows.session.some((r) => active?.has(String(r.id))))
       throw new Error("Stop active target sessions before migration")
     return local
   }
@@ -1531,21 +1791,38 @@ export async function restore(input: {
     record("validating")
     const previous = await check()
     stage = await fs.mkdtemp(path.join(path.dirname(directory), ".opencode-restore-"))
-    const opened = await openPackage(archive)
+    const opened = await openPackage(archive, input.verify ?? false)
     handle = opened.handle
     reader = opened.reader
     const { entries, meta, sqliteEntry, manifest, databaseColumns, source, sessionPaths } = opened
     imported = opened.database
     importedTemp = opened.temp
-    const replacing = new Set(previous.rows.session.map((r) => String(r.id)))
-    collisions(imported, databaseColumns, replacing)
-    if (previous.replace) {
+    const localSessions = new Map(previous.rows.session.map((row) => [String(row.id), row]))
+    const incomingSessions = [...orderedRows(imported, "session", databaseColumns.session)]
+    const ids = new Set(
+      incomingSessions
+        .filter((row) => {
+          if (mode === "replace") return true
+          const local = localSessions.get(String(row.id))
+          if (!local) return true
+          return Number(row.time_updated) > Number(local.time_updated)
+        })
+        .map((row) => String(row.id)),
+    )
+    const replacing = new Set(
+      mode === "replace"
+        ? previous.rows.session.map((row) => String(row.id))
+        : [...ids].filter((id) => localSessions.has(id)),
+    )
+    const active = await input.active?.()
+    if ([...ids].some((id) => active?.has(id))) throw new Error("Stop active target sessions before migration")
+    collisions(imported, databaseColumns, replacing, ids)
+    if (input.safetyBackup && previous.replace) {
       safetyPath = path.join(application.migrations, `safety-${Date.now()}-${crypto.randomUUID()}.zip`)
       record("safety-backup")
       await backup({ directory, path: safetyPath, safetyIdentity: manifest.package })
       await check()
     }
-    const ids = new Set(manifest.sessionIds)
     const roots = [
       ...[...ids].map((id) => ({
         source: source.api.join(manifest.sourceSessionRoot, id),
@@ -1567,10 +1844,29 @@ export async function restore(input: {
     const state = dataStage ?? stage
     record("staging")
     let files = 0
+    let skippedFiles = 0
     for (const entry of entries) {
       if (entry === meta || entry === sqliteEntry) continue
       const name = safeName(entry.filename)
       const parts = name.split("/")
+      if (
+        (parts[0] === "sessions" && !ids.has(parts[1])) ||
+        (parts[0] === "diffs" && !ids.has(parts[1]?.slice(0, -5)))
+      ) {
+        if (!entry.directory) skippedFiles++
+        continue
+      }
+      if (mode === "merge" && parts[0] === "workspace" && !entry.directory) {
+        const target = path.join(directory, ...parts.slice(1))
+        if (await exists(target)) {
+          const local = await fs.lstat(target)
+          const incoming = entry.lastModDate?.getTime()
+          if (!local.isFile() || incoming === undefined || !Number.isFinite(incoming) || local.mtimeMs >= incoming) {
+            skippedFiles++
+            continue
+          }
+        }
+      }
       const output = path.join(parts[0] === "workspace" ? stage : state, name)
       if (entry.directory) {
         await fs.mkdir(output, { recursive: true })
@@ -1640,7 +1936,7 @@ export async function restore(input: {
         r.directory = path.join(directory, ...relative)
         r.project_id = project.id
         r.path = path.relative(project.worktree, String(r.directory)).replaceAll("\\", "/")
-        r.parent_id = ids.has(String(r.parent_id)) ? r.parent_id : null
+        r.parent_id = ids.has(String(r.parent_id)) || localSessions.has(String(r.parent_id)) ? r.parent_id : null
         for (const key of ["workspace_id", "permission", "revert", "share_url", "time_compacting"])
           if (databaseColumns.session.includes(key)) r[key] = null
       }
@@ -1651,7 +1947,7 @@ export async function restore(input: {
           )
       return r
     }
-    for (const original of orderedRows(imported, "session", databaseColumns.session)) {
+    for (const original of selectedRows(imported, "session", databaseColumns.session, ids)) {
       const r = transformRow("session", original)
       const folder = path.join(state, "sessions", String(r.id))
       await fs.mkdir(folder, { recursive: true })
@@ -1679,7 +1975,42 @@ export async function restore(input: {
         await fs.writeFile(diff, JSON.stringify(remap(JSON.parse(await fs.readFile(diff, "utf8")), roots, source)))
     }
     const workspace = path.join(stage, "workspace")
-    const moves = (await fs.readdir(workspace)).map((name) => [path.join(workspace, name), path.join(directory, name)])
+    const moves: [string, string][] = []
+    const workspaceState = new Map<string, { size: number; mtimeMs: number } | null>()
+    if (mode === "replace") {
+      moves.push(
+        ...(await fs.readdir(workspace)).map((name): [string, string] => [
+          path.join(workspace, name),
+          path.join(directory, name),
+        ]),
+      )
+    } else {
+      async function mergeFiles(root: string, relative = "") {
+        for (const name of await fs.readdir(path.join(root, relative))) {
+          const next = path.join(relative, name)
+          const from = path.join(root, next)
+          if ((await fs.stat(from)).isDirectory()) {
+            await mergeFiles(root, next)
+            continue
+          }
+          const target = path.join(directory, next)
+          if (await exists(target)) {
+            const local = await fs.lstat(target)
+            const incoming = await fs.stat(from)
+            if (!local.isFile() || local.mtimeMs >= incoming.mtimeMs) {
+              files--
+              skippedFiles++
+              continue
+            }
+            workspaceState.set(target, { size: local.size, mtimeMs: local.mtimeMs })
+          } else {
+            workspaceState.set(target, null)
+          }
+          moves.push([from, target])
+        }
+      }
+      await mergeFiles(workspace)
+    }
     for (const id of ids) {
       moves.push([path.join(state, "sessions", id), path.join(application.sessions, id)])
       if (await exists(path.join(state, "diffs", `${id}.json`)))
@@ -1692,9 +2023,16 @@ export async function restore(input: {
       await absolute(parent)
     }
     const oldMoves: [string, string][] = []
-    for (const name of await fs.readdir(directory)) {
-      if (name.toLowerCase() === ".git") continue
-      oldMoves.push([path.join(directory, name), path.join(stage, "previous-workspace", name)])
+    if (mode === "replace") {
+      for (const name of await fs.readdir(directory)) {
+        if (name.toLowerCase() === ".git") continue
+        oldMoves.push([path.join(directory, name), path.join(stage, "previous-workspace", name)])
+      }
+    } else {
+      for (const [, target] of moves) {
+        if (!contains(directory, target) || !(await exists(target))) continue
+        oldMoves.push([target, path.join(stage, "previous-workspace", path.relative(directory, target))])
+      }
     }
     for (const id of replacing) {
       for (const [from, to] of [
@@ -1708,9 +2046,42 @@ export async function restore(input: {
     // Synchronous moves inside the SQL transaction allow rollback on ordinary I/O/SQL errors.
     Database.transaction(
       (db) => {
-        if (databaseState(directory).hash !== previous.dbHash)
+        if (mode === "replace" && input.verify && databaseState(directory).hash !== previous.dbHash)
           throw new Error("Stale preview: session data changed before commit; inspect again")
-        collisions(imported!, databaseColumns, replacing)
+        if (mode === "merge") {
+          const incomingIDs = [...ids]
+          for (let offset = 0; offset < incomingIDs.length; offset += 500) {
+            const batch = incomingIDs.slice(offset, offset + 500)
+            const current = new Map(
+              db
+                .all<{ id: string; time_updated: number }>(
+                  sql`SELECT id,time_updated FROM session WHERE id IN (${sql.join(
+                    batch.map((id) => sql`${id}`),
+                    sql`, `,
+                  )})`,
+                )
+                .map((row) => [row.id, row.time_updated]),
+            )
+            if (
+              batch.some((id) => {
+                const before = localSessions.get(id)
+                const now = current.get(id)
+                return before ? now !== before.time_updated : now !== undefined
+              })
+            )
+              throw new Error("Scoped session data changed during merge; retry")
+          }
+          for (const [target, expected] of workspaceState) {
+            if (!expected) {
+              if (existsSync(target)) throw new Error("A workspace file appeared during merge; retry")
+              continue
+            }
+            const current = lstatSync(target)
+            if (!current.isFile() || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs)
+              throw new Error("A workspace file changed during merge; retry")
+          }
+        }
+        collisions(imported!, databaseColumns, replacing, ids)
         // Originals remain on their own volumes until the SQL transaction succeeds.
         for (const [from, to] of oldMoves) {
           mkdirSync(path.dirname(to), { recursive: true })
@@ -1728,12 +2099,24 @@ export async function restore(input: {
           })
           .onConflictDoNothing()
           .run()
-        for (const id of replacing) {
-          db.run(sql`DELETE FROM event_sequence WHERE aggregate_id = ${id}`)
-          db.run(sql`DELETE FROM session WHERE id = ${id}`)
+        const replacingIDs = [...replacing]
+        for (let offset = 0; offset < replacingIDs.length; offset += 500) {
+          const batch = replacingIDs.slice(offset, offset + 500)
+          db.run(
+            sql`DELETE FROM event_sequence WHERE aggregate_id IN (${sql.join(
+              batch.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
+          )
+          db.run(
+            sql`DELETE FROM session WHERE id IN (${sql.join(
+              batch.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
+          )
         }
         for (const name of ["session", "message", "part", "todo", "session_message"] as const) {
-          for (const original of orderedRows(imported!, name, databaseColumns[name])) {
+          for (const original of selectedRows(imported!, name, databaseColumns[name], ids)) {
             const r = transformRow(name, original)
             db.run(
               sql`INSERT INTO ${sql.identifier(name)} (${sql.join(
@@ -1772,7 +2155,15 @@ export async function restore(input: {
           `Migration succeeded but runtime invalidation failed; close and reopen this project: ${String(error)}`,
         ),
       )
-    return { directory, sessions: ids.size, files, warnings: resultWarnings, safetyPath }
+    return {
+      directory,
+      sessions: ids.size,
+      skippedSessions: manifest.sessionIds.length - ids.size,
+      files,
+      skippedFiles,
+      warnings: resultWarnings,
+      safetyPath,
+    }
   } finally {
     const failures: unknown[] = []
     try {
@@ -1798,15 +2189,15 @@ export async function restore(input: {
     await cleanup(() => handle?.close())
     if (recovered && importedTemp) {
       const target = importedTemp
-      await cleanup(() => fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+      await cleanup(() => removeTemporary(target))
     }
     if (recovered && stage) {
       const target = stage
-      await cleanup(() => fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+      await cleanup(() => removeTemporary(target))
     }
     if (recovered && dataStage) {
       const target = dataStage
-      await cleanup(() => fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+      await cleanup(() => removeTemporary(target))
     }
     await cleanup(() => lock.close())
     if (recovered) await cleanup(() => fs.rm(journal, { force: true }))

@@ -55,7 +55,8 @@ describe("project migration paths and previews", () => {
   })
   test("validates all preview modes and accepts fractional filesystem timestamps", () => {
     expect(parseProjectPreview(preview)).toEqual(preview)
-    expect(parseProjectPreview({ ...preview, action: "create", local: null }).action).toBe("create")
+    expect(parseProjectPreview({ ...preview, action: "create", local: null, previewToken: null }).action).toBe("create")
+    expect(parseProjectPreview({ ...preview, action: "merge", previewToken: null }).action).toBe("merge")
     expect(
       parseProjectPreview({ ...preview, action: "select-target", local: null, directory: null, previewToken: null })
         .previewToken,
@@ -66,7 +67,6 @@ describe("project migration paths and previews", () => {
       null,
       [],
       {},
-      { ...preview, action: "merge" },
       { ...preview, previewToken: "" },
       { ...preview, previewToken: null },
       { ...preview, directory: null },
@@ -135,6 +135,8 @@ describe("project migration requests", () => {
                   : { directory: "/existing", safetyPath: "/safety/before.zip" }),
                 sessions: 3,
                 files: 12,
+                skippedSessions: 2,
+                skippedFiles: 4,
                 warnings: ["Sensitive files included"],
               },
         ),
@@ -162,15 +164,15 @@ describe("project migration requests", () => {
         ...input,
         mode: "restore",
         destination: "/existing",
+        restoreMode: "replace",
         previewToken: "preview-token",
-        overwrite: true,
+        verify: true,
+        safetyBackup: true,
       })
       await transferProject({
         ...input,
         mode: "restore",
         destination: "/new-project",
-        previewToken: "create-token",
-        overwrite: false,
       })
       expect(calls).toBe(5)
       expect(received).toEqual([
@@ -200,7 +202,14 @@ describe("project migration requests", () => {
           directory: "/manager",
           method: "POST",
           auth: `Basic ${btoa("user:secret")}`,
-          body: { path: "/shared/project.zip", directory: "/existing", previewToken: "preview-token", overwrite: true },
+          body: {
+            path: "/shared/project.zip",
+            directory: "/existing",
+            mode: "replace",
+            verify: true,
+            safetyBackup: true,
+            previewToken: "preview-token",
+          },
         },
         {
           path: "/project/restore",
@@ -210,8 +219,9 @@ describe("project migration requests", () => {
           body: {
             path: "/shared/project.zip",
             directory: "/new-project",
-            previewToken: "create-token",
-            overwrite: false,
+            mode: "merge",
+            verify: false,
+            safetyBackup: false,
           },
         },
       ])
@@ -221,8 +231,12 @@ describe("project migration requests", () => {
         files: 12,
         warnings: ["Sensitive files included"],
         safetyPath: null,
+        skippedSessions: 0,
+        skippedFiles: 0,
       })
       expect(restore.safetyPath).toBe("/safety/before.zip")
+      expect(restore.skippedSessions).toBe(2)
+      expect(restore.skippedFiles).toBe(4)
     } finally {
       await server.close()
     }
@@ -244,15 +258,15 @@ describe("project migration requests", () => {
           ...input,
           mode: "restore",
           destination: "/existing",
+          restoreMode: "replace",
           previewToken: "stale",
-          overwrite: true,
         }),
       ).rejects.toThrow("Preview is stale; read the package again")
       await expect(transferProject({ ...input, mode: "backup" })).rejects.toThrow("无效的迁移结果")
       await expect(inspectProject(input)).rejects.toThrow("无效的迁移预览")
       await expect(
-        transferProject({ ...input, mode: "restore", destination: "/existing", previewToken: " ", overwrite: true }),
-      ).rejects.toThrow("请先重新读取迁移包")
+        transferProject({ ...input, mode: "restore", destination: "/existing", restoreMode: "replace" }),
+      ).rejects.toThrow("完整替换前请先重新读取迁移包")
     } finally {
       await server.close()
     }

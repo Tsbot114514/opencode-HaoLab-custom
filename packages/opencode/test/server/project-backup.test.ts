@@ -95,15 +95,28 @@ describe("project backup HTTP API", () => {
             body: JSON.stringify({
               path: archive,
               directory: destination,
-              previewToken: preview.previewToken,
-              overwrite: false,
             }),
           },
         )
         expect(restored.status).toBe(200)
         const body = await restored.json()
-        expect(Object.keys(body).sort()).toEqual(["directory", "files", "safetyPath", "sessions", "warnings"])
-        expect(body).toMatchObject({ directory: destination, files: 2, sessions: 0, safetyPath: null })
+        expect(Object.keys(body).sort()).toEqual([
+          "directory",
+          "files",
+          "safetyPath",
+          "sessions",
+          "skippedFiles",
+          "skippedSessions",
+          "warnings",
+        ])
+        expect(body).toMatchObject({
+          directory: destination,
+          files: 2,
+          sessions: 0,
+          skippedFiles: 0,
+          skippedSessions: 0,
+          safetyPath: null,
+        })
         expect(await fs.readFile(path.join(destination, ".hidden"), "utf8")).toBe("project data")
         for (const events of clients) {
           expect(events).toHaveLength(1)
@@ -134,7 +147,6 @@ describe("project backup HTTP API", () => {
                 path: "relative.zip",
                 directory: source.directory,
                 previewToken: "invalid",
-                overwrite: false,
               }),
             },
           )
