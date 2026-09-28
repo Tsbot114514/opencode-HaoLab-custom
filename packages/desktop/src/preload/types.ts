@@ -8,6 +8,15 @@ export type ServerReadyData = {
   password: string | null
 }
 
+export type RemoteStatus = {
+  enabled: boolean
+  online: boolean
+  authUrl?: string
+  loginError?: string
+  share?: string
+  connection?: { host: string; url: string; username: string; password: string }
+}
+
 export type SqliteMigrationProgress = { type: "InProgress"; value: number } | { type: "Done" }
 
 export type WslConfig = { enabled: boolean }
@@ -62,6 +71,11 @@ export type ElectronAPI = {
   consumeInitialDeepLinks: () => Promise<string[]>
   getDefaultServerUrl: () => Promise<string | null>
   setDefaultServerUrl: (url: string | null) => Promise<void>
+  remoteStatus: () => Promise<RemoteStatus>
+  remoteEnable: () => Promise<RemoteStatus>
+  remoteDisable: () => Promise<RemoteStatus>
+  remoteConnect: (share: string) => Promise<RemoteStatus>
+  remoteDisconnect: () => Promise<RemoteStatus>
   getWslConfig: () => Promise<WslConfig>
   setWslConfig: (config: WslConfig) => Promise<void>
   getDisplayBackend: () => Promise<LinuxDisplayBackend | null>
@@ -98,7 +112,7 @@ export type ElectronAPI = {
     extensions?: string[]
   }) => Promise<string | string[] | null>
   saveFilePicker: (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>
-  openLink: (url: string) => void
+  openLink: (url: string) => Promise<void>
   openPath: (path: string, app?: string) => Promise<void>
   readClipboardImage: () => Promise<{ buffer: ArrayBuffer; width: number; height: number } | null>
   showNotification: (title: string, body?: string) => void

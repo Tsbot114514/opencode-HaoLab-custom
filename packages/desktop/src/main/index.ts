@@ -17,6 +17,7 @@ import { CHANNEL, UPDATER_ENABLED } from "./constants"
 import { registerIpcHandlers, sendDeepLinks, sendMenuCommand, sendSqliteMigrationProgress } from "./ipc"
 import { exportDebugLogs, initCrashReporter, initLogging, startNetLog, write as writeLog } from "./logging"
 import { parseMarkdown } from "./markdown"
+import { RemoteHelper } from "./remote-helper"
 import { createMenu } from "./menu"
 import { applyHaolabDataConfig, deleteDefaultHaolabData, getHaolabDataLocation, migrateHaolabData } from "./haolab-data"
 import {
@@ -222,6 +223,12 @@ const main = Effect.gen(function* () {
 
   const serverReady = Deferred.makeUnsafe<ServerReadyData>()
   const loadingComplete = Deferred.makeUnsafe<void>()
+  const remote = new RemoteHelper()
+  const withRemote = async <T>(action: () => Promise<T>) => {
+    remote.setSidecar(await Effect.runPromise(Deferred.await(serverReady)))
+    return action()
+  }
+  app.on("before-quit", () => remote.stop())
 
   registerIpcHandlers({
     killSidecar: () => killSidecar(),
@@ -262,6 +269,11 @@ const main = Effect.gen(function* () {
     consumeInitialDeepLinks: () => pendingDeepLinks.splice(0),
     getDefaultServerUrl: () => getDefaultServerUrl(),
     setDefaultServerUrl: (url) => setDefaultServerUrl(url),
+    remoteStatus: () => withRemote(() => remote.status()),
+    remoteEnable: () => withRemote(() => remote.enable()),
+    remoteDisable: () => withRemote(() => remote.disable()),
+    remoteConnect: (share) => withRemote(() => remote.connect(share)),
+    remoteDisconnect: () => withRemote(() => remote.disconnect()),
     getWslConfig: () => Promise.resolve(getWslConfig()),
     setWslConfig: (config: WslConfig) => setWslConfig(config),
     getDisplayBackend: async () => null,
@@ -362,6 +374,7 @@ const main = Effect.gen(function* () {
       }),
     )
     server = listener
+    remote.setSidecar({ url, username: "opencode", password })
     yield* Deferred.succeed(serverReady, {
       url,
       username: "opencode",

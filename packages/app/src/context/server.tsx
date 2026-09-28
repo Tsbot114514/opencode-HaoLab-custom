@@ -5,7 +5,7 @@ import { Persist, persisted } from "@/utils/persist"
 import { useCheckServerHealth } from "@/utils/server-health"
 
 type StoredProject = { worktree: string; expanded: boolean }
-type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http
+type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http | ServerConnection.Tunnel
 const HEALTH_POLL_INTERVAL_MS = 10_000
 
 export function normalizeServerUrl(input: string) {
@@ -38,14 +38,23 @@ export function resolveServerList(input: {
   stored: StoredServer[]
 }): Array<ServerConnection.Any> {
   const servers = [
-    ...input.stored.map((value) =>
-      typeof value === "string"
-        ? {
-            type: "http" as const,
-            http: { url: value },
-          }
-        : value,
-    ),
+    ...input.stored
+      .filter(
+        (value) =>
+          typeof value === "string" ||
+          !("type" in value) ||
+          value.type !== "tunnel" ||
+          !input.props ||
+          input.props.some((conn) => conn.type === "tunnel" && conn.host === value.host),
+      )
+      .map((value) =>
+        typeof value === "string"
+          ? {
+              type: "http" as const,
+              http: { url: value },
+            }
+          : value,
+      ),
     ...(input.props ?? []),
   ]
 
@@ -98,10 +107,16 @@ export namespace ServerConnection {
     http: HttpBase
   } & Base
 
+  export type Tunnel = {
+    type: "tunnel"
+    host: string
+    http: HttpBase
+  } & Base
+
   export type Any =
     | Http
     // All these are desktop-only
-    | (Sidecar | Ssh)
+    | (Sidecar | Ssh | Tunnel)
 
   export const key = (conn: Any): Key => {
     switch (conn.type) {
@@ -113,6 +128,8 @@ export namespace ServerConnection {
       }
       case "ssh":
         return Key.make(`ssh:${conn.host}`)
+      case "tunnel":
+        return Key.make(`tunnel:${conn.host}`)
     }
   }
 
@@ -196,13 +213,33 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       })
     }
 
+    function addTunnel(conn: ServerConnection.Tunnel) {
+      if (!conn.host || !conn.http.url) return
+      return batch(() => {
+        const key = ServerConnection.key(conn)
+        const existing = store.list.findIndex((value) =>
+          typeof value !== "string" && "type" in value && value.type === "tunnel"
+            ? ServerConnection.key(value) === key
+            : false,
+        )
+        if (existing !== -1) setStore("list", existing, conn)
+        else setStore("list", store.list.length, conn)
+        setState("active", key)
+        return conn
+      })
+    }
+
     function remove(key: ServerConnection.Key) {
-      const list = store.list.filter((x) => url(x) !== key)
+      const list = store.list.filter((x) => {
+        const conn: ServerConnection.Any =
+          typeof x === "string" ? { type: "http", http: { url: x } } : "type" in x ? x : { type: "http", http: x }
+        return ServerConnection.key(conn) !== key
+      })
       batch(() => {
         setStore("list", list)
         if (state.active === key) {
-          const next = list[0]
-          setState("active", next ? ServerConnection.Key.make(url(next)) : props.defaultServer)
+          const next = allServers().find((conn) => ServerConnection.key(conn) !== key)
+          setState("active", next ? ServerConnection.key(next) : ServerConnection.Key.make("sidecar"))
         }
       })
     }
@@ -251,6 +288,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       },
       setActive,
       add,
+      addTunnel,
       remove,
       projects: {
         list: projectsList,

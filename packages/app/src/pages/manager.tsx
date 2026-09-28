@@ -10,6 +10,7 @@ import { Markdown } from "@opencode-ai/ui/markdown"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { SessionTurn } from "@opencode-ai/ui/session-turn"
 import { TextField } from "@opencode-ai/ui/text-field"
+import QRCode from "qrcode"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -18,11 +19,12 @@ import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { ProjectBackup } from "@/components/project-backup"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useModels } from "@/context/models"
-import { usePlatform } from "@/context/platform"
-import { useServer } from "@/context/server"
+import { usePlatform, type RemoteStatus } from "@/context/platform"
+import { ServerConnection, useServer } from "@/context/server"
 import { useProviders } from "@/hooks/use-providers"
 import { Identifier } from "@/utils/id"
 import { authTokenFromCredentials } from "@/utils/server"
+import { useCheckServerHealth } from "@/utils/server-health"
 import type { UpdateDownloadProgress } from "@/context/platform"
 import { compareMessages } from "@/utils/message-order"
 
@@ -86,6 +88,7 @@ export default function ManagerPage() {
   const providers = useProviders()
   const platform = usePlatform()
   const server = useServer()
+  const checkServerHealth = useCheckServerHealth()
   const dialog = useDialog()
   const navigate = useNavigate()
   const [update, setUpdate] = createStore({
@@ -119,11 +122,275 @@ export default function ManagerPage() {
   const [messages, setMessages] = createSignal<WithParts[]>([])
   const [session, setSession] = createSignal<Session>()
   const [sessionStatus, setSessionStatus] = createSignal<SessionStatus>({ type: "idle" })
+  const [remote, setRemote] = createStore({
+    status: undefined as RemoteStatus | undefined,
+    loading: true,
+    busy: false,
+    message: "",
+    error: "",
+    pairing: "",
+    open: false,
+    view: "share" as "share" | "connect" | "info",
+    awaitingConnection: false,
+  })
+  const [shareQR] = createResource(
+    () => (remote.open && remote.view === "info" ? remote.status?.share : undefined),
+    (share) => QRCode.toDataURL(share, { errorCorrectionLevel: "M", margin: 2, width: 192 }),
+  )
+  let remotePolling = false
+
+  const applyRemoteStatus = async (status: RemoteStatus) => {
+    setRemote({ status, loading: false })
+    if (!remote.awaitingConnection || !status.online || !status.connection) return
+    if (!(await checkServerHealth(status.connection)).healthy) {
+      setRemote("error", "组网已上线，但暂时无法访问设备 A 的服务器。请确认两端处于同一组网且设备 A 已开启共享。")
+      return
+    }
+    server.addTunnel({
+      type: "tunnel",
+      host: status.connection.host,
+      http: {
+        url: status.connection.url,
+        username: status.connection.username,
+        password: status.connection.password,
+      },
+      displayName: status.connection.host,
+    })
+    setRemote({ awaitingConnection: false, message: `已连接 ${status.connection.host}。` })
+  }
+
+  const refreshRemote = async (manual = false) => {
+    if (!platform.remoteStatus || remote.busy || remotePolling) return
+    remotePolling = true
+    try {
+      const status = await platform.remoteStatus()
+      if (remote.busy) return
+      if (manual || status.online) setRemote("error", "")
+      await applyRemoteStatus(status)
+    } catch (err) {
+      if (!remote.busy) setRemote({ loading: false, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      remotePolling = false
+    }
+  }
+
+  const changeRemote = async (action: "enable" | "disable" | "connect" | "disconnect") => {
+    if (remote.busy) return
+    if (action === "connect" && !remote.pairing.trim()) {
+      setRemote("error", "请先粘贴设备 A 的配对文本。")
+      return
+    }
+    setRemote({ busy: true, error: "", message: "" })
+    try {
+      const status = await (action === "enable"
+        ? platform.remoteEnable!()
+        : action === "disable"
+          ? platform.remoteDisable!()
+          : action === "connect"
+            ? platform.remoteConnect!(remote.pairing.trim())
+            : platform.remoteDisconnect!())
+      if (action === "connect") setRemote({ awaitingConnection: true, pairing: "" })
+      if (action === "disconnect") {
+        const host = remote.status?.connection?.host
+        if (host) server.remove(ServerConnection.key({ type: "tunnel", host, http: { url: "" } }))
+        setRemote({ awaitingConnection: false, pairing: "" })
+      }
+      await applyRemoteStatus(status)
+      if (action === "enable")
+        setRemote("message", status.online ? "本机共享已开启。" : "本机共享已开启，等待组网授权上线。")
+      if (action === "disable") setRemote("message", "已关闭本机远程控制。")
+      if (action === "disconnect") setRemote("message", "已断开远程设备。")
+    } catch (err) {
+      setRemote("error", err instanceof Error ? err.message : String(err))
+    } finally {
+      setRemote("busy", false)
+    }
+  }
+
+  onMount(() => {
+    if (platform.platform !== "desktop" || !platform.remoteStatus) return
+    void refreshRemote()
+    const timer = setInterval(() => void refreshRemote(), 5_000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const RemotePanel = () => (
+    <div
+      id="manager-remote-panel"
+      role="region"
+      aria-label="远程连接"
+      class="mt-4 min-w-0 border-t border-v2-border-border-base pt-4"
+    >
+      <div
+        role="tablist"
+        aria-label="远程连接页面"
+        class="grid grid-cols-3 gap-1 rounded-lg bg-v2-background-bg-deep p-1"
+      >
+        <For
+          each={
+            [
+              { id: "share", label: "共享本机" },
+              { id: "connect", label: "连接设备" },
+              { id: "info", label: "本机信息" },
+            ] as const
+          }
+        >
+          {(item) => (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={remote.view === item.id}
+              class="rounded-md px-2 py-2 text-12-medium transition-colors"
+              classList={{
+                "bg-v2-background-bg-base text-v2-text-text-base shadow-sm": remote.view === item.id,
+                "text-v2-text-text-muted hover:text-v2-text-text-base": remote.view !== item.id,
+              }}
+              onClick={() => setRemote("view", item.id)}
+            >
+              {item.label}
+            </button>
+          )}
+        </For>
+      </div>
+
+      <div class="mt-4 text-12-regular text-v2-text-text-muted">
+        {remote.loading
+          ? "正在检查组网状态"
+          : !remote.status
+            ? "状态未知"
+            : remote.status.online
+              ? "组网已上线"
+              : remote.status.authUrl
+                ? "等待首次授权"
+                : remote.status.enabled || remote.status.connection
+                  ? "正在获取授权链接"
+                  : "尚未加入组网"}
+      </div>
+      <Show when={remote.view === "share"}>
+        <div class="mt-4 space-y-3">
+          <p class="text-12-regular leading-5 text-v2-text-text-muted">
+            开启后，已配对且在同一组网的设备可以访问这台电脑当前运行的 sidecar。
+          </p>
+          <Button
+            variant={remote.status?.enabled ? "secondary" : "primary"}
+            size="small"
+            disabled={remote.busy || remote.loading || !remote.status}
+            onClick={() => void changeRemote(remote.status?.enabled ? "disable" : "enable")}
+          >
+            {remote.busy ? "请稍候..." : remote.status?.enabled ? "关闭本机共享" : "开启本机共享"}
+          </Button>
+          <Show when={remote.status?.enabled && remote.status.share}>
+            <p class="text-12-regular text-v2-text-text-muted">本机已就绪，在“本机信息”页面查看配对文本和二维码。</p>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={remote.view === "connect"}>
+        <div class="mt-4 space-y-3">
+          <p class="text-12-regular leading-5 text-v2-text-text-muted">
+            粘贴另一台设备显示的配对文本。该操作不会修改本机共享设置。
+          </p>
+          <textarea
+            value={remote.pairing}
+            onInput={(event) => setRemote("pairing", event.currentTarget.value)}
+            placeholder="粘贴配对文本"
+            aria-label="远程设备配对文本"
+            rows={4}
+            class="w-full resize-y rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep p-3 font-mono text-11-regular text-v2-text-text-base placeholder:text-v2-text-text-faint"
+          />
+          <div class="flex flex-wrap gap-2">
+            <Button
+              variant="primary"
+              size="small"
+              disabled={remote.busy || !remote.pairing.trim() || !!remote.status?.connection}
+              onClick={() => void changeRemote("connect")}
+            >
+              连接设备
+            </Button>
+            <Button
+              variant="secondary"
+              size="small"
+              disabled={remote.busy || !remote.status?.connection}
+              onClick={() => void changeRemote("disconnect")}
+            >
+              断开连接
+            </Button>
+          </div>
+          <Show when={remote.status?.connection}>
+            <p class="break-all text-12-regular leading-5 text-v2-text-text-muted">
+              {remote.awaitingConnection
+                ? `正在连接 ${remote.status?.connection?.host ?? ""}`
+                : `已配置远程设备 ${remote.status?.connection?.host ?? ""}`}
+            </p>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={remote.view === "info"}>
+        <div class="mt-4">
+          <Show
+            when={remote.status?.enabled && remote.status.share}
+            fallback={
+              <p class="text-12-regular leading-5 text-v2-text-text-muted">
+                请先在“共享本机”页面开启共享并完成授权，配对信息将在此显示。
+              </p>
+            }
+          >
+            <p class="text-12-regular leading-5 text-v2-text-text-muted">
+              配对文本含访问令牌，仅分享给可信设备。关闭共享会暂停访问，重新开启后原配对文本仍有效。
+            </p>
+            <textarea
+              readOnly
+              value={remote.status!.share!}
+              aria-label="本机配对文本"
+              rows={4}
+              class="mt-2 w-full resize-none rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep p-3 font-mono text-11-regular text-v2-text-text-base select-text"
+            />
+            <Button
+              variant="secondary"
+              size="small"
+              class="mt-2"
+              onClick={() =>
+                void navigator.clipboard.writeText(remote.status!.share!).then(
+                  () => setRemote("message", "配对文本已复制。"),
+                  () => setRemote("error", "复制失败，请手动选择文本。"),
+                )
+              }
+            >
+              复制配对文本
+            </Button>
+            <Show when={shareQR()}>
+              {(qr) => (
+                <img class="mt-3 max-w-full rounded-lg" width="192" height="192" src={qr()} alt="本机配对二维码" />
+              )}
+            </Show>
+            <Show when={shareQR.error}>
+              <p class="mt-2 text-12-regular text-danger-base">无法生成二维码，请使用配对文本。</p>
+            </Show>
+          </Show>
+        </div>
+      </Show>
+
+      <Show
+        when={
+          !remote.status?.online && !remote.status?.authUrl && (remote.status?.enabled || remote.status?.connection)
+        }
+      >
+        <Button
+          variant="ghost"
+          size="small"
+          class="mt-3"
+          disabled={remote.busy}
+          onClick={() => void refreshRemote(true)}
+        >
+          刷新授权状态
+        </Button>
+      </Show>
+    </div>
+  )
 
   const modelOptions = () =>
-    models
-      .list()
-      .filter((model) => models.visible({ providerID: model.provider.id, modelID: model.id }))
+    models.list().filter((model) => models.visible({ providerID: model.provider.id, modelID: model.id }))
 
   const openProviderConfig = () => dialog.show(() => <DialogSelectProvider />)
 
@@ -944,15 +1211,92 @@ export default function ManagerPage() {
           </div>
         </div>
       </section>
-      <aside class="border-t lg:border-t-0 lg:border-l border-v2-border-border-base bg-v2-background-bg-deep p-4 overflow-y-auto">
+      <aside class="border-t lg:border-t-0 lg:border-l border-v2-border-border-base bg-v2-background-bg-deep p-4 lg:overflow-y-auto">
         <div class="flex flex-col gap-4">
+          <Show
+            when={
+              platform.platform === "desktop" &&
+              platform.remoteStatus &&
+              platform.remoteEnable &&
+              platform.remoteDisable &&
+              platform.remoteConnect &&
+              platform.remoteDisconnect
+            }
+          >
+            <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
+              <Button
+                variant="secondary"
+                size="large"
+                class="w-full"
+                aria-expanded={remote.open}
+                aria-controls="manager-remote-panel"
+                onClick={() => {
+                  const open = !remote.open
+                  setRemote("open", open)
+                  if (!open) return
+                  setRemote("view", "share")
+                  void refreshRemote(true)
+                }}
+              >
+                远程连接
+              </Button>
+              <Show when={remote.status?.authUrl && !remote.status.online}>
+                <div class="mt-3 rounded-xl border border-v2-border-border-base bg-v2-background-bg-deep p-3">
+                  <p class="text-12-regular leading-5 text-v2-text-text-muted">
+                    请复制授权链接，自行在浏览器中完成首次授权。HaoLab 不会自动打开浏览器。
+                  </p>
+                  <input
+                    readOnly
+                    value={remote.status!.authUrl!}
+                    aria-label="组网授权链接"
+                    class="mt-2 w-full rounded-lg border border-v2-border-border-base bg-v2-background-bg-base px-2 py-2 font-mono text-11-regular text-v2-text-text-base select-text"
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    class="mt-2"
+                    onClick={() =>
+                      void navigator.clipboard.writeText(remote.status!.authUrl!).then(
+                        () => setRemote("message", "授权链接已复制。"),
+                        () => setRemote("error", "复制失败，请手动选择授权链接。"),
+                      )
+                    }
+                  >
+                    复制授权链接
+                  </Button>
+                </div>
+              </Show>
+              <Show
+                when={
+                  !remote.status?.online &&
+                  !remote.status?.authUrl &&
+                  (remote.status?.enabled || remote.status?.connection)
+                }
+              >
+                <p class="mt-3 text-12-regular leading-5 text-v2-text-text-muted">
+                  {remote.status?.loginError || "正在获取组网授权链接，稍后会自动重试。"}
+                </p>
+              </Show>
+              <Show when={remote.message}>
+                <p class="mt-3 text-12-regular leading-5 text-v2-text-text-muted">{remote.message}</p>
+              </Show>
+              <Show when={remote.error}>
+                <p
+                  role="alert"
+                  class="mt-3 break-words rounded-lg border border-danger-base/30 bg-danger-base/5 p-2 text-12-regular leading-5 text-danger-base"
+                >
+                  {remote.error}
+                </p>
+              </Show>
+              <Show when={remote.open}>
+                <RemotePanel />
+              </Show>
+            </section>
+          </Show>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">代理设置</div>
-            <TextField
-              value={proxy()}
-              onChange={setProxy}
-              placeholder={`${defaultProxyPrefix}7890`}
-            />
+            <TextField value={proxy()} onChange={setProxy} placeholder={`${defaultProxyPrefix}7890`} />
             <div class="mt-3 flex items-center gap-2">
               <Button variant="ghost" size="small" disabled={proxySaving()} onClick={() => void saveProxy()}>
                 保存

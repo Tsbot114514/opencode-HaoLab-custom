@@ -5,6 +5,7 @@ import type { DesktopMenuAction } from "@opencode-ai/app/desktop-menu"
 
 import type {
   InitStep,
+  RemoteStatus,
   FatalRendererError,
   ServerReadyData,
   SqliteMigrationProgress,
@@ -28,6 +29,11 @@ type Deps = {
   consumeInitialDeepLinks: () => Promise<string[]> | string[]
   getDefaultServerUrl: () => Promise<string | null> | string | null
   setDefaultServerUrl: (url: string | null) => Promise<void> | void
+  remoteStatus: () => Promise<RemoteStatus>
+  remoteEnable: () => Promise<RemoteStatus>
+  remoteDisable: () => Promise<RemoteStatus>
+  remoteConnect: (share: string) => Promise<RemoteStatus>
+  remoteDisconnect: () => Promise<RemoteStatus>
   getWslConfig: () => Promise<WslConfig>
   setWslConfig: (config: WslConfig) => Promise<void> | void
   getDisplayBackend: () => Promise<string | null>
@@ -90,6 +96,11 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("set-default-server-url", (_event: IpcMainInvokeEvent, url: string | null) =>
     deps.setDefaultServerUrl(url),
   )
+  ipcMain.handle("remote-status", () => deps.remoteStatus())
+  ipcMain.handle("remote-enable", () => deps.remoteEnable())
+  ipcMain.handle("remote-disable", () => deps.remoteDisable())
+  ipcMain.handle("remote-connect", (_event: IpcMainInvokeEvent, share: string) => deps.remoteConnect(share))
+  ipcMain.handle("remote-disconnect", () => deps.remoteDisconnect())
   ipcMain.handle("get-wsl-config", () => deps.getWslConfig())
   ipcMain.handle("set-wsl-config", (_event: IpcMainInvokeEvent, config: WslConfig) => deps.setWslConfig(config))
   ipcMain.handle("get-display-backend", () => deps.getDisplayBackend())
@@ -186,9 +197,7 @@ export function registerIpcHandlers(deps: Deps) {
     },
   )
 
-  ipcMain.on("open-link", (_event: IpcMainEvent, url: string) => {
-    void shell.openExternal(url)
-  })
+  ipcMain.handle("open-link", (_event: IpcMainInvokeEvent, url: string) => shell.openExternal(url))
 
   ipcMain.handle("open-path", async (_event: IpcMainInvokeEvent, path: string, app?: string) => {
     if (!app) return shell.openPath(path)
