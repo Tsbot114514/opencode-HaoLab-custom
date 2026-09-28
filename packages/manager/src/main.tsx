@@ -11,7 +11,9 @@ if (!root) throw new Error("missing root element")
 const platform: Platform = {
   platform: "web",
   version: "manager-dev",
-  openLink: (url) => window.open(url, "_blank"),
+  openLink: (url) => {
+    window.open(url, "_blank")
+  },
   back: () => window.history.back(),
   forward: () => window.history.forward(),
   restart: async () => window.location.reload(),
