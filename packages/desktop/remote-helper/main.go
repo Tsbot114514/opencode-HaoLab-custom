@@ -35,13 +35,14 @@ import (
 const remotePort = "41642"
 
 type command struct {
-	ID       int64  `json:"id"`
-	Command  string `json:"command"`
-	URL      string `json:"url,omitempty"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-	Share    string `json:"share,omitempty"`
-	AuthKey  string `json:"authKey,omitempty"`
+	ID       int64    `json:"id"`
+	Command  string   `json:"command"`
+	Projects []string `json:"projects,omitempty"`
+	URL      string   `json:"url,omitempty"`
+	Username string   `json:"username,omitempty"`
+	Password string   `json:"password,omitempty"`
+	Share    string   `json:"share,omitempty"`
+	AuthKey  string   `json:"authKey,omitempty"`
 }
 
 type connection struct {
@@ -86,6 +87,7 @@ type helper struct {
 	sidecarUser string
 	sidecarPass string
 	shareToken  string
+	projects    []string
 	authKey     string
 	localSecret string
 	peer        *invitation
@@ -160,6 +162,11 @@ func (h *helper) execute(cmd command) (*result, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch cmd.Command {
+	case "projects":
+		if err := validateProjects(cmd.Projects); err != nil {
+			return nil, err
+		}
+		h.projects = append(make([]string, 0, len(cmd.Projects)), cmd.Projects...)
 	case "sidecar":
 		u, err := parseSidecar(cmd.URL)
 		if err != nil {
@@ -223,6 +230,20 @@ func (h *helper) execute(cmd command) (*result, error) {
 		out = h.status()
 	}
 	return out, nil
+}
+
+func validateProjects(projects []string) error {
+	if len(projects) > 512 {
+		return errors.New("invalid projects")
+	}
+	seen := make(map[string]bool, len(projects))
+	for _, project := range projects {
+		if !filepath.IsAbs(project) || seen[filepath.Clean(project)] {
+			return errors.New("invalid projects")
+		}
+		seen[filepath.Clean(project)] = true
+	}
+	return nil
 }
 
 func (h *helper) start(authKey string) error {
@@ -431,7 +452,17 @@ func (h *helper) enable() error {
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		},
 	}
-	srv := &http.Server{ErrorLog: log.New(io.Discard, "", 0), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := &http.Server{ErrorLog: log.New(io.Discard, "", 0), Handler: h.tailnetHandler(proxy, secret)}
+	h.server = srv
+	go func() {
+		_ = srv.Serve(ln)
+		transport.CloseIdleConnections()
+	}()
+	return nil
+}
+
+func (h *helper) tailnetHandler(proxy http.Handler, secret string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !validRequest(r) {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
@@ -442,6 +473,21 @@ func (h *helper) enable() error {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if r.URL.Path == "/__haolab/projects" {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			h.mu.Lock()
+			directories := append(make([]string, 0, len(h.projects)), h.projects...)
+			h.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(struct {
+				Directories []string `json:"directories"`
+			}{Directories: directories})
+			return
+		}
 		h.mu.Lock()
 		ready := h.sidecar != nil
 		h.mu.Unlock()
@@ -450,13 +496,7 @@ func (h *helper) enable() error {
 			return
 		}
 		proxy.ServeHTTP(w, r)
-	})}
-	h.server = srv
-	go func() {
-		_ = srv.Serve(ln)
-		transport.CloseIdleConnections()
-	}()
-	return nil
+	})
 }
 
 func (h *helper) connect(peer *invitation) error {

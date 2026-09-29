@@ -1,12 +1,23 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { showToast } from "@opencode-ai/ui/toast"
 import { type Accessor, batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
 import { useCheckServerHealth } from "@/utils/server-health"
+import { authTokenFromCredentials } from "@/utils/server"
 
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http | ServerConnection.Tunnel
 const HEALTH_POLL_INTERVAL_MS = 10_000
+
+export function sidebarProjects(current: StoredProject[], directories: unknown): StoredProject[] | undefined {
+  if (!Array.isArray(directories) || directories.some((directory) => typeof directory !== "string" || !directory.trim())) return
+  const expanded = new Map(current.map((project) => [project.worktree, project.expanded]))
+  const next = [...new Set(directories)].map((worktree) => ({ worktree, expanded: expanded.get(worktree) ?? true }))
+  if (next.length === current.length && next.every((project, index) => project.worktree === current[index]?.worktree))
+    return current
+  return next
+}
 
 export function normalizeServerUrl(input: string) {
   const trimmed = input.trim()
@@ -154,6 +165,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         lastProject: {} as Record<string, string>,
       }),
     )
+    const [remote, setRemote] = createStore({ loaded: {} as Record<string, boolean> })
 
     const url = (x: StoredServer) => (typeof x === "string" ? x : "type" in x ? x.http.url : x.url)
 
@@ -261,13 +273,66 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     })
 
     const origin = createMemo(() => projectsKey(state.active))
-    const projectsList = createMemo(() => store.projects[origin()] ?? [])
     const current: Accessor<ServerConnection.Any | undefined> = createMemo(
       () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
+    )
+    const projectsList = createMemo(() =>
+      current()?.type === "tunnel" && !remote.loaded[origin()] ? [] : (store.projects[origin()] ?? []),
     )
     const isLocal = createMemo(() => {
       const c = current()
       return (c?.type === "sidecar" && c.variant === "base") || (c?.type === "http" && isLocalHost(c.http.url))
+    })
+
+    createEffect(() => {
+      const conn = current()
+      const password = conn?.http.password
+      if (!ready() || healthy() !== true || conn?.type !== "tunnel" || !password) return
+      const bridge = (() => {
+        try {
+          const url = new URL(conn.http.url)
+          if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port) return
+          return new URL("/__haolab/projects", url)
+        } catch {
+          return
+        }
+      })()
+      if (!bridge) return
+
+      const key = projectsKey(ServerConnection.key(conn))
+      const controller = new AbortController()
+      let alive = true
+      const load = async () => {
+        try {
+          const response = await fetch(bridge, {
+            headers: {
+              Authorization: `Basic ${authTokenFromCredentials({ username: conn.http.username, password })}`,
+            },
+            signal: controller.signal,
+          })
+          if (!response.ok) {
+            if (response.status === 404 && alive) {
+              showToast({ variant: "error", title: "设备 A 未提供侧栏清单", description: "请在 A 安装支持侧栏共享的 Desktop。" })
+            }
+            return
+          }
+          const data: unknown = await response.json()
+          if (!alive || !data || typeof data !== "object" || !Array.isArray((data as { directories?: unknown }).directories)) return
+          const currentProjects = store.projects[key] ?? []
+          const next = sidebarProjects(currentProjects, (data as { directories: unknown[] }).directories)
+          if (!next) return
+          if (next !== currentProjects) setStore("projects", key, next)
+          setRemote("loaded", key, true)
+        } catch {
+          // Reconnecting can request A's sidebar again.
+        }
+      }
+      void load()
+      onCleanup(() => {
+        alive = false
+        controller.abort()
+        setRemote("loaded", key, false)
+      })
     })
 
     return {

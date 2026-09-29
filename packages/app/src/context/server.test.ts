@@ -1,5 +1,29 @@
 import { describe, expect, test } from "bun:test"
-import { resolveServerList, ServerConnection } from "./server"
+import { resolveServerList, ServerConnection, sidebarProjects } from "./server"
+
+describe("sidebarProjects", () => {
+  test("uses A's order and removes B's stale entries without changing existing expansion", () => {
+    const current = [
+      { worktree: "/mine", expanded: false },
+      { worktree: "/shared", expanded: false },
+    ]
+    expect(sidebarProjects(current, ["/remote", "/shared", "/remote"])).toEqual([
+      { worktree: "/remote", expanded: true },
+      { worktree: "/shared", expanded: false },
+    ])
+    expect(sidebarProjects(current, ["/mine", "/shared"])).toBe(current)
+    expect(sidebarProjects(current, [])).toEqual([])
+    expect(sidebarProjects(current, ["/shared", "", 42])).toBeUndefined()
+    expect(sidebarProjects(current, null)).toBeUndefined()
+  })
+
+  test("keeps distinct non-Git directories instead of collapsing them by project ID", () => {
+    const directories = Array.from({ length: 10 }, (_, index) => `/work/project-${index}`)
+    const result = sidebarProjects([{ worktree: directories[0]!, expanded: false }], directories)
+    expect(result?.map((project) => project.worktree)).toEqual(directories)
+    expect(result?.[0]?.expanded).toBe(false)
+  })
+})
 
 describe("resolveServerList", () => {
   test("lets startup auth_token credentials override a persisted same-url server", () => {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,89 @@ func TestAuthKeyCommandDoesNotExposeKey(t *testing.T) {
 		if _, err := h.execute(command{Command: "auth-key", AuthKey: invalid}); err == nil || invalid != "" && strings.Contains(err.Error(), invalid) {
 			t.Fatal("invalid auth key accepted or leaked")
 		}
+	}
+}
+
+func TestProjectsCommand(t *testing.T) {
+	h := &helper{}
+	first := filepath.Join(t.TempDir(), "repo")
+	second := filepath.Join(t.TempDir(), "not-a-git-repo")
+	var cmd command
+	if err := json.Unmarshal([]byte(`{"command":"projects","projects":[`+strconv.Quote(first)+`,`+strconv.Quote(second)+`]}`), &cmd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.execute(cmd); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Projects[0] = second
+	if h.projects[0] != first || h.projects[1] != second {
+		t.Fatal("snapshot did not preserve ordered, independent paths")
+	}
+	for _, projects := range [][]string{
+		{""}, {"relative/path"}, {first, first}, {first, filepath.Join(first, ".") + string(filepath.Separator)},
+		make([]string, 513),
+	} {
+		if _, err := h.execute(command{Command: "projects", Projects: projects}); err == nil || strings.Contains(err.Error(), first) {
+			t.Fatal("invalid projects accepted or path leaked")
+		}
+		if h.projects[0] != first || h.projects[1] != second {
+			t.Fatal("invalid command replaced snapshot")
+		}
+	}
+	if _, err := h.execute(command{Command: "projects"}); err != nil || len(h.projects) != 0 {
+		t.Fatal("empty snapshot did not clear projects")
+	}
+}
+
+func TestTailnetProjectsRoute(t *testing.T) {
+	h := &helper{}
+	path := filepath.Join(t.TempDir(), "plain-directory")
+	if _, err := h.execute(command{Command: "projects", Projects: []string{path}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := h.tailnetHandler(http.NotFoundHandler(), "secret")
+	for _, tc := range []struct {
+		method string
+		url    string
+		auth   bool
+		status int
+	}{
+		{http.MethodGet, "/__haolab/projects", false, http.StatusUnauthorized},
+		{http.MethodPost, "/__haolab/projects", false, http.StatusUnauthorized},
+		{http.MethodGet, "/__haolab/projects?auth_token=secret", true, http.StatusBadRequest},
+		{http.MethodPost, "/__haolab/projects", true, http.StatusMethodNotAllowed},
+		{http.MethodPut, "/__haolab/projects", true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/__haolab/projects", true, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/__haolab/projects", true, http.StatusOK},
+	} {
+		req := httptest.NewRequest(tc.method, tc.url, nil)
+		if tc.auth {
+			req.SetBasicAuth("remote", "secret")
+		}
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != tc.status {
+			t.Fatalf("%s %s authenticated=%v: %d", tc.method, tc.url, tc.auth, resp.Code)
+		}
+		if tc.status != http.StatusOK {
+			continue
+		}
+		var body struct {
+			Directories []string `json:"directories"`
+		}
+		if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil || len(body.Directories) != 1 || body.Directories[0] != path || resp.Header().Get("Content-Type") != "application/json" {
+			t.Fatal("invalid projects response")
+		}
+	}
+	if _, err := h.execute(command{Command: "projects"}); err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/__haolab/projects", nil)
+	req.SetBasicAuth("remote", "secret")
+	handler.ServeHTTP(resp, req)
+	if strings.TrimSpace(resp.Body.String()) != `{"directories":[]}` {
+		t.Fatal("empty snapshot was not encoded as an array")
 	}
 }
 

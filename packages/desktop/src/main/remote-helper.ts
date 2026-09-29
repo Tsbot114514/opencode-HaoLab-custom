@@ -1,13 +1,20 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { app, session } from "electron"
 import type { RemoteStatus, ServerReadyData } from "../preload/types"
 import { getStore } from "./store"
 
-type Command = "status" | "enable" | "disable" | "sidecar" | "auth-key" | "connect" | "disconnect"
+type Command = "status" | "enable" | "disable" | "sidecar" | "auth-key" | "connect" | "disconnect" | "projects"
 type Reply = { id: number; result?: RemoteStatus; error?: string }
-type CommandData = { url?: string; username?: string; password?: string; share?: string; authKey?: string }
+type CommandData = {
+  url?: string
+  username?: string
+  password?: string
+  share?: string
+  authKey?: string
+  projects?: string[]
+}
 const ENABLED = "remote.enabled"
 const LEGACY_SHARE = "remote.share"
 const LEGACY_PAIRING = "remote.pairing"
@@ -39,11 +46,11 @@ export class RemoteHelper {
     return this.run("status")
   }
 
-  enable() {
-    return this.run("enable").then(async (initial) => {
-      getStore().set(ENABLED, initial.enabled)
-      return this.waitForAuth(initial)
-    })
+  async enable() {
+    await this.run("projects", { projects: this.sidebarProjects() })
+    const initial = await this.run("enable")
+    getStore().set(ENABLED, initial.enabled)
+    return this.waitForAuth(initial)
   }
 
   setAuthKey(authKey: string) {
@@ -139,6 +146,7 @@ export class RemoteHelper {
         } catch {
           continue
         }
+        if (typeof reply?.id !== "number") continue
         const pending = this.pending.get(reply.id)
         if (!pending) continue
         this.pending.delete(reply.id)
@@ -172,6 +180,7 @@ export class RemoteHelper {
       await this.send("auth-key", { authKey: readFileSync(this.authKeyPath(), "utf8").trim() })
     }
     if (store.get(ENABLED) === true) {
+      await this.send("projects", { projects: this.sidebarProjects() })
       await this.send("enable")
     }
     if (existsSync(this.pairingPath())) {
@@ -186,6 +195,20 @@ export class RemoteHelper {
 
   private authKeyPath() {
     return join(app.getPath("userData"), "remote-helper", "auth.key")
+  }
+
+  private sidebarProjects() {
+    const stored = getStore("opencode.global.dat").get("server")
+    if (typeof stored !== "string") return []
+    try {
+      const data = JSON.parse(stored) as { projects?: { local?: Array<{ worktree?: string }> } }
+      if (!Array.isArray(data?.projects?.local)) return []
+      return data.projects.local
+        .map((project) => project.worktree)
+        .filter((directory): directory is string => typeof directory === "string" && isAbsolute(directory))
+    } catch {
+      return []
+    }
   }
 
   private async waitForAuth(initial: RemoteStatus) {
