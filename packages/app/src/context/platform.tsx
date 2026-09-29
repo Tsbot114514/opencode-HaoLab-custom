@@ -55,6 +55,8 @@ export type FatalRendererErrorLog = {
 export type RemoteStatus = {
   enabled: boolean
   online: boolean
+  hasAuthKey: boolean
+  autoJoin: boolean
   authUrl?: string
   loginError?: string
   share?: string
@@ -121,6 +123,7 @@ export type Platform = {
 
   remoteStatus?(): Promise<RemoteStatus>
   remoteEnable?(): Promise<RemoteStatus>
+  remoteSetAuthKey?(authKey: string): Promise<RemoteStatus>
   remoteDisable?(): Promise<RemoteStatus>
   remoteConnect?(share: string): Promise<RemoteStatus>
   remoteDisconnect?(): Promise<RemoteStatus>

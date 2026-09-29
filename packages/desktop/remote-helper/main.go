@@ -41,6 +41,7 @@ type command struct {
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
 	Share    string `json:"share,omitempty"`
+	AuthKey  string `json:"authKey,omitempty"`
 }
 
 type connection struct {
@@ -55,6 +56,8 @@ type result struct {
 	Online     bool        `json:"online"`
 	AuthURL    string      `json:"authUrl,omitempty"`
 	LoginError string      `json:"loginError,omitempty"`
+	HasAuthKey bool        `json:"hasAuthKey"`
+	AutoJoin   bool        `json:"autoJoin"`
 	Share      string      `json:"share,omitempty"`
 	Connection *connection `json:"connection,omitempty"`
 }
@@ -70,6 +73,7 @@ type invitation struct {
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	Token   string `json:"token"`
+	AuthKey string `json:"authKey,omitempty"`
 }
 
 type helper struct {
@@ -82,6 +86,7 @@ type helper struct {
 	sidecarUser string
 	sidecarPass string
 	shareToken  string
+	authKey     string
 	localSecret string
 	peer        *invitation
 	bridgeAddr  string
@@ -161,8 +166,13 @@ func (h *helper) execute(cmd command) (*result, error) {
 			return nil, err
 		}
 		h.sidecar, h.sidecarUser, h.sidecarPass = u, cmd.Username, cmd.Password
+	case "auth-key":
+		if !validAuthKey(cmd.AuthKey) {
+			return nil, errors.New("invalid tailnet auth key")
+		}
+		h.authKey = cmd.AuthKey
 	case "enable":
-		if err := h.start(); err != nil {
+		if err := h.start(""); err != nil {
 			return nil, err
 		}
 		if h.server == nil {
@@ -180,11 +190,11 @@ func (h *helper) execute(cmd command) (*result, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := h.start(); err != nil {
-			return nil, err
-		}
 		if h.bridge != nil {
 			return nil, errors.New("disconnect before connecting again")
+		}
+		if err := h.start(peer.AuthKey); err != nil {
+			return nil, err
 		}
 		if err := h.connect(peer); err != nil {
 			return nil, err
@@ -215,8 +225,11 @@ func (h *helper) execute(cmd command) (*result, error) {
 	return out, nil
 }
 
-func (h *helper) start() error {
+func (h *helper) start(authKey string) error {
 	if h.node != nil {
+		if authKey != "" {
+			return h.joinWithAuthKey(authKey)
+		}
 		return nil
 	}
 	state := filepath.Join(h.stateDir, "tsnet")
@@ -228,7 +241,8 @@ func (h *helper) start() error {
 			return errors.New("unable to protect tailnet state")
 		}
 	}
-	s := &tsnet.Server{Dir: state, Hostname: "haolab-code", Ephemeral: false, Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
+	_, stateErr := os.Stat(filepath.Join(state, "tailscaled.state"))
+	s := &tsnet.Server{Dir: state, Hostname: "haolab-code", AuthKey: authKey, Ephemeral: false, Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
 	if err := s.Start(); err != nil {
 		_ = s.Close()
 		return errors.New("unable to start tailnet")
@@ -260,11 +274,37 @@ func (h *helper) start() error {
 		}
 	}()
 	h.node = s
+	if authKey != "" && stateErr == nil {
+		return h.joinWithAuthKey(authKey)
+	}
+	return nil
+}
+
+func (h *helper) joinWithAuthKey(authKey string) error {
+	client, err := h.node.LocalClient()
+	if err != nil {
+		return errors.New("unable to access tailnet status")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	st, err := client.Status(ctx)
+	cancel()
+	if err != nil || st == nil {
+		return errors.New("unable to read tailnet status")
+	}
+	if st.BackendState == "Running" {
+		return nil
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	err = client.Start(ctx, ipn.Options{AuthKey: authKey})
+	cancel()
+	if err != nil {
+		return errors.New("unable to join tailnet with auth key")
+	}
 	return nil
 }
 
 func (h *helper) status() *result {
-	out := &result{Enabled: h.server != nil}
+	out := &result{Enabled: h.server != nil, HasAuthKey: h.authKey != "", AutoJoin: h.peer != nil && h.peer.AuthKey != ""}
 	if h.node != nil {
 		client, err := h.node.LocalClient()
 		if err == nil {
@@ -278,7 +318,7 @@ func (h *helper) status() *result {
 					if out.AuthURL == "" && h.authURL == "" && h.loginSince.IsZero() {
 						h.loginSince = time.Now()
 					}
-					if out.AuthURL == "" && h.authURL == "" && shouldRetryLogin(st.BackendState, h.lastLogin, time.Now()) {
+					if out.AuthURL == "" && h.authURL == "" && (h.peer == nil || h.peer.AuthKey == "") && shouldRetryLogin(st.BackendState, h.lastLogin, time.Now()) {
 						h.lastLogin = time.Now()
 						loginCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 						loginErr := client.StartLoginInteractive(loginCtx)
@@ -290,15 +330,18 @@ func (h *helper) status() *result {
 						}
 					}
 					if out.AuthURL == "" && h.authURL == "" && h.loginError == "" && time.Since(h.loginSince) >= 30*time.Second {
-						h.loginError = "组网服务尚未返回授权链接，请检查系统代理或网络；正在自动重试"
+						h.loginError = "组网尚未上线，请检查入网 Auth Key、管理员审批或网络连接"
+						if h.peer == nil || h.peer.AuthKey == "" {
+							h.loginError = "组网服务尚未返回授权链接，请检查系统代理或网络；正在自动重试"
+						}
 					}
 				} else {
 					h.loginSince = time.Time{}
 				}
-				if out.Online && out.Enabled && st.Self != nil && h.shareToken != "" {
+				if out.Online && out.Enabled && st.Self != nil && h.shareToken != "" && h.authKey != "" {
 					host := strings.TrimSuffix(st.Self.DNSName, ".")
 					if validTailnetHost(host) {
-						share, _ := json.Marshal(invitation{Version: 1, Host: host, Port: 41642, Token: h.shareToken})
+						share, _ := json.Marshal(invitation{Version: 2, Host: host, Port: 41642, Token: h.shareToken, AuthKey: h.authKey})
 						out.Share = string(share)
 					}
 				}
@@ -315,6 +358,10 @@ func (h *helper) status() *result {
 		if out.AuthURL == "" {
 			out.LoginError = h.loginError
 		}
+	}
+	if h.peer != nil && h.peer.AuthKey != "" && !out.Online && out.AuthURL != "" {
+		out.AuthURL = ""
+		out.LoginError = "入网 Auth Key 未能授权此设备，请检查管理员审批或在 A 更新配对信息"
 	}
 	if h.peer != nil {
 		out.Connection = &connection{Host: h.peer.Host, URL: "http://" + h.bridgeAddr, Username: "client", Password: h.localSecret}
@@ -591,7 +638,7 @@ func parseShare(raw string) (*invitation, error) {
 	var share invitation
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&share) != nil || decoder.Decode(new(any)) != io.EOF || share.Version != 1 || share.Port != 41642 || !validTailnetHost(share.Host) {
+	if decoder.Decode(&share) != nil || decoder.Decode(new(any)) != io.EOF || (share.Version != 1 && share.Version != 2) || share.Port != 41642 || !validTailnetHost(share.Host) || (share.Version == 2 && !validAuthKey(share.AuthKey)) || (share.Version == 1 && share.AuthKey != "") {
 		return nil, errors.New("invalid share")
 	}
 	decoded, err := hex.DecodeString(share.Token)
@@ -599,6 +646,10 @@ func parseShare(raw string) (*invitation, error) {
 		return nil, errors.New("invalid share")
 	}
 	return &share, nil
+}
+
+func validAuthKey(key string) bool {
+	return strings.HasPrefix(key, "tskey-auth-") && len(key) > len("tskey-auth-") && len(key) <= 512 && !strings.ContainsAny(key, " \t\r\n")
 }
 
 func validTailnetHost(host string) bool {

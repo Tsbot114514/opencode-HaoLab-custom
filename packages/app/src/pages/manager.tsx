@@ -129,6 +129,7 @@ export default function ManagerPage() {
     message: "",
     error: "",
     pairing: "",
+    authKey: "",
     open: false,
     view: "share" as "share" | "connect" | "info",
     awaitingConnection: false,
@@ -207,6 +208,23 @@ export default function ManagerPage() {
     }
   }
 
+  const saveAuthKey = async () => {
+    if (remote.busy || !platform.remoteSetAuthKey) return
+    if (!remote.authKey.trim()) {
+      setRemote("error", "请先粘贴 Tailscale 管理台签发的可复用 Auth Key。")
+      return
+    }
+    setRemote({ busy: true, error: "", message: "" })
+    try {
+      await applyRemoteStatus(await platform.remoteSetAuthKey(remote.authKey.trim()))
+      setRemote({ authKey: "", message: "入网 Auth Key 已保存，请重新复制本机配对信息给设备 B。" })
+    } catch (err) {
+      setRemote("error", err instanceof Error ? err.message : String(err))
+    } finally {
+      setRemote("busy", false)
+    }
+  }
+
   onMount(() => {
     if (platform.platform !== "desktop" || !platform.remoteStatus) return
     void refreshRemote()
@@ -262,6 +280,8 @@ export default function ManagerPage() {
               ? "组网已上线"
               : remote.status.authUrl
                 ? "等待首次授权"
+                : remote.status.autoJoin
+                  ? "正在使用 Auth Key 加入组网"
                 : remote.status.enabled || remote.status.connection
                   ? "正在获取授权链接"
                   : "尚未加入组网"}
@@ -282,13 +302,34 @@ export default function ManagerPage() {
           <Show when={remote.status?.enabled && remote.status.share}>
             <p class="text-12-regular text-v2-text-text-muted">本机已就绪，在“本机信息”页面查看配对文本和二维码。</p>
           </Show>
+          <div class="border-t border-v2-border-border-base pt-3">
+            <p class="text-12-regular leading-5 text-v2-text-text-muted">
+              在 Tailscale 管理台生成可复用 Auth Key 并粘贴一次。配对文本会包含它，设备 B 粘贴后自动加入同一组网。
+              如需免管理员审批，请为密钥启用预授权。
+            </p>
+            <input
+              type="password"
+              value={remote.authKey}
+              onInput={(event) => setRemote("authKey", event.currentTarget.value)}
+              placeholder="tskey-auth-..."
+              aria-label="组网 Auth Key"
+              autocomplete="off"
+              class="mt-2 w-full rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep px-3 py-2 font-mono text-11-regular text-v2-text-text-base"
+            />
+            <Button variant="secondary" size="small" class="mt-2" disabled={remote.busy || !remote.authKey.trim()} onClick={() => void saveAuthKey()}>
+              {remote.status?.hasAuthKey ? "更新入网 Auth Key" : "保存入网 Auth Key"}
+            </Button>
+            <p class="mt-2 text-12-regular text-v2-text-text-muted">
+              {remote.status?.hasAuthKey ? "已配置入网 Auth Key。" : "尚未配置，当前无法生成可让 B 自动入网的配对信息。"}
+            </p>
+          </div>
         </div>
       </Show>
 
       <Show when={remote.view === "connect"}>
         <div class="mt-4 space-y-3">
           <p class="text-12-regular leading-5 text-v2-text-text-muted">
-            粘贴另一台设备显示的配对文本。该操作不会修改本机共享设置。
+            粘贴设备 A 的配对文本即可使用其中的 Auth Key 自动入网并连接 A，无需在 B 单独登录。旧版配对文本仍需手动授权。
           </p>
           <textarea
             value={remote.pairing}
@@ -332,12 +373,12 @@ export default function ManagerPage() {
             when={remote.status?.enabled && remote.status.share}
             fallback={
               <p class="text-12-regular leading-5 text-v2-text-text-muted">
-                请先在“共享本机”页面开启共享并完成授权，配对信息将在此显示。
+                请先在“共享本机”页面开启共享、完成 A 的组网授权，并保存可复用 Auth Key，配对信息将在此显示。
               </p>
             }
           >
             <p class="text-12-regular leading-5 text-v2-text-text-muted">
-              配对文本含访问令牌，仅分享给可信设备。关闭共享会暂停访问，重新开启后原配对文本仍有效。
+              配对文本含访问令牌和可让新设备入网的 Auth Key。关闭共享只暂停访问；重新开启后原配对文本仍有效。
             </p>
             <textarea
               readOnly
@@ -1275,7 +1316,10 @@ export default function ManagerPage() {
                 }
               >
                 <p class="mt-3 text-12-regular leading-5 text-v2-text-text-muted">
-                  {remote.status?.loginError || "正在获取组网授权链接，稍后会自动重试。"}
+                  {remote.status?.loginError ||
+                    (remote.status?.autoJoin
+                      ? "正在使用配对信息中的 Auth Key 加入组网，请稍候。"
+                      : "正在获取组网授权链接，稍后会自动重试。")}
                 </p>
               </Show>
               <Show when={remote.message}>

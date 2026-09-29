@@ -17,6 +17,7 @@ const api: ElectronAPI = {
   setDefaultServerUrl: (url) => ipcRenderer.invoke("set-default-server-url", url),
   remoteStatus: () => ipcRenderer.invoke("remote-status"),
   remoteEnable: () => ipcRenderer.invoke("remote-enable"),
+  remoteSetAuthKey: (authKey) => ipcRenderer.invoke("remote-set-auth-key", authKey),
   remoteDisable: () => ipcRenderer.invoke("remote-disable"),
   remoteConnect: (share) => ipcRenderer.invoke("remote-connect", share),
   remoteDisconnect: () => ipcRenderer.invoke("remote-disconnect"),

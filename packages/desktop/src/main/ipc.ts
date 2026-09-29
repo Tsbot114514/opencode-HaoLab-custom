@@ -31,6 +31,7 @@ type Deps = {
   setDefaultServerUrl: (url: string | null) => Promise<void> | void
   remoteStatus: () => Promise<RemoteStatus>
   remoteEnable: () => Promise<RemoteStatus>
+  remoteSetAuthKey: (authKey: string) => Promise<RemoteStatus>
   remoteDisable: () => Promise<RemoteStatus>
   remoteConnect: (share: string) => Promise<RemoteStatus>
   remoteDisconnect: () => Promise<RemoteStatus>
@@ -98,6 +99,7 @@ export function registerIpcHandlers(deps: Deps) {
   )
   ipcMain.handle("remote-status", () => deps.remoteStatus())
   ipcMain.handle("remote-enable", () => deps.remoteEnable())
+  ipcMain.handle("remote-set-auth-key", (_event: IpcMainInvokeEvent, authKey: string) => deps.remoteSetAuthKey(authKey))
   ipcMain.handle("remote-disable", () => deps.remoteDisable())
   ipcMain.handle("remote-connect", (_event: IpcMainInvokeEvent, share: string) => deps.remoteConnect(share))
   ipcMain.handle("remote-disconnect", () => deps.remoteDisconnect())

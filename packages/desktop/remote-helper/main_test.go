@@ -44,20 +44,47 @@ func TestSidecarURL(t *testing.T) {
 
 func TestShareValidation(t *testing.T) {
 	token := strings.Repeat("ab", 32)
+	authKey := "tskey-auth-" + strings.Repeat("a", 32)
 	for _, host := range []string{"haolab-code.example.ts.net", "100.101.102.103", "fd7a:115c:a1e0::1"} {
-		share, _ := json.Marshal(invitation{Version: 1, Host: host, Port: 41642, Token: token})
-		if _, err := parseShare(string(share)); err != nil {
-			t.Errorf("rejected %q: %v", host, err)
+		share, _ := json.Marshal(invitation{Version: 2, Host: host, Port: 41642, Token: token, AuthKey: authKey})
+		peer, err := parseShare(string(share))
+		if err != nil || peer.AuthKey != authKey {
+			t.Errorf("did not preserve auth key for %q", host)
+		}
+	}
+	legacy, _ := json.Marshal(invitation{Version: 1, Host: "haolab-code.example.ts.net", Port: 41642, Token: token})
+	if _, err := parseShare(string(legacy)); err != nil {
+		t.Fatal("rejected previously saved pairing")
+	}
+	for _, key := range []string{"", "tskey-client-not-an-auth-key", "tskey-auth-\nsecret", "tskey-auth-" + strings.Repeat("a", 513)} {
+		share, _ := json.Marshal(invitation{Version: 2, Host: "haolab-code.example.ts.net", Port: 41642, Token: token, AuthKey: key})
+		if _, err := parseShare(string(share)); err == nil {
+			t.Fatal("accepted invalid tailnet auth key")
 		}
 	}
 	for _, host := range []string{"localhost", "example.com", "evil.ts.net.attacker.com", "127.0.0.1", "100.128.0.1", "fd00::1", "-x.ts.net", "a..ts.net"} {
-		share, _ := json.Marshal(invitation{Version: 1, Host: host, Port: 41642, Token: token})
-		if _, err := parseShare(string(share)); err == nil {
-			t.Errorf("accepted untrusted host %q", host)
+		share, _ := json.Marshal(invitation{Version: 2, Host: host, Port: 41642, Token: token, AuthKey: authKey})
+		if _, err := parseShare(string(share)); err != nil {
+			continue
 		}
+		t.Errorf("accepted untrusted host %q", host)
 	}
 	if _, err := parseShare(`{"version":1,"host":"x.ts.net","port":41642,"token":"abc","extra":1}`); err == nil {
 		t.Fatal("accepted unknown field")
+	}
+}
+
+func TestAuthKeyCommandDoesNotExposeKey(t *testing.T) {
+	h := &helper{}
+	key := "tskey-auth-" + strings.Repeat("a", 32)
+	status, err := h.execute(command{Command: "auth-key", AuthKey: key})
+	if err != nil || !status.HasAuthKey || status.Share != "" || h.authKey != key {
+		t.Fatal("failed to configure auth key without sharing it in status")
+	}
+	for _, invalid := range []string{"", "tskey-client-invalid", "tskey-auth-invalid key"} {
+		if _, err := h.execute(command{Command: "auth-key", AuthKey: invalid}); err == nil || invalid != "" && strings.Contains(err.Error(), invalid) {
+			t.Fatal("invalid auth key accepted or leaked")
+		}
 	}
 }
 
@@ -193,6 +220,13 @@ func TestBridgeDynamicAddress(t *testing.T) {
 	status := h.status()
 	if status.Connection == nil || status.Connection.URL != "http://"+h.bridgeAddr || status.Connection.URL == "http://127.0.0.1:0" || status.Connection.Host != peer.Host {
 		t.Fatalf("invalid connection: %+v", status.Connection)
+	}
+	if status.AutoJoin {
+		t.Fatal("legacy pairing unexpectedly attempted automatic login")
+	}
+	h.peer.AuthKey = "tskey-auth-" + strings.Repeat("a", 32)
+	if !h.status().AutoJoin {
+		t.Fatal("new pairing did not report automatic login")
 	}
 	req, _ := http.NewRequest(http.MethodGet, status.Connection.URL+"/", nil)
 	resp, err := http.DefaultClient.Do(req)

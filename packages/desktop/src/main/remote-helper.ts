@@ -5,9 +5,9 @@ import { app, session } from "electron"
 import type { RemoteStatus, ServerReadyData } from "../preload/types"
 import { getStore } from "./store"
 
-type Command = "status" | "enable" | "disable" | "sidecar" | "connect" | "disconnect"
+type Command = "status" | "enable" | "disable" | "sidecar" | "auth-key" | "connect" | "disconnect"
 type Reply = { id: number; result?: RemoteStatus; error?: string }
-type CommandData = { url?: string; username?: string; password?: string; share?: string }
+type CommandData = { url?: string; username?: string; password?: string; share?: string; authKey?: string }
 const ENABLED = "remote.enabled"
 const LEGACY_SHARE = "remote.share"
 const LEGACY_PAIRING = "remote.pairing"
@@ -43,6 +43,14 @@ export class RemoteHelper {
     return this.run("enable").then(async (initial) => {
       getStore().set(ENABLED, initial.enabled)
       return this.waitForAuth(initial)
+    })
+  }
+
+  setAuthKey(authKey: string) {
+    return this.run("auth-key", { authKey: authKey.trim() }).then((status) => {
+      writeFileSync(this.authKeyPath(), authKey.trim(), { mode: 0o600 })
+      if (process.platform !== "win32") chmodSync(this.authKeyPath(), 0o600)
+      return status
     })
   }
 
@@ -100,6 +108,7 @@ export class RemoteHelper {
       writeFileSync(this.pairingPath(), legacyPairing, { mode: 0o600 })
     }
     if (existsSync(this.pairingPath()) && process.platform !== "win32") chmodSync(this.pairingPath(), 0o600)
+    if (existsSync(this.authKeyPath()) && process.platform !== "win32") chmodSync(this.authKeyPath(), 0o600)
     store.delete(LEGACY_PAIRING)
     store.delete(LEGACY_SHARE)
     const binary = `haolab-remote${process.platform === "win32" ? ".exe" : ""}`
@@ -159,6 +168,9 @@ export class RemoteHelper {
         username: this.sidecar.username ?? undefined,
         password: this.sidecar.password ?? undefined,
       })
+    if (existsSync(this.authKeyPath())) {
+      await this.send("auth-key", { authKey: readFileSync(this.authKeyPath(), "utf8").trim() })
+    }
     if (store.get(ENABLED) === true) {
       await this.send("enable")
     }
@@ -170,6 +182,10 @@ export class RemoteHelper {
 
   private pairingPath() {
     return join(app.getPath("userData"), "remote-helper", "pairing.share")
+  }
+
+  private authKeyPath() {
+    return join(app.getPath("userData"), "remote-helper", "auth.key")
   }
 
   private async waitForAuth(initial: RemoteStatus) {

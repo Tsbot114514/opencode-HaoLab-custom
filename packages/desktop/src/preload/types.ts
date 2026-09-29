@@ -11,6 +11,8 @@ export type ServerReadyData = {
 export type RemoteStatus = {
   enabled: boolean
   online: boolean
+  hasAuthKey: boolean
+  autoJoin: boolean
   authUrl?: string
   loginError?: string
   share?: string
@@ -73,6 +75,7 @@ export type ElectronAPI = {
   setDefaultServerUrl: (url: string | null) => Promise<void>
   remoteStatus: () => Promise<RemoteStatus>
   remoteEnable: () => Promise<RemoteStatus>
+  remoteSetAuthKey: (authKey: string) => Promise<RemoteStatus>
   remoteDisable: () => Promise<RemoteStatus>
   remoteConnect: (share: string) => Promise<RemoteStatus>
   remoteDisconnect: () => Promise<RemoteStatus>

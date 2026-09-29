@@ -284,6 +284,7 @@ const createPlatform = (
 
     remoteStatus: () => updateRemote(window.api.remoteStatus(), false),
     remoteEnable: () => updateRemote(window.api.remoteEnable()),
+    remoteSetAuthKey: (authKey) => updateRemote(window.api.remoteSetAuthKey(authKey), false),
     remoteDisable: () => updateRemote(window.api.remoteDisable()),
     remoteConnect: (share) => updateRemote(window.api.remoteConnect(share)),
     remoteDisconnect: () => updateRemote(window.api.remoteDisconnect()),
