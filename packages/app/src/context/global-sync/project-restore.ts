@@ -31,7 +31,7 @@ export function resetProjectSessions(input: {
   setStore: SetStoreFunction<State>
   clearTodo: (sessionID: string) => void
   sessionMeta: Map<string, { limit: number }>
-  sessionLoads: Map<string, Promise<void>>
+  sessionLoads: Map<string, Promise<unknown>>
   clearQuery: (directory: string) => void
 }) {
   revisions.set(input.store, projectSessionRevision(input.store) + 1)

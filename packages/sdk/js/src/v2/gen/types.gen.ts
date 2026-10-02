@@ -1787,6 +1787,10 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type SidebarCursorExpiredError = {
+  message: string
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -4146,6 +4150,122 @@ export type GlobalUpgradeResponses = {
 
 export type GlobalUpgradeResponse = GlobalUpgradeResponses[keyof GlobalUpgradeResponses]
 
+export type GlobalNotificationsBarkDeleteData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/notifications/bark"
+}
+
+export type GlobalNotificationsBarkDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalNotificationsBarkDeleteError =
+  GlobalNotificationsBarkDeleteErrors[keyof GlobalNotificationsBarkDeleteErrors]
+
+export type GlobalNotificationsBarkDeleteResponses = {
+  /**
+   * Success
+   */
+  200: {
+    configured: boolean
+  }
+}
+
+export type GlobalNotificationsBarkDeleteResponse =
+  GlobalNotificationsBarkDeleteResponses[keyof GlobalNotificationsBarkDeleteResponses]
+
+export type GlobalNotificationsBarkGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/notifications/bark"
+}
+
+export type GlobalNotificationsBarkGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalNotificationsBarkGetError = GlobalNotificationsBarkGetErrors[keyof GlobalNotificationsBarkGetErrors]
+
+export type GlobalNotificationsBarkGetResponses = {
+  /**
+   * Success
+   */
+  200: {
+    configured: boolean
+  }
+}
+
+export type GlobalNotificationsBarkGetResponse =
+  GlobalNotificationsBarkGetResponses[keyof GlobalNotificationsBarkGetResponses]
+
+export type GlobalNotificationsBarkSetData = {
+  body?: {
+    key: string
+  }
+  path?: never
+  query?: never
+  url: "/global/notifications/bark"
+}
+
+export type GlobalNotificationsBarkSetErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type GlobalNotificationsBarkSetError = GlobalNotificationsBarkSetErrors[keyof GlobalNotificationsBarkSetErrors]
+
+export type GlobalNotificationsBarkSetResponses = {
+  /**
+   * Success
+   */
+  200: {
+    configured: boolean
+  }
+}
+
+export type GlobalNotificationsBarkSetResponse =
+  GlobalNotificationsBarkSetResponses[keyof GlobalNotificationsBarkSetResponses]
+
+export type GlobalNotificationsBarkTestData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/notifications/bark/test"
+}
+
+export type GlobalNotificationsBarkTestErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalNotificationsBarkTestError =
+  GlobalNotificationsBarkTestErrors[keyof GlobalNotificationsBarkTestErrors]
+
+export type GlobalNotificationsBarkTestResponses = {
+  /**
+   * Success
+   */
+  200: {
+    success: boolean
+  }
+}
+
+export type GlobalNotificationsBarkTestResponse =
+  GlobalNotificationsBarkTestResponses[keyof GlobalNotificationsBarkTestResponses]
+
 export type EventSubscribeData = {
   body?: never
   path?: never
@@ -6369,6 +6489,163 @@ export type SessionCreateResponses = {
 }
 
 export type SessionCreateResponse = SessionCreateResponses[keyof SessionCreateResponses]
+
+export type SessionReconcileData = {
+  body?: {
+    known: Array<{
+      id: string
+      title: string
+      updated: number
+      archived?: number
+    }>
+    limit: number
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/sidebar/reconcile"
+}
+
+export type SessionReconcileErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionReconcileError = SessionReconcileErrors[keyof SessionReconcileErrors]
+
+export type SessionReconcileResponses = {
+  /**
+   * Session sidebar changes
+   */
+  200: {
+    upserts: Array<Session>
+    removed: Array<string>
+    limit: number
+    limited: boolean
+  }
+}
+
+export type SessionReconcileResponse = SessionReconcileResponses[keyof SessionReconcileResponses]
+
+export type SessionSidebarSnapshotData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    cursor?: string
+    afterUpdated?: string
+    afterID?: string
+    limit: string
+  }
+  url: "/session/sidebar/snapshot"
+}
+
+export type SessionSidebarSnapshotErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * SidebarCursorExpiredError
+   */
+  410: SidebarCursorExpiredError
+}
+
+export type SessionSidebarSnapshotError = SessionSidebarSnapshotErrors[keyof SessionSidebarSnapshotErrors]
+
+export type SessionSidebarSnapshotResponses = {
+  /**
+   * Session sidebar snapshot page
+   */
+  200: {
+    cursor: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    items: Array<{
+      id: string
+      slug: string
+      title: string
+      directory: string
+      projectID: string
+      version: string
+      time: {
+        created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        updated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      }
+    }>
+    next: {
+      updated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      id: string
+    }
+  }
+}
+
+export type SessionSidebarSnapshotResponse = SessionSidebarSnapshotResponses[keyof SessionSidebarSnapshotResponses]
+
+export type SessionSidebarChangesData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    cursor: string
+    limit: string
+  }
+  url: "/session/sidebar/changes"
+}
+
+export type SessionSidebarChangesErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * SidebarCursorExpiredError
+   */
+  410: SidebarCursorExpiredError
+}
+
+export type SessionSidebarChangesError = SessionSidebarChangesErrors[keyof SessionSidebarChangesErrors]
+
+export type SessionSidebarChangesResponses = {
+  /**
+   * Session sidebar changes page
+   */
+  200: {
+    cursor: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    changes: Array<
+      | {
+          seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          type: "upsert"
+          session: {
+            id: string
+            slug: string
+            title: string
+            directory: string
+            projectID: string
+            version: string
+            time: {
+              created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+              updated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            }
+          }
+        }
+      | {
+          seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          type: "remove"
+          id: string
+        }
+    >
+    more: boolean
+  }
+}
+
+export type SessionSidebarChangesResponse = SessionSidebarChangesResponses[keyof SessionSidebarChangesResponses]
 
 export type SessionStatusData = {
   body?: never

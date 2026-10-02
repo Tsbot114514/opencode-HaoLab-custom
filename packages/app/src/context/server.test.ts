@@ -1,7 +1,20 @@
 import { describe, expect, test } from "bun:test"
-import { resolveServerList, ServerConnection, sidebarProjects } from "./server"
+import { canRestoreTunnelSidebar, resolveServerList, ServerConnection, sidebarProjects } from "./server"
 
 describe("sidebarProjects", () => {
+  test("restores verified A paths on return but not after a bridge or credential change", () => {
+    const conn: ServerConnection.Tunnel = {
+      type: "tunnel",
+      host: "a.example.ts.net",
+      http: { url: "http://127.0.0.1:41643", username: "client", password: "sample" },
+    }
+    expect(canRestoreTunnelSidebar(conn)).toBe(false)
+    expect(canRestoreTunnelSidebar(conn, { ...conn.http })).toBe(true)
+    expect(canRestoreTunnelSidebar({ ...conn, http: { ...conn.http, password: "rotated" } }, conn.http)).toBe(false)
+    expect(canRestoreTunnelSidebar({ ...conn, http: { ...conn.http, url: "http://127.0.0.1:49152" } }, conn.http)).toBe(false)
+    expect(canRestoreTunnelSidebar({ type: "sidecar", variant: "base", http: conn.http }, conn.http)).toBe(false)
+  })
+
   test("uses A's order and removes B's stale entries without changing existing expansion", () => {
     const current = [
       { worktree: "/mine", expanded: false },
@@ -23,6 +36,7 @@ describe("sidebarProjects", () => {
     expect(result?.map((project) => project.worktree)).toEqual(directories)
     expect(result?.[0]?.expanded).toBe(false)
   })
+
 })
 
 describe("resolveServerList", () => {

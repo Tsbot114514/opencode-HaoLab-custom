@@ -15,6 +15,8 @@ import type {
 } from "../preload/types"
 import { runDesktopMenuAction } from "./desktop-menu-actions"
 import { getStore } from "./store"
+import { allowDisplayCacheKey, validStoreName } from "./display-cache-authorization"
+import { createTranscriptAuthority } from "./transcript-cache"
 import { getPinchZoomEnabled, setPinchZoomEnabled, setTitlebar, updateTitlebar } from "./windows"
 
 const pickerFilters = (ext?: string[]) => {
@@ -30,6 +32,7 @@ type Deps = {
   getDefaultServerUrl: () => Promise<string | null> | string | null
   setDefaultServerUrl: (url: string | null) => Promise<void> | void
   remoteStatus: () => Promise<RemoteStatus>
+  remoteCacheKeyCurrent: (status: RemoteStatus) => string | undefined
   remoteEnable: () => Promise<RemoteStatus>
   remoteSetAuthKey: (authKey: string) => Promise<RemoteStatus>
   remoteDisable: () => Promise<RemoteStatus>
@@ -86,6 +89,30 @@ type Deps = {
 }
 
 export function registerIpcHandlers(deps: Deps) {
+  const transcripts = createTranscriptAuthority({
+    get: (scope) => getStore("opencode.transcripts.dat").get(scope),
+    set: (scope, value) => getStore("opencode.transcripts.dat").set(scope, value),
+  })
+  const queues = new Map<string, Promise<unknown>>()
+  const ordered = <T>(scope: string, action: () => Promise<T>) => {
+    const next = (queues.get(scope) ?? Promise.resolve()).catch(() => undefined).then(action)
+    queues.set(scope, next)
+    void next.finally(() => { if (queues.get(scope) === next) queues.delete(scope) }).catch(() => undefined)
+    return next
+  }
+  const clients = new WeakSet<Electron.WebContents>()
+  ipcMain.handle("transcript-acquire", (event: IpcMainInvokeEvent, scope: string, owner: string, directory: string, sessionID: string) =>
+    ordered(scope, async () => {
+      if (!(await allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+      return transcripts.acquire(scope, event.sender.id, owner, directory, sessionID)
+    }),
+  )
+  ipcMain.handle("transcript-mutate", (event: IpcMainInvokeEvent, scope: string, owner: string, operations: unknown) =>
+    ordered(scope, async () => {
+      if (!(await allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+      transcripts.mutate(scope, event.sender.id, owner, operations)
+    }),
+  )
   ipcMain.handle("kill-sidecar", () => deps.killSidecar())
   ipcMain.handle("await-initialization", (event: IpcMainInvokeEvent) => {
     const send = (step: InitStep) => event.sender.send("init-step", step)
@@ -129,7 +156,18 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("record-fatal-renderer-error", (_event: IpcMainInvokeEvent, error: FatalRendererError) =>
     deps.recordFatalRendererError(error),
   )
-  ipcMain.handle("store-get", (_event: IpcMainInvokeEvent, name: string, key: string) => {
+  ipcMain.handle("store-get", async (event: IpcMainInvokeEvent, name: string, key: string) => {
+    if (!validStoreName(name)) return null
+    if (name === "opencode.transcripts.dat") return ordered(key, async () => {
+      if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return null
+      if (!clients.has(event.sender)) {
+        clients.add(event.sender)
+        const client = event.sender.id
+        event.sender.once("destroyed", () => transcripts.release(client))
+      }
+      return transcripts.read(key, event.sender.id)
+    })
+    if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return null
     try {
       const store = getStore(name)
       const value = store.get(key)
@@ -139,22 +177,38 @@ export function registerIpcHandlers(deps: Deps) {
       return null
     }
   })
-  ipcMain.handle("store-set", (_event: IpcMainInvokeEvent, name: string, key: string, value: string) => {
+  ipcMain.handle("store-set", async (_event: IpcMainInvokeEvent, name: string, key: string, value: string) => {
+    if (!validStoreName(name) || name === "opencode.transcripts.dat") return
+    if (name === "opencode.sidebar-display.dat" && (typeof value !== "string" || Buffer.byteLength(value) > 16 * 1024 * 1024)) return
+    if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
     getStore(name).set(key, value)
   })
-  ipcMain.handle("store-delete", (_event: IpcMainInvokeEvent, name: string, key: string) => {
+  ipcMain.handle("store-delete", async (_event: IpcMainInvokeEvent, name: string, key: string) => {
+    if (!validStoreName(name)) return
+    if (name === "opencode.transcripts.dat") return ordered(key, async () => {
+      if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+      transcripts.delete(key)
+      getStore(name).delete(key)
+    })
+    if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
     getStore(name).delete(key)
   })
   ipcMain.handle("store-clear", (_event: IpcMainInvokeEvent, name: string) => {
+    if (!validStoreName(name) || ["opencode.transcripts.dat", "opencode.sidebar-display.dat"].includes(name)) return
     getStore(name).clear()
   })
-  ipcMain.handle("store-keys", (_event: IpcMainInvokeEvent, name: string) => {
+  ipcMain.handle("store-keys", async (_event: IpcMainInvokeEvent, name: string) => {
+    if (!validStoreName(name)) return []
     const store = getStore(name)
-    return Object.keys(store.store)
+    const keys = Object.keys(store.store)
+    const allowed = await Promise.all(keys.map((key) => allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent)))
+    return keys.filter((_key, index) => allowed[index])
   })
-  ipcMain.handle("store-length", (_event: IpcMainInvokeEvent, name: string) => {
+  ipcMain.handle("store-length", async (_event: IpcMainInvokeEvent, name: string) => {
+    if (!validStoreName(name)) return 0
     const store = getStore(name)
-    return Object.keys(store.store).length
+    const allowed = await Promise.all(Object.keys(store.store).map((key) => allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent)))
+    return allowed.filter(Boolean).length
   })
 
   ipcMain.handle(

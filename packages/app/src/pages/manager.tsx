@@ -134,6 +134,13 @@ export default function ManagerPage() {
     view: "share" as "share" | "connect" | "info",
     awaitingConnection: false,
   })
+  const [bark, setBark] = createStore({
+    key: "",
+    configured: false,
+    loading: false,
+    saving: false,
+    message: "",
+  })
   const [shareQR] = createResource(
     () => (remote.open && remote.view === "info" ? remote.status?.share : undefined),
     (share) => QRCode.toDataURL(share, { errorCorrectionLevel: "M", margin: 2, width: 192 }),
@@ -231,6 +238,65 @@ export default function ManagerPage() {
     const timer = setInterval(() => void refreshRemote(), 5_000)
     onCleanup(() => clearInterval(timer))
   })
+
+  createEffect(() => {
+    if (!remote.open || !server.current) return
+    const key = server.key
+    setBark({ configured: false, loading: true, message: "" })
+    void sdk.client.global.notifications.bark.get({ throwOnError: false }).then((result) => {
+      if (server.key !== key || !remote.open) return
+      if (!result.response.ok || typeof result.data?.configured !== "boolean") {
+        setBark("message", "当前服务器暂不支持 Bark 设置，请更新服务器版本。")
+        return
+      }
+      setBark("configured", result.data.configured)
+    }).catch(() => {
+      if (server.key === key && remote.open) setBark("message", "无法读取当前服务器的 Bark 设置。")
+    }).finally(() => {
+      if (server.key === key) setBark("loading", false)
+    })
+  })
+
+  const saveBark = async () => {
+    if (bark.saving || !bark.key.trim()) return
+    setBark({ saving: true, message: "" })
+    try {
+      const result = await sdk.client.global.notifications.bark.set({ key: bark.key.trim() }, { throwOnError: false })
+      if (!result.response.ok || !result.data?.configured) throw new Error("Bark configuration failed")
+      setBark({ key: "", configured: true, message: "已保存到当前服务器。" })
+    } catch {
+      setBark("message", "保存失败，请检查 Bark key 和服务器连接。")
+    } finally {
+      setBark("saving", false)
+    }
+  }
+
+  const clearBark = async () => {
+    if (bark.saving) return
+    setBark({ saving: true, message: "" })
+    try {
+      const result = await sdk.client.global.notifications.bark.delete({ throwOnError: false })
+      if (!result.response.ok || result.data?.configured !== false) throw new Error("Bark removal failed")
+      setBark({ key: "", configured: false, message: "已从当前服务器移除 Bark key。" })
+    } catch {
+      setBark("message", "移除失败，请检查服务器连接。")
+    } finally {
+      setBark("saving", false)
+    }
+  }
+
+  const testBark = async () => {
+    if (bark.saving) return
+    setBark({ saving: true, message: "" })
+    try {
+      const result = await sdk.client.global.notifications.bark.test({ throwOnError: false })
+      setBark("message", result.response.ok && result.data?.success ? "测试通知已发送。" : "发送失败，请检查 Bark key 和服务器网络。")
+    } catch {
+      setBark("message", "发送失败，请检查服务器连接。")
+    } finally {
+      setBark("saving", false)
+    }
+  }
 
   const RemotePanel = () => (
     <div
@@ -411,6 +477,39 @@ export default function ManagerPage() {
           </Show>
         </div>
       </Show>
+
+      <div class="mt-4 border-t border-v2-border-border-base pt-4">
+        <p class="text-12-medium text-v2-text-text-base">Bark 手机通知</p>
+        <p class="mt-1 text-12-regular leading-5 text-v2-text-text-muted">
+          配置到当前选中的服务器（{server.name}）。该服务器在权限请求、交互提问和任务完成时直接推送；不包含会话正文。
+        </p>
+        <input
+          type="password"
+          value={bark.key}
+          onInput={(event) => setBark("key", event.currentTarget.value)}
+          placeholder="Bark 设备 key"
+          aria-label="Bark 设备 key"
+          autocomplete="off"
+          class="mt-3 w-full rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep px-3 py-2 font-mono text-11-regular text-v2-text-text-base"
+        />
+        <div class="mt-2 flex flex-wrap gap-2">
+          <Button variant="secondary" size="small" disabled={bark.saving || bark.loading || !bark.key.trim()} onClick={() => void saveBark()}>
+            保存到当前服务器
+          </Button>
+          <Button variant="secondary" size="small" disabled={bark.saving || bark.loading || !bark.configured} onClick={() => void testBark()}>
+            发送测试通知
+          </Button>
+          <Button variant="ghost" size="small" disabled={bark.saving || bark.loading || !bark.configured} onClick={() => void clearBark()}>
+            移除 key
+          </Button>
+        </div>
+        <p class="mt-2 text-12-regular text-v2-text-text-muted">
+          {bark.loading ? "正在读取设置..." : bark.configured ? "当前服务器已配置 Bark。" : "当前服务器尚未配置 Bark。"}
+        </p>
+        <Show when={bark.message}>
+          <p role="status" class="mt-2 text-12-regular text-v2-text-text-muted">{bark.message}</p>
+        </Show>
+      </div>
 
       <Show
         when={

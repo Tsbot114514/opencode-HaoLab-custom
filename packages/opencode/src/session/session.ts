@@ -421,6 +421,7 @@ export const MessagesInput = Schema.Struct({
 })
 export type ListInput = {
   directory?: string
+  directoryOnly?: boolean
   scope?: "project"
   path?: string
   workspaceID?: WorkspaceID
@@ -1057,7 +1058,7 @@ function* listByProject(
           : or(...conds)!,
       )
     }
-  } else if (input.scope !== "project" && !input.experimentalWorkspaces) {
+  } else if (input.directoryOnly || (input.scope !== "project" && !input.experimentalWorkspaces)) {
     if (input.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
     }

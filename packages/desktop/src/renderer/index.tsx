@@ -131,6 +131,7 @@ const createPlatform = (
     const createStorage = (name: string) => {
       const api: AsyncStorage = {
         getItem: (key: string) => window.api.storeGet(name, key),
+        ...(name === "opencode.transcripts.dat" ? { transcriptMutate: window.api.transcriptMutate, transcriptAcquire: window.api.transcriptAcquire } : {}),
         setItem: (key: string, value: string) => window.api.storeSet(name, key, value),
         removeItem: (key: string) => window.api.storeDelete(name, key),
         clear: () => window.api.storeClear(name),
@@ -405,6 +406,7 @@ render(() => {
       {
         type: "tunnel",
         host: connection.host,
+        cacheKey: remote()?.cacheKey,
         displayName: connection.host,
         http: { url: connection.url, username: connection.username, password: connection.password },
       } satisfies ServerConnection.Tunnel,
@@ -413,7 +415,7 @@ render(() => {
 
   const startupServer = () => {
     const preferred = defaultServer.latest
-    if (preferred?.startsWith("tunnel:") && preferred !== `tunnel:${remote()?.connection?.host}`)
+    if (preferred?.startsWith("tunnel:") && (preferred !== `tunnel:${remote()?.connection?.host}` || !remote()?.online))
       return ServerConnection.Key.make("sidecar")
     return preferred ?? ServerConnection.Key.make("sidecar")
   }

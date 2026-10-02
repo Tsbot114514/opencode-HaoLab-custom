@@ -12,6 +12,8 @@ import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceBootstrap as InstanceBootstrapService } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { Project } from "../../src/project/project"
+import { ProjectTable } from "../../src/project/project.sql"
+import { ProjectID } from "../../src/project/schema"
 import { Server } from "../../src/server/server"
 import * as HttpSessionError from "../../src/server/routes/instance/httpapi/handlers/session-errors"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
@@ -19,7 +21,7 @@ import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID, type SessionID as SessionIDType } from "../../src/session/schema"
 import { MessageV2 } from "../../src/session/message-v2"
 import { Database } from "@/storage/db"
-import { SessionMessageTable, SessionTable } from "@/session/session.sql"
+import { SessionMessageTable, SessionSidebarBaseTable, SessionSidebarChangeTable, SessionSidebarCountTable, SessionSidebarStateTable, SessionTable } from "@/session/session.sql"
 import { SessionMessage } from "@opencode-ai/core/session-message"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -27,7 +29,7 @@ import * as DateTime from "effect/DateTime"
 import * as Log from "@opencode-ai/core/util/log"
 import { eq } from "drizzle-orm"
 import { resetDatabase } from "../fixture/db"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { disposeAllInstances, provideInstance, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 void Log.init({ print: false })
@@ -216,6 +218,530 @@ afterEach(async () => {
 })
 
 describe("session HttpApi", () => {
+  it.instance(
+    "pages a fixed sidebar snapshot and catches up through ordered changes",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const svc = yield* Session.Service
+        const first = yield* createSession({ title: "first" })
+        const second = yield* createSession({ title: "second" })
+        const child = yield* createSession({ title: "child", parentID: first.id })
+        const get = <T>(route: string, params: Record<string, string>) =>
+          requestJson<T>(`${route}?${new URLSearchParams(params)}`, { headers: { "x-opencode-directory": test.directory } })
+        type Title = { id: string; title: string }
+        type Snapshot = { cursor: number; total: number; items: (Title & { time: { updated: number } })[]; next: { updated: number; id: string } | null }
+        type Change = { seq: number; type: "upsert"; session: Title } | { seq: number; type: "remove"; id: string }
+        type Changes = { cursor: number; total: number; changes: Change[]; more: boolean }
+
+        const start = yield* get<Snapshot>(SessionPaths.sidebarSnapshot, { limit: "1" })
+        expect(start.items).toHaveLength(1)
+        expect(start.total).toBe(2)
+        expect(start.next).toEqual({ updated: start.items[0]?.time.updated, id: start.items[0]?.id })
+        yield* svc.setTitle({ sessionID: first.id, title: "renamed" })
+        yield* svc.remove(second.id)
+        const later = yield* createSession({ title: "later" })
+        const end = yield* get<Snapshot>(SessionPaths.sidebarSnapshot, {
+          cursor: String(start.cursor), afterUpdated: String(start.next!.updated), afterID: start.next!.id, limit: "1",
+        })
+        expect(end.total).toBe(2)
+        expect([...start.items, ...end.items].map((item) => item.id).sort()).toEqual([first.id, second.id].sort())
+        expect(end.next).toBeNull()
+        expect([...start.items, ...end.items].find((item) => item.id === first.id)?.title).toBe("first")
+
+        const pages: Change[] = []
+        let cursor = start.cursor
+        for (let more = true; more;) {
+          const page = yield* get<Changes>(SessionPaths.sidebarChanges, { cursor: String(cursor), limit: "1" })
+          pages.push(...page.changes)
+          expect(page.cursor).toBeGreaterThanOrEqual(cursor)
+          cursor = page.cursor
+          more = page.more
+        }
+        expect(pages.map((item) => item.type === "remove" ? [item.type, item.id] : [item.type, item.session.id]))
+          .toEqual([["upsert", first.id], ["remove", second.id], ["upsert", later.id]])
+        expect(pages.find((item) => item.type === "upsert" && item.session.id === first.id))
+          .toMatchObject({ session: { title: "renamed" } })
+        expect(yield* get<Changes>(SessionPaths.sidebarChanges, { cursor: String(cursor), limit: "1" }))
+          .toMatchObject({ cursor, changes: [], more: false })
+        expect((yield* request(`${SessionPaths.sidebarSnapshot}?afterUpdated=${start.next!.updated}&afterID=${first.id}&limit=1`, {
+          headers: { "x-opencode-directory": test.directory },
+        })).status).toBe(400)
+        expect((yield* request(`${SessionPaths.sidebarSnapshot}?cursor=${start.cursor}&afterID=${first.id}&limit=1`, {
+          headers: { "x-opencode-directory": test.directory },
+        })).status).toBe(400)
+        expect((yield* request(`${SessionPaths.sidebarChanges}?cursor=${cursor + 100}&limit=1`, {
+          headers: { "x-opencode-directory": test.directory },
+        })).status).toBe(400)
+        expect(child.id).not.toBe(first.id)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "scopes sidebar changes across directory moves, archives and direct SQL deletes",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* createSession({ title: "move" })
+        const other = path.join(test.directory, "other")
+        yield* Effect.promise(() => mkdir(other))
+        const get = <T>(directory: string, route: string, params: Record<string, string>) =>
+          requestJson<T>(`${route}?${new URLSearchParams(params)}`, { headers: { "x-opencode-directory": directory } })
+        type Snapshot = { cursor: number; items: { id: string }[] }
+        type Changes = { cursor: number; changes: ({ seq: number; type: "remove"; id: string } | { seq: number; type: "upsert"; session: { id: string } })[] }
+        const before = yield* get<Snapshot>(test.directory, SessionPaths.sidebarSnapshot, { limit: "20" })
+        expect(before.items.map((item) => item.id)).toContain(session.id)
+        yield* Effect.sync(() => Database.use((db) => db.update(SessionTable).set({ directory: other }).where(eq(SessionTable.id, session.id)).run()))
+        expect((yield* get<Changes>(test.directory, SessionPaths.sidebarChanges, { cursor: String(before.cursor), limit: "20" })).changes)
+          .toEqual([{ seq: before.cursor + 1, type: "remove", id: session.id }])
+        expect((yield* get<Changes>(other, SessionPaths.sidebarChanges, { cursor: String(before.cursor), limit: "20" })).changes[0])
+          .toMatchObject({ type: "upsert", session: { id: session.id } })
+        yield* Effect.sync(() => Database.use((db) => db.update(SessionTable).set({ time_archived: Date.now() }).where(eq(SessionTable.id, session.id)).run()))
+        const moved = yield* get<Changes>(other, SessionPaths.sidebarChanges, { cursor: String(before.cursor), limit: "20" })
+        expect(moved.changes.at(-1)).toMatchObject({ type: "remove", id: session.id })
+        yield* Effect.sync(() => Database.use((db) => db.delete(SessionTable).where(eq(SessionTable.id, session.id)).run()))
+        const unchanged = yield* get<Changes>(test.directory, SessionPaths.sidebarChanges, { cursor: String(moved.cursor), limit: "20" })
+        expect(unchanged.changes).toEqual([])
+        expect(unchanged.cursor).toBeGreaterThan(moved.cursor)
+        expect((yield* get<Changes>(other, SessionPaths.sidebarChanges, { cursor: String(moved.cursor), limit: "20" })).changes).toEqual([])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "maintains nonnegative scoped root totals across direct SQL transitions and cascades",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const first = yield* createSession({ title: "first" })
+        const second = yield* createSession({ title: "second" })
+        const child = yield* createSession({ title: "child", parentID: first.id })
+        const other = path.join(test.directory, "other")
+        yield* Effect.promise(() => mkdir(other))
+        const projectID = first.projectID
+        const total = (directory: string) =>
+          requestJson<{ total: number }>(`${SessionPaths.sidebarChanges}?cursor=0&limit=20`, {
+            headers: { "x-opencode-directory": directory },
+          }).pipe(Effect.map((response) => response.total))
+        const counts = () => Database.use((db) => db.select().from(SessionSidebarCountTable).all())
+        const update = (sessionID: SessionIDType, values: Partial<typeof SessionTable.$inferInsert>) =>
+          Effect.sync(() => Database.use((db) => db.update(SessionTable).set(values).where(eq(SessionTable.id, sessionID)).run()))
+
+        expect(yield* total(test.directory)).toBe(2)
+        yield* update(first.id, { title: "renamed" })
+        expect(yield* total(test.directory)).toBe(2)
+        yield* update(second.id, { directory: other })
+        expect([yield* total(test.directory), yield* total(other)]).toEqual([1, 1])
+        yield* update(second.id, { time_archived: Date.now() })
+        expect(yield* total(other)).toBe(0)
+        yield* update(second.id, { time_archived: null })
+        expect(yield* total(other)).toBe(1)
+        yield* update(second.id, { parent_id: first.id })
+        expect(yield* total(other)).toBe(0)
+        yield* update(second.id, { parent_id: null })
+        expect(yield* total(other)).toBe(1)
+        yield* update(child.id, { parent_id: null })
+        expect(yield* total(test.directory)).toBe(2)
+        yield* update(child.id, { parent_id: first.id })
+        expect(yield* total(test.directory)).toBe(1)
+
+        const foreignID = ProjectID.make("sidebar-count-foreign")
+        yield* Effect.sync(() => Database.transaction((db) => {
+          const project = db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get()!
+          db.insert(ProjectTable).values({ ...project, id: foreignID, worktree: `${test.directory}-foreign` }).run()
+          db.update(SessionTable).set({ project_id: foreignID }).where(eq(SessionTable.id, second.id)).run()
+        }))
+        expect(yield* total(other)).toBe(0)
+        expect(counts()).toHaveLength(2)
+        expect(counts()).toContainEqual({ project_id: projectID, directory: test.directory, total: 1 })
+        expect(counts()).toContainEqual({ project_id: foreignID, directory: other, total: 1 })
+        yield* Effect.sync(() => Database.use((db) => db.delete(ProjectTable).where(eq(ProjectTable.id, foreignID)).run()))
+        expect(yield* total(other)).toBe(0)
+        expect(counts()).toEqual([{ project_id: projectID, directory: test.directory, total: 1 }])
+        yield* Effect.sync(() => Database.use((db) => db.delete(SessionTable).where(eq(SessionTable.id, first.id)).run()))
+        expect(yield* total(test.directory)).toBe(0)
+        expect(counts()).toEqual([])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "does not expose another project's writes or cascade deletes",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const local = yield* createSession({ title: "local" })
+        const foreignID = ProjectID.make("foreign-project")
+        const get = (directory: string, cursor: number) =>
+          requestJson<{ cursor: number; changes: { type: string; id?: string; session?: { id: string } }[] }>(
+            `${SessionPaths.sidebarChanges}?cursor=${cursor}&limit=1`,
+            { headers: { "x-opencode-directory": directory } },
+          )
+        const baseline = yield* requestJson<{ cursor: number }>(`${SessionPaths.sidebarSnapshot}?limit=1`, {
+          headers: { "x-opencode-directory": test.directory },
+        })
+        const remoteID = SessionID.descending()
+        yield* Effect.sync(() => Database.transaction((db) => {
+          const existing = db.select().from(SessionTable).where(eq(SessionTable.id, local.id)).get()!
+          const project = db.select().from(ProjectTable).where(eq(ProjectTable.id, existing.project_id)).get()!
+          db.insert(ProjectTable).values({ ...project, id: foreignID, worktree: `${test.directory}-foreign` }).run()
+          db.insert(SessionTable).values({ ...existing, id: remoteID, project_id: foreignID, directory: `${test.directory}-foreign` }).run()
+          db.delete(ProjectTable).where(eq(ProjectTable.id, foreignID)).run()
+        }))
+        expect((yield* get(test.directory, baseline.cursor)).changes).toEqual([])
+        const after = yield* requestJson<{ cursor: number; items: { id: string }[] }>(
+          `${SessionPaths.sidebarSnapshot}?limit=20`,
+          { headers: { "x-opencode-directory": test.directory } },
+        )
+        expect(after.items.map((item) => item.id)).toContain(local.id)
+        expect(after.items.map((item) => item.id)).not.toContain(remoteID)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "pages every change from a bulk SQL transaction without skipping records",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = yield* createSession({ title: "source" })
+        const baseline = yield* requestJson<{ cursor: number }>(`${SessionPaths.sidebarSnapshot}?limit=1`, {
+          headers: { "x-opencode-directory": test.directory },
+        })
+        const ids = Array.from({ length: 9 }, () => SessionID.descending())
+        yield* Effect.sync(() => Database.transaction((db) => {
+          const row = db.select().from(SessionTable).where(eq(SessionTable.id, source.id)).get()!
+          for (const id of ids) db.insert(SessionTable).values({ ...row, id }).run()
+        }))
+        const seen: string[] = []
+        let cursor = baseline.cursor
+        for (let more = true; more;) {
+          const page = yield* requestJson<{
+            cursor: number
+            changes: { type: string; session?: { id: string } }[]
+            more: boolean
+          }>(`${SessionPaths.sidebarChanges}?cursor=${cursor}&limit=2`, {
+            headers: { "x-opencode-directory": test.directory },
+          })
+          seen.push(...page.changes.map((item) => item.session!.id))
+          cursor = page.cursor
+          more = page.more
+        }
+        expect(seen).toEqual(ids)
+        expect(cursor).toBe(baseline.cursor + ids.length)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "pages more than 200 roots newest first with stable totals and offscreen changes",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = yield* createSession({ title: "oldest" })
+        const ids = Array.from({ length: 230 }, () => SessionID.descending())
+        yield* Effect.sync(() => Database.transaction((db) => {
+          const row = db.select().from(SessionTable).where(eq(SessionTable.id, source.id)).get()!
+          ids.forEach((id, index) => db.insert(SessionTable).values({
+            ...row, id, title: `title-${index}`, time_updated: row.time_updated + index + 1,
+          }).run())
+        }))
+        type Page = {
+          cursor: number
+          total: number
+          items: { id: string; title: string; time: { updated: number } }[]
+          next: { updated: number; id: string } | null
+        }
+        const get = <T>(route: string, params: Record<string, string>) =>
+          requestJson<T>(`${route}?${new URLSearchParams(params)}`, { headers: { "x-opencode-directory": test.directory } })
+        const first = yield* get<Page>(SessionPaths.sidebarSnapshot, { limit: "55" })
+        expect(first.total).toBe(231)
+        expect(first.items.map((item) => item.id)).toEqual(ids.slice(-55).reverse())
+        expect(first.next).toEqual({ updated: first.items[54]!.time.updated, id: first.items[54]!.id })
+
+        // These mutations occur after the snapshot watermark, including one outside the first page.
+        yield* Effect.sync(() => Database.use((db) => db.update(SessionTable).set({ title: "offscreen-renamed" }).where(eq(SessionTable.id, ids[3]!)).run()))
+        const renamed = yield* get<{ total: number; changes: { type: string; session: { id: string } }[] }>(
+          SessionPaths.sidebarChanges, { cursor: String(first.cursor), limit: "1" },
+        )
+        expect(renamed.total).toBe(231)
+        expect(renamed.changes[0]).toMatchObject({ type: "upsert", session: { id: ids[3] } })
+        yield* Effect.sync(() => Database.use((db) => db.delete(SessionTable).where(eq(SessionTable.id, ids[2]!)).run()))
+        const second = yield* get<Page>(SessionPaths.sidebarSnapshot, {
+          cursor: String(first.cursor), afterUpdated: String(first.next!.updated), afterID: first.next!.id, limit: "55",
+        })
+        expect(second.total).toBe(231)
+        expect(second.items.map((item) => item.id)).toEqual(ids.slice(-110, -55).reverse())
+        const delta = yield* get<{
+          cursor: number
+          total: number
+          more: boolean
+          changes: ({ type: "upsert"; session: { id: string; title: string } } | { type: "remove"; id: string })[]
+        }>(SessionPaths.sidebarChanges, { cursor: String(first.cursor), limit: "1" })
+        expect(delta.total).toBe(230)
+        expect(delta.more).toBe(true)
+        expect(delta.changes[0]).toMatchObject({ type: "upsert", session: { id: ids[3], title: "offscreen-renamed" } })
+        const deletePage = yield* get<{ total: number; changes: { type: string; id: string }[] }>(
+          SessionPaths.sidebarChanges, { cursor: String(delta.cursor), limit: "1" },
+        )
+        expect(deletePage.total).toBe(230)
+        expect(deletePage.changes[0]).toMatchObject({ type: "remove", id: ids[2] })
+        const replacement = yield* createSession({ title: "newly-visible" })
+        const collected = [...first.items, ...second.items]
+        let next = second.next
+        while (next) {
+          const page = yield* get<Page>(SessionPaths.sidebarSnapshot, {
+            cursor: String(first.cursor), afterUpdated: String(next.updated), afterID: next.id, limit: "55",
+          })
+          expect(page.total).toBe(231)
+          collected.push(...page.items)
+          next = page.next
+        }
+        expect(collected.map((item) => item.id)).toEqual([...ids].reverse().concat(source.id))
+        expect(collected.find((item) => item.id === ids[3])?.title).toBe("title-3")
+        expect(collected.some((item) => item.id === replacement.id)).toBe(false)
+
+        const inserted = yield* get<{ total: number; changes: { type: string; session: { id: string } }[] }>(
+          SessionPaths.sidebarChanges, { cursor: String(first.cursor + 2), limit: "1" },
+        )
+        expect(inserted.total).toBe(231)
+        expect(inserted.changes[0]).toMatchObject({ type: "upsert", session: { id: replacement.id } })
+        const current = yield* get<Page>(SessionPaths.sidebarSnapshot, { limit: "55" })
+        expect(current.total).toBe(231)
+        expect(current.items.some((item) => item.id === ids[2])).toBe(false)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "uses descending id to break equal update-time ties across snapshot pages",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const sessions = yield* Effect.forEach(["a", "b", "c"], (title) => createSession({ title }))
+        yield* Effect.sync(() => Database.transaction((db) => {
+          sessions.forEach((item) => db.update(SessionTable).set({ time_updated: 1000 }).where(eq(SessionTable.id, item.id)).run())
+        }))
+        const get = (params: Record<string, string>) =>
+          requestJson<{ cursor: number; total: number; items: { id: string }[]; next: { updated: number; id: string } | null }>(
+            `${SessionPaths.sidebarSnapshot}?${new URLSearchParams(params)}`,
+            { headers: { "x-opencode-directory": test.directory } },
+          )
+        const first = yield* get({ limit: "1" })
+        const second = yield* get({ cursor: String(first.cursor), afterUpdated: String(first.next!.updated), afterID: first.next!.id, limit: "1" })
+        const third = yield* get({ cursor: String(first.cursor), afterUpdated: String(second.next!.updated), afterID: second.next!.id, limit: "1" })
+        expect([first.total, second.total, third.total]).toEqual([3, 3, 3])
+        expect([first.items[0]!.id, second.items[0]!.id, third.items[0]!.id]).toEqual(
+          sessions.map((item) => item.id).sort().reverse(),
+        )
+        expect(third.next).toBeNull()
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "expires pruned cursors and resnapshots without losing retained changes",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const get = (route: string, params: Record<string, string>) =>
+          request(`${route}?${new URLSearchParams(params)}`, { headers: { "x-opencode-directory": test.directory } })
+        const empty = yield* json<{ cursor: number; items: unknown[] }>(yield* get(SessionPaths.sidebarSnapshot, { limit: "1" }))
+        expect(empty).toMatchObject({ cursor: 0, items: [] })
+        const first = yield* createSession({ title: "first" })
+        const second = yield* createSession({ title: "second" })
+        const firstChanges = yield* json<{ changes: { type: string; session: { id: string; slug: string; version: string } }[] }>(
+          yield* get(SessionPaths.sidebarChanges, { cursor: "0", limit: "2" }),
+        )
+        expect(firstChanges.changes.map((item) => item.session.id)).toEqual([first.id, second.id])
+        expect(firstChanges.changes[0]?.session).toMatchObject({ slug: first.slug, version: first.version })
+        const start = yield* json<{ cursor: number; items: { id: string; slug: string; version: string }[]; next: { updated: number; id: string } }>(
+          yield* get(SessionPaths.sidebarSnapshot, { limit: "1" }),
+        )
+        expect(start.items[0]).toMatchObject({
+          slug: start.items[0]?.id === first.id ? first.slug : second.slug,
+          version: first.version,
+        })
+
+        yield* Effect.sync(() => Database.transaction((db) => {
+          for (let index = 0; index < 516; index++) {
+            db.update(SessionTable).set({ title: `title-${index}` }).where(eq(SessionTable.id, first.id)).run()
+          }
+        }))
+        const position = Database.use((db) => db.select().from(SessionSidebarStateTable).get()!)
+        expect(position.seq).toBe(start.cursor + 516)
+        expect(position.floor).toBe(position.seq - 512)
+        expect(Database.use((db) => db.select().from(SessionSidebarChangeTable).all())).toHaveLength(512)
+        expect(Database.use((db) => db.select().from(SessionSidebarBaseTable).all())).toHaveLength(2)
+        const expired = yield* get(SessionPaths.sidebarChanges, { cursor: "0", limit: "2" })
+        expect(expired.status).toBe(410)
+        expect(yield* responseJson(expired)).toMatchObject({ message: "Sidebar cursor expired; request a new snapshot" })
+        expect((yield* get(SessionPaths.sidebarSnapshot, { cursor: String(start.cursor), afterUpdated: String(start.next.updated), afterID: start.next.id, limit: "1" })).status).toBe(410)
+        expect((yield* get(SessionPaths.sidebarSnapshot, { cursor: String(position.floor - 1), limit: "2" })).status).toBe(410)
+        expect((yield* get(SessionPaths.sidebarChanges, { cursor: String(position.seq + 1), limit: "2" })).status).toBe(400)
+
+        const boundary = yield* json<{ cursor: number; items: { id: string; title: string }[] }>(
+          yield* get(SessionPaths.sidebarSnapshot, { cursor: String(position.floor), limit: "2" }),
+        )
+        expect(boundary.items.map((item) => item.id).sort()).toEqual([first.id, second.id].sort())
+        expect(boundary.items.find((item) => item.id === first.id)?.title).toBe(`title-${position.floor - start.cursor - 1}`)
+        const current = yield* json<{ cursor: number; items: { id: string; slug: string; version: string; title: string }[] }>(
+          yield* get(SessionPaths.sidebarSnapshot, { limit: "2" }),
+        )
+        expect(current.items.find((item) => item.id === first.id)).toMatchObject({
+          slug: first.slug, version: first.version, title: "title-515",
+        })
+        const seen: number[] = []
+        let cursor = position.floor
+        for (let more = true; more;) {
+          const page = yield* json<{ cursor: number; changes: { seq: number }[]; more: boolean }>(
+            yield* get(SessionPaths.sidebarChanges, { cursor: String(cursor), limit: "200" }),
+          )
+          seen.push(...page.changes.map((item) => item.seq))
+          cursor = page.cursor
+          more = page.more
+        }
+        expect(seen).toHaveLength(512)
+        expect(cursor).toBe(current.cursor)
+        yield* Effect.sync(() => Database.use((db) => db.delete(SessionTable).where(eq(SessionTable.id, first.id)).run()))
+        const deleted = yield* json<{ changes: { type: string; id: string }[] }>(
+          yield* get(SessionPaths.sidebarChanges, { cursor: String(cursor), limit: "1" }),
+        )
+        expect(deleted.changes[0]).toMatchObject({ type: "remove", id: first.id })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+  it.instance(
+    "reconciles root titles, archives and deletions without returning messages",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const svc = yield* Session.Service
+        const first = yield* createSession({ title: "first" })
+        const second = yield* createSession({ title: "second" })
+        const child = yield* createSession({ title: "child", parentID: first.id })
+        const post = (known: { id: SessionIDType; title: string; updated: number; archived?: number }[], limit = 20) =>
+          requestJson<{ upserts: Session.Info[]; removed: string[]; limit: number; limited: boolean }>(
+            SessionPaths.reconcile,
+            {
+              method: "POST",
+              headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+              body: JSON.stringify({ known, limit }),
+            },
+          )
+
+        const initial = yield* post([])
+        expect(initial).toMatchObject({ removed: [], limit: 20, limited: false })
+        expect(initial.upserts.map((item) => item.id).sort()).toEqual([first.id, second.id].sort())
+        expect(initial.upserts.some((item) => item.id === child.id)).toBe(false)
+        expect(JSON.stringify(initial)).not.toContain("parts")
+        const known = initial.upserts.map((item) => ({ id: item.id, title: item.title, updated: item.time.updated }))
+        expect(yield* post(known)).toMatchObject({ upserts: [], removed: [], limited: false })
+
+        yield* svc.setTitle({ sessionID: first.id, title: "renamed" })
+        const renamed = yield* post(known)
+        expect(renamed.upserts.map((item) => item.id)).toEqual([first.id])
+        expect(renamed.upserts[0]?.title).toBe("renamed")
+        expect(renamed.upserts[0]?.time.updated).toBe(first.time.updated)
+
+        const bounded = yield* post(known, 1)
+        expect(bounded.limit).toBe(1)
+        expect(bounded.limited).toBe(true)
+        expect(bounded.removed).toEqual([])
+
+        yield* svc.setArchived({ sessionID: first.id, time: Date.now() })
+        yield* svc.remove(second.id)
+        const caughtUp = yield* post(known)
+        expect(caughtUp.upserts).toEqual([])
+        expect(caughtUp.removed.sort()).toEqual([first.id, second.id].sort())
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "reconciles cached sessions displaced outside the limited window",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const svc = yield* Session.Service
+        const renamed = yield* createSession({ title: "old-title" })
+        const archived = yield* createSession({ title: "archive-me" })
+        const deleted = yield* createSession({ title: "delete-me" })
+        const known = [renamed, archived, deleted].map((item) => ({
+          id: item.id,
+          title: item.title,
+          updated: item.time.updated,
+        }))
+        const sibling = path.join(test.directory, "sibling")
+        yield* Effect.promise(() => mkdir(sibling))
+        // Non-Git directories can share a global project ID, so directory must still fence lookups.
+        const foreign = yield* createSession({ title: "foreign" }).pipe(provideInstance(sibling))
+        const newest = yield* createSession({ title: "newest" })
+        yield* Effect.sync(() =>
+          Database.use((db) =>
+            db
+              .update(SessionTable)
+              .set({ time_updated: Date.now() + 60_000 })
+              .where(eq(SessionTable.id, newest.id))
+              .run(),
+          ),
+        )
+        const post = (items: typeof known) =>
+          requestJson<{ upserts: Session.Info[]; removed: string[]; limit: number; limited: boolean }>(
+            SessionPaths.reconcile,
+            {
+              method: "POST",
+              headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+              body: JSON.stringify({ known: items, limit: 1 }),
+            },
+          )
+
+        const displaced = yield* post([...known, { id: foreign.id, title: foreign.title, updated: foreign.time.updated }])
+        expect(displaced.limited).toBe(true)
+        expect(displaced.upserts.map((item) => item.id)).toEqual([newest.id])
+        expect(displaced.removed).toEqual([foreign.id])
+
+        yield* svc.setTitle({ sessionID: renamed.id, title: "new-title" })
+        const changed = yield* post(known)
+        expect(changed.upserts.map((item) => item.id)).toEqual([newest.id, renamed.id])
+        expect(changed.upserts[1]?.time.updated).toBe(renamed.time.updated)
+        expect(changed.removed).toEqual([])
+
+        yield* svc.setArchived({ sessionID: archived.id, time: Date.now() })
+        yield* svc.remove(deleted.id)
+        const caughtUp = yield* post(known)
+        expect(caughtUp.upserts.map((item) => item.id)).toEqual([newest.id, renamed.id])
+        expect(caughtUp.removed.sort()).toEqual([archived.id, deleted.id].sort())
+      }),
+    { config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "rejects unbounded reconciliation inputs",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const post = (body: object) =>
+          request(SessionPaths.reconcile, {
+            method: "POST",
+            headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+            body: JSON.stringify(body),
+          })
+        expect((yield* post({ known: [], limit: 0 })).status).toBe(400)
+        expect((yield* post({ known: [], limit: 201 })).status).toBe(400)
+        expect(
+          (
+            yield* post({
+              known: Array.from({ length: 201 }, () => ({ id: SessionID.descending(), title: "x", updated: 0 })),
+              limit: 20,
+            })
+          ).status,
+        ).toBe(400)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
   it.effect("maps busy sessions to public session busy errors", () =>
     Effect.gen(function* () {
       const sessionID = SessionID.descending()

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { createHash } from "node:crypto"
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
 import { app, session } from "electron"
@@ -22,6 +23,8 @@ const LEGACY_PAIRING = "remote.pairing"
 export class RemoteHelper {
   private child?: ChildProcessWithoutNullStreams
   private starting?: Promise<void>
+  private projectTimer?: ReturnType<typeof setInterval>
+  private lastProjects?: string[]
   private pending = new Map<
     number,
     { resolve: (status: RemoteStatus) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
@@ -30,6 +33,7 @@ export class RemoteHelper {
   private buffer = ""
   private queue: Promise<unknown> = Promise.resolve()
   private sidecar?: ServerReadyData
+  private disconnecting = false
 
   setSidecar(data: ServerReadyData) {
     if (this.sidecar?.url === data.url && this.sidecar.password === data.password) return
@@ -42,15 +46,22 @@ export class RemoteHelper {
       }).catch(() => undefined)
   }
 
-  status() {
-    return this.run("status")
+  async status() {
+    return this.withCacheKey(await this.run("status"))
+  }
+
+  currentCacheKey(status: RemoteStatus) {
+    return this.withCacheKey({ ...status, cacheKey: undefined }).cacheKey
   }
 
   async enable() {
-    await this.run("projects", { projects: this.sidebarProjects() })
+    const projects = this.sidebarProjects()
+    await this.run("projects", { projects })
+    this.lastProjects = projects
     const initial = await this.run("enable")
     getStore().set(ENABLED, initial.enabled)
-    return this.waitForAuth(initial)
+    this.watchProjects()
+    return this.withCacheKey(await this.waitForAuth(initial))
   }
 
   setAuthKey(authKey: string) {
@@ -62,6 +73,8 @@ export class RemoteHelper {
   }
 
   disable() {
+    if (this.projectTimer) clearInterval(this.projectTimer)
+    this.projectTimer = undefined
     return this.run("disable").then((status) => {
       getStore().delete(ENABLED)
       return status
@@ -73,18 +86,29 @@ export class RemoteHelper {
     return this.run("connect", { share: share.trim() }).then(async (initial) => {
       writeFileSync(this.pairingPath(), share.trim(), { mode: 0o600 })
       if (process.platform !== "win32") chmodSync(this.pairingPath(), 0o600)
-      return this.waitForAuth(initial)
+      return this.withCacheKey(await this.waitForAuth(initial))
     })
   }
 
   disconnect() {
+    this.disconnecting = true
     return this.run("disconnect").then((status) => {
       rmSync(this.pairingPath(), { force: true })
+      for (const name of ["opencode.sidebar-display.dat", "opencode.transcripts.dat"]) {
+        const store = getStore(name)
+        for (const key of Object.keys(store.store)) {
+          if (key.startsWith("tunnel.v1.")) store.delete(key)
+        }
+      }
       return status
+    }).finally(() => {
+      this.disconnecting = false
     })
   }
 
   stop() {
+    if (this.projectTimer) clearInterval(this.projectTimer)
+    this.projectTimer = undefined
     this.child?.kill()
   }
 
@@ -180,8 +204,11 @@ export class RemoteHelper {
       await this.send("auth-key", { authKey: readFileSync(this.authKeyPath(), "utf8").trim() })
     }
     if (store.get(ENABLED) === true) {
-      await this.send("projects", { projects: this.sidebarProjects() })
+      const projects = this.sidebarProjects()
+      await this.send("projects", { projects })
+      this.lastProjects = projects
       await this.send("enable")
+      this.watchProjects()
     }
     if (existsSync(this.pairingPath())) {
       const pairing = readFileSync(this.pairingPath(), "utf8").trim()
@@ -191,6 +218,21 @@ export class RemoteHelper {
 
   private pairingPath() {
     return join(app.getPath("userData"), "remote-helper", "pairing.share")
+  }
+
+  private withCacheKey(status: RemoteStatus): RemoteStatus {
+    if (this.disconnecting || !status.connection || !status.online || !existsSync(this.pairingPath())) return status
+    const share = readFileSync(this.pairingPath(), "utf8").trim()
+    if (!share) return status
+    return {
+      ...status,
+      cacheKey: createHash("sha256")
+        .update("opencode.desktop.remote-display-cache.v1\0")
+        .update(share)
+        .update("\0")
+        .update(status.connection.host)
+        .digest("hex"),
+    }
   }
 
   private authKeyPath() {
@@ -209,6 +251,18 @@ export class RemoteHelper {
     } catch {
       return []
     }
+  }
+
+  private watchProjects() {
+    if (this.projectTimer) return
+    this.projectTimer = setInterval(() => {
+      const projects = this.sidebarProjects()
+      if (this.lastProjects?.length === projects.length && projects.every((value, index) => this.lastProjects?.[index] === value)) return
+      this.lastProjects = projects
+      void this.run("projects", { projects }).catch(() => {
+        this.lastProjects = undefined
+      })
+    }, 5_000)
   }
 
   private async waitForAuth(initial: RemoteStatus) {

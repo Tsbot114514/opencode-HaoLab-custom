@@ -644,7 +644,10 @@ export default function Page() {
           refreshTimer = undefined
           if (params.id !== id) return
           untrack(() => {
-            if (stale) void sync.session.sync(id, { force: true })
+            if (stale) {
+              const request = sync.session.sync(id, { force: true })
+              void request.catch(() => undefined)
+            }
           })
         }, 0)
       })

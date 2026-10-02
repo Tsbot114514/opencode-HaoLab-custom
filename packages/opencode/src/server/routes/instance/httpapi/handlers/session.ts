@@ -3,8 +3,10 @@ import { Bus } from "@/bus"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
+import { InstanceState } from "@/effect/instance-state"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
+import { SessionSidebarFeed } from "@/session/sidebar-feed"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
@@ -14,12 +16,14 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
+import { NotFoundError } from "@/storage/storage"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import { WorkspaceRouteContext } from "../middleware/workspace-routing"
 import {
   CommandPayload,
   DiffQuery,
@@ -29,6 +33,10 @@ import {
   MessagesQuery,
   PermissionResponsePayload,
   PromptPayload,
+  ReconcilePayload,
+  SidebarSnapshotQuery,
+  SidebarChangesQuery,
+  SidebarCursorExpiredError,
   RevertPayload,
   ShellPayload,
   SummarizePayload,
@@ -68,6 +76,76 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         search: ctx.query.search,
         limit: ctx.query.limit,
       })
+    })
+
+    const reconcile = Effect.fn("SessionHttpApi.reconcile")(function* (ctx: {
+      query: { directory?: string }
+      payload: typeof ReconcilePayload.Type
+    }) {
+      const route = yield* WorkspaceRouteContext
+      const directory = ctx.query.directory ?? route.directory
+      const rows = yield* session.list({ directory, directoryOnly: true, roots: true, limit: ctx.payload.limit + 1 })
+      const limited = rows.length > ctx.payload.limit
+      const current = rows.slice(0, ctx.payload.limit)
+      const known = new Map(ctx.payload.known.map((item) => [item.id, item]))
+      const projectID = (yield* InstanceState.context).project.id
+      const windowIDs = new Set(current.map((item) => item.id))
+      // A full window does not prove a cached session was deleted; look up displaced IDs.
+      const outside = limited
+        ? yield* Effect.forEach(
+            [...known.values()].filter((item) => !windowIDs.has(item.id)),
+            (item) => session.get(item.id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined))),
+            { concurrency: 8 },
+          )
+        : []
+      const active = [...current, ...outside.filter((item): item is Session.Info => item !== undefined)].filter(
+        (item) =>
+          item.projectID === projectID &&
+          item.directory === directory &&
+          item.parentID === undefined &&
+          item.time.archived === undefined,
+      )
+      const ids = new Set(active.map((item) => item.id))
+      return {
+        upserts: active.filter((item) => {
+          const previous = known.get(item.id)
+          return (
+            !previous ||
+            previous.title !== item.title ||
+            previous.updated !== item.time.updated ||
+            previous.archived !== undefined
+          )
+        }),
+        removed: ctx.payload.known
+          .filter((item) => !ids.has(item.id))
+          .map((item) => item.id),
+        limit: ctx.payload.limit,
+        limited,
+      }
+    })
+
+    const sidebarSnapshot = Effect.fn("SessionHttpApi.sidebarSnapshot")(function* (ctx: { query: typeof SidebarSnapshotQuery.Type }) {
+      if ((ctx.query.afterUpdated === undefined) !== (ctx.query.afterID === undefined) ||
+          (ctx.query.afterID !== undefined && ctx.query.cursor === undefined)) return yield* new HttpApiError.BadRequest({})
+      const route = yield* WorkspaceRouteContext
+      const projectID = (yield* InstanceState.context).project.id
+      const result = SessionSidebarFeed.snapshot(
+        { projectID, directory: ctx.query.directory ?? route.directory }, ctx.query,
+      )
+      if (result === "expired") return yield* new SidebarCursorExpiredError({ message: "Sidebar cursor expired; request a new snapshot" })
+      if (result === "invalid") return yield* new HttpApiError.BadRequest({})
+      return result
+    })
+
+    const sidebarChanges = Effect.fn("SessionHttpApi.sidebarChanges")(function* (ctx: { query: typeof SidebarChangesQuery.Type }) {
+      const route = yield* WorkspaceRouteContext
+      const projectID = (yield* InstanceState.context).project.id
+      const result = SessionSidebarFeed.changes(
+        { projectID, directory: ctx.query.directory ?? route.directory }, ctx.query,
+      )
+      if (result === "expired") return yield* new SidebarCursorExpiredError({ message: "Sidebar cursor expired; request a new snapshot" })
+      if (result === "invalid") return yield* new HttpApiError.BadRequest({})
+      return result
     })
 
     const status = Effect.fn("SessionHttpApi.status")(function* () {
@@ -395,6 +473,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     return handlers
       .handle("list", list)
+      .handle("reconcile", reconcile)
+      .handle("sidebarSnapshot", sidebarSnapshot)
+      .handle("sidebarChanges", sidebarChanges)
       .handle("status", status)
       .handle("get", get)
       .handle("children", children)

@@ -33,6 +33,10 @@ export const GlobalUpgradeInput = Schema.Struct({
   target: Schema.optional(Schema.String),
 })
 
+export const BarkKeyInput = Schema.Struct({ key: Schema.String })
+const BarkStatus = Schema.Struct({ configured: Schema.Boolean })
+const BarkTestResult = Schema.Struct({ success: Schema.Boolean })
+
 const GlobalUpgradeResult = Schema.Union([
   Schema.Struct({
     success: Schema.Literal(true),
@@ -51,6 +55,8 @@ export const GlobalPaths = {
   proxy: "/global/proxy",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
+  bark: "/global/notifications/bark",
+  barkTest: "/global/notifications/bark/test",
 } as const
 
 export const GlobalApi = HttpApi.make("global").add(
@@ -134,6 +140,20 @@ export const GlobalApi = HttpApi.make("global").add(
           description: "Upgrade opencode to the specified version or latest if not specified.",
         }),
       ),
+      HttpApiEndpoint.get("barkGet", GlobalPaths.bark, {
+        success: BarkStatus,
+      }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.get", summary: "Get Bark status" })),
+      HttpApiEndpoint.put("barkSet", GlobalPaths.bark, {
+        payload: BarkKeyInput,
+        success: BarkStatus,
+        error: HttpApiError.BadRequest,
+      }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.set", summary: "Set Bark key" })),
+      HttpApiEndpoint.delete("barkDelete", GlobalPaths.bark, {
+        success: BarkStatus,
+      }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.delete", summary: "Clear Bark key" })),
+      HttpApiEndpoint.post("barkTest", GlobalPaths.barkTest, {
+        success: BarkTestResult,
+      }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.test", summary: "Test Bark push" })),
     )
     .annotateMerge(OpenApi.annotations({ title: "global", description: "Global server routes." })),
 )

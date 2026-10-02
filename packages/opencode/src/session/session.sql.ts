@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, index, primaryKey, real } from "drizzle-orm/sqlite-core"
+import { sqliteTable, text, integer, index, primaryKey, real, check } from "drizzle-orm/sqlite-core"
+import { sql } from "drizzle-orm"
 import { ProjectTable } from "../project/project.sql"
 import type { MessageV2 } from "./message-v2"
 import type { SessionMessage } from "@opencode-ai/core/session-message"
@@ -57,6 +58,65 @@ export const SessionTable = sqliteTable(
     index("session_parent_idx").on(table.parent_id),
   ],
 )
+
+export const SessionSidebarChangeTable = sqliteTable(
+  "session_sidebar_change",
+  {
+    seq: integer().primaryKey({ autoIncrement: true }),
+    session_id: text().$type<SessionID>().notNull(),
+    old_project_id: text().$type<ProjectID>(),
+    old_directory: text(),
+    old_parent_id: text(),
+    old_time_archived: integer(),
+    project_id: text().$type<ProjectID>(),
+    directory: text(),
+    parent_id: text(),
+    time_archived: integer(),
+    title: text(),
+    slug: text(),
+    version: text(),
+    time_created: integer(),
+    time_updated: integer(),
+  },
+  (table) => [
+    index("session_sidebar_change_session_seq_idx").on(table.session_id, table.seq),
+    index("session_sidebar_change_project_directory_seq_idx").on(table.project_id, table.directory, table.seq),
+    index("session_sidebar_change_old_project_directory_seq_idx").on(
+      table.old_project_id,
+      table.old_directory,
+      table.seq,
+    ),
+  ],
+)
+
+export const SessionSidebarStateTable = sqliteTable("session_sidebar_state", {
+  id: integer().primaryKey(),
+  seq: integer().notNull(),
+  floor: integer().notNull(),
+})
+
+export const SessionSidebarCountTable = sqliteTable("session_sidebar_count", {
+  project_id: text().$type<ProjectID>().notNull(),
+  directory: text().notNull(),
+  total: integer().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.project_id, table.directory] }),
+  check("session_sidebar_count_nonnegative", sql`${table.total} >= 0`),
+])
+
+export const SessionSidebarBaseTable = sqliteTable("session_sidebar_base", {
+  session_id: text().$type<SessionID>().primaryKey(),
+  project_id: text().$type<ProjectID>().notNull(),
+  directory: text().notNull(),
+  title: text().notNull(),
+  slug: text().notNull(),
+  version: text().notNull(),
+  time_created: integer().notNull(),
+  time_updated: integer().notNull(),
+}, (table) => [
+  index("session_sidebar_base_project_directory_id_idx").on(table.project_id, table.directory, table.session_id),
+  index("session_sidebar_base_project_directory_updated_id_idx").on(table.project_id, table.directory, table.time_updated, table.session_id),
+])
 
 export const MessageTable = sqliteTable(
   "message",

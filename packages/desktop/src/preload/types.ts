@@ -1,4 +1,5 @@
 import type { DesktopMenuAction } from "@opencode-ai/app/desktop-menu"
+import type { TranscriptMutation } from "../../../app/src/context/global-sync/transcript-cache"
 
 export type InitStep = { phase: "server_waiting" } | { phase: "sqlite_waiting" } | { phase: "done" }
 
@@ -16,6 +17,7 @@ export type RemoteStatus = {
   authUrl?: string
   loginError?: string
   share?: string
+  cacheKey?: string
   connection?: { host: string; url: string; username: string; password: string }
 }
 
@@ -96,6 +98,8 @@ export type ElectronAPI = {
   storeClear: (name: string) => Promise<void>
   storeKeys: (name: string) => Promise<string[]>
   storeLength: (name: string) => Promise<number>
+  transcriptMutate: (scope: string, owner: string, operations: TranscriptMutation[]) => Promise<void>
+  transcriptAcquire: (scope: string, owner: string, directory: string, sessionID: string) => Promise<{ token: string; revalidate: boolean } | undefined>
 
   getWindowCount: () => Promise<number>
   onSqliteMigrationProgress: (cb: (progress: SqliteMigrationProgress) => void) => () => void

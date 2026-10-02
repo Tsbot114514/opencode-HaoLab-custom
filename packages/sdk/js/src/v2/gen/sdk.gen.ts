@@ -82,6 +82,14 @@ import type {
   GlobalEventResponses,
   GlobalHealthErrors,
   GlobalHealthResponses,
+  GlobalNotificationsBarkDeleteErrors,
+  GlobalNotificationsBarkDeleteResponses,
+  GlobalNotificationsBarkGetErrors,
+  GlobalNotificationsBarkGetResponses,
+  GlobalNotificationsBarkSetErrors,
+  GlobalNotificationsBarkSetResponses,
+  GlobalNotificationsBarkTestErrors,
+  GlobalNotificationsBarkTestResponses,
   GlobalProxyGetErrors,
   GlobalProxyGetResponses,
   GlobalProxyUpdateErrors,
@@ -202,12 +210,18 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionReconcileErrors,
+  SessionReconcileResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
   SessionShareResponses,
   SessionShellErrors,
   SessionShellResponses,
+  SessionSidebarChangesErrors,
+  SessionSidebarChangesResponses,
+  SessionSidebarSnapshotErrors,
+  SessionSidebarSnapshotResponses,
   SessionStatusErrors,
   SessionStatusResponses,
   SessionSummarizeErrors,
@@ -596,6 +610,74 @@ export class Proxy extends HeyApiClient {
   }
 }
 
+export class Bark extends HeyApiClient {
+  /**
+   * Clear Bark key
+   */
+  public delete<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).delete<
+      GlobalNotificationsBarkDeleteResponses,
+      GlobalNotificationsBarkDeleteErrors,
+      ThrowOnError
+    >({ url: "/global/notifications/bark", ...options })
+  }
+
+  /**
+   * Get Bark status
+   */
+  public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<
+      GlobalNotificationsBarkGetResponses,
+      GlobalNotificationsBarkGetErrors,
+      ThrowOnError
+    >({ url: "/global/notifications/bark", ...options })
+  }
+
+  /**
+   * Set Bark key
+   */
+  public set<ThrowOnError extends boolean = false>(
+    parameters?: {
+      key?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "key" }] }])
+    return (options?.client ?? this.client).put<
+      GlobalNotificationsBarkSetResponses,
+      GlobalNotificationsBarkSetErrors,
+      ThrowOnError
+    >({
+      url: "/global/notifications/bark",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Test Bark push
+   */
+  public test<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).post<
+      GlobalNotificationsBarkTestResponses,
+      GlobalNotificationsBarkTestErrors,
+      ThrowOnError
+    >({ url: "/global/notifications/bark/test", ...options })
+  }
+}
+
+export class Notifications extends HeyApiClient {
+  private _bark?: Bark
+  get bark(): Bark {
+    return (this._bark ??= new Bark({ client: this.client }))
+  }
+}
+
 export class Global extends HeyApiClient {
   /**
    * Get health
@@ -665,6 +747,11 @@ export class Global extends HeyApiClient {
   private _proxy?: Proxy
   get proxy(): Proxy {
     return (this._proxy ??= new Proxy({ client: this.client }))
+  }
+
+  private _notifications?: Notifications
+  get notifications(): Notifications {
+    return (this._notifications ??= new Notifications({ client: this.client }))
   }
 }
 
@@ -3413,6 +3500,126 @@ export class Session2 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Reconcile session sidebar
+   *
+   * Compare bounded root session summaries with the current directory, including known sessions outside the newest window. Return new or changed sessions and IDs that were deleted or archived.
+   */
+  public reconcile<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      known?: Array<{
+        id: string
+        title: string
+        updated: number
+        archived?: number
+      }>
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "known" },
+            { in: "body", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionReconcileResponses, SessionReconcileErrors, ThrowOnError>({
+      url: "/session/sidebar/reconcile",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Page session sidebar snapshot
+   */
+  public sidebarSnapshot<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      cursor?: string
+      afterUpdated?: string
+      afterID?: string
+      limit: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "afterUpdated" },
+            { in: "query", key: "afterID" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionSidebarSnapshotResponses,
+      SessionSidebarSnapshotErrors,
+      ThrowOnError
+    >({
+      url: "/session/sidebar/snapshot",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Page session sidebar changes
+   */
+  public sidebarChanges<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      cursor: string
+      limit: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionSidebarChangesResponses,
+      SessionSidebarChangesErrors,
+      ThrowOnError
+    >({
+      url: "/session/sidebar/changes",
+      ...options,
+      ...params,
     })
   }
 

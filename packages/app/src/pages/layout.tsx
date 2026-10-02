@@ -741,6 +741,8 @@ export default function Layout(props: ParentProps) {
   }
 
   async function prefetchMessages(directory: string, sessionID: string, token: number) {
+    // Selected desktop sessions hydrate locally; hover prefetch must not race that refresh or mirror offscreen transcripts.
+    if (globalSync.transcript.enabled) return
     const [store, setStore] = globalSync.child(directory, { bootstrap: false })
 
     return runSessionPrefetch({

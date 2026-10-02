@@ -5,6 +5,7 @@ import { createStore } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
 import { useCheckServerHealth } from "@/utils/server-health"
 import { authTokenFromCredentials } from "@/utils/server"
+import { usePlatform } from "./platform"
 
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http | ServerConnection.Tunnel
@@ -17,6 +18,11 @@ export function sidebarProjects(current: StoredProject[], directories: unknown):
   if (next.length === current.length && next.every((project, index) => project.worktree === current[index]?.worktree))
     return current
   return next
+}
+
+export function canRestoreTunnelSidebar(conn: ServerConnection.Any | undefined, verified?: ServerConnection.HttpBase) {
+  return conn?.type === "tunnel" && !!verified && verified.url === conn.http.url &&
+    verified.username === conn.http.username && verified.password === conn.http.password
 }
 
 export function normalizeServerUrl(input: string) {
@@ -121,6 +127,7 @@ export namespace ServerConnection {
   export type Tunnel = {
     type: "tunnel"
     host: string
+    cacheKey?: string
     http: HttpBase
   } & Base
 
@@ -156,6 +163,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     servers?: Array<ServerConnection.Any>
   }) => {
     const checkServerHealth = useCheckServerHealth()
+    const platform = usePlatform()
 
     const [store, setStore, _, ready] = persisted(
       Persist.global("server", ["server.v3"]),
@@ -165,7 +173,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         lastProject: {} as Record<string, string>,
       }),
     )
-    const [remote, setRemote] = createStore({ loaded: {} as Record<string, boolean> })
+    const [remote, setRemote] = createStore({ loaded: {} as Record<string, ServerConnection.HttpBase | undefined> })
 
     const url = (x: StoredServer) => (typeof x === "string" ? x : "type" in x ? x.http.url : x.url)
 
@@ -205,8 +213,15 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       }
     }
 
+    const remember = (key: ServerConnection.Key) => {
+      if (platform.platform !== "desktop") return
+      void Promise.resolve(platform.setDefaultServer?.(key)).catch(() => undefined)
+    }
+
     function setActive(input: ServerConnection.Key) {
-      if (state.active !== input) setState("active", input)
+      if (state.active === input) return
+      setState("active", input)
+      remember(input)
     }
 
     function add(input: ServerConnection.Http) {
@@ -221,6 +236,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           setStore("list", store.list.length, conn)
         }
         setState("active", ServerConnection.key(conn))
+        remember(ServerConnection.key(conn))
         return conn
       })
     }
@@ -237,6 +253,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         if (existing !== -1) setStore("list", existing, conn)
         else setStore("list", store.list.length, conn)
         setState("active", key)
+        remember(key)
         return conn
       })
     }
@@ -251,7 +268,9 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         setStore("list", list)
         if (state.active === key) {
           const next = allServers().find((conn) => ServerConnection.key(conn) !== key)
-          setState("active", next ? ServerConnection.key(next) : ServerConnection.Key.make("sidecar"))
+          const selected = next ? ServerConnection.key(next) : ServerConnection.Key.make("sidecar")
+          setState("active", selected)
+          remember(selected)
         }
       })
     }
@@ -276,9 +295,13 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     const current: Accessor<ServerConnection.Any | undefined> = createMemo(
       () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
     )
-    const projectsList = createMemo(() =>
-      current()?.type === "tunnel" && !remote.loaded[origin()] ? [] : (store.projects[origin()] ?? []),
-    )
+    const projectsList = createMemo(() => {
+      const conn = current()
+      if (conn?.type === "tunnel") {
+        if (!canRestoreTunnelSidebar(conn, remote.loaded[origin()])) return []
+      }
+      return store.projects[origin()] ?? []
+    })
     const isLocal = createMemo(() => {
       const c = current()
       return (c?.type === "sidecar" && c.variant === "base") || (c?.type === "http" && isLocalHost(c.http.url))
@@ -322,7 +345,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           const next = sidebarProjects(currentProjects, (data as { directories: unknown[] }).directories)
           if (!next) return
           if (next !== currentProjects) setStore("projects", key, next)
-          setRemote("loaded", key, true)
+          setRemote("loaded", key, { url: conn.http.url, username: conn.http.username, password })
         } catch {
           // Reconnecting can request A's sidebar again.
         }
@@ -331,7 +354,6 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       onCleanup(() => {
         alive = false
         controller.abort()
-        setRemote("loaded", key, false)
       })
     })
 

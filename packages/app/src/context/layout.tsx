@@ -524,26 +524,37 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       }
     })
 
-    let sessionFrame: number | undefined
-    let sessionTimer: number | undefined
-
-    onMount(() => {
-      sessionFrame = requestAnimationFrame(() => {
-        sessionFrame = undefined
-        sessionTimer = window.setTimeout(() => {
-          sessionTimer = undefined
-          void Promise.all(
-            server.projects.list().map((project) => {
-              return globalSync.project.loadSessions(project.worktree)
-            }),
-          )
-        }, 0)
+    const loadedSessions = new Set<string>()
+    const sessionQueue: string[] = []
+    let alive = true
+    let loadingSessions = false
+    const loadQueuedSessions = async () => {
+      if (loadingSessions) return
+      loadingSessions = true
+      while (alive && sessionQueue.length) {
+        const directory = sessionQueue.shift()
+        if (!directory || !server.projects.list().some((project) => project.worktree === directory)) continue
+        await globalSync.project.loadSessions(directory).catch(() => undefined)
+      }
+      loadingSessions = false
+    }
+    createEffect(() => {
+      if (!server.ready()) return
+      const directories = server.projects
+        .list()
+        .map((project) => project.worktree)
+        .filter((directory) => !loadedSessions.has(directory))
+      if (!directories.length) return
+      directories.forEach((directory) => loadedSessions.add(directory))
+      const last = server.projects.last()
+      sessionQueue.push(...directories.sort((a, b) => Number(b === last) - Number(a === last)))
+      requestAnimationFrame(() => {
+        if (!alive) return
+        void loadQueuedSessions()
       })
     })
-
     onCleanup(() => {
-      if (sessionFrame !== undefined) cancelAnimationFrame(sessionFrame)
-      if (sessionTimer !== undefined) window.clearTimeout(sessionTimer)
+      alive = false
     })
 
     return {

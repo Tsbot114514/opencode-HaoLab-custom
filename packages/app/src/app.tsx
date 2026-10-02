@@ -35,6 +35,8 @@ import { CommentsProvider } from "@/context/comments"
 import { FileProvider } from "@/context/file"
 import { GlobalSDKProvider, useGlobalSDK } from "@/context/global-sdk"
 import { GlobalSyncProvider, useGlobalSync } from "@/context/global-sync"
+import { captureQueries, restoreQueries, serverDisplayCache, type DisplayCache } from "@/context/global-sync/server-cache"
+import { desktopCacheKey, desktopCacheStorage, loadDesktopCache, watchDesktopCache } from "@/context/global-sync/desktop-cache"
 import { HighlightsProvider } from "@/context/highlights"
 import { LanguageProvider, type Locale, useLanguage } from "@/context/language"
 import { LayoutProvider } from "@/context/layout"
@@ -169,7 +171,7 @@ declare global {
   }
 }
 
-function QueryProvider(props: ParentProps) {
+function QueryProvider(props: ParentProps<{ displayCache?: DisplayCache }>) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
@@ -179,6 +181,11 @@ function QueryProvider(props: ParentProps) {
       },
     },
   })
+  if (props.displayCache) {
+    const cache = props.displayCache
+    restoreQueries(cache, client)
+    onCleanup(() => captureQueries(cache, client))
+  }
   return <QueryClientProvider client={client}>{props.children}</QueryClientProvider>
 }
 
@@ -385,13 +392,36 @@ function ConnectionError(props: { onRetry?: () => void; onServerSelected?: (key:
   )
 }
 
-function ServerKey(props: ParentProps) {
+function ServerKey(props: { children: (cache: DisplayCache) => JSX.Element }) {
   const server = useServer()
+  const platform = usePlatform()
+  const [cache] = createResource(() => [server.key, server.current] as const, async ([key, connection]) => {
+    const snapshot = serverDisplayCache(key, connection)
+    if (!snapshot) return
+    const diskKey = platform.platform === "desktop" ? desktopCacheKey(connection) : undefined
+    if (diskKey) await loadDesktopCache(desktopCacheStorage(platform.storage), snapshot, diskKey)
+    return snapshot
+  })
   return (
-    <Show when={server.key} keyed>
-      {props.children}
+    <Show when={!cache.loading && cache() === serverDisplayCache(server.key, server.current) ? cache() : undefined} keyed>
+      {(displayCache) => <QueryProvider displayCache={displayCache}>{props.children(displayCache)}</QueryProvider>}
     </Show>
   )
+}
+
+function DesktopCacheWriter(props: { cache: DisplayCache }) {
+  const platform = usePlatform()
+  const server = useServer()
+  const sync = useGlobalSync()
+  const key = platform.platform === "desktop" ? desktopCacheKey(server.current) : undefined
+  if (!key) return null
+  watchDesktopCache({
+    storage: desktopCacheStorage(platform.storage), key, cache: props.cache,
+    projects: () => sync.data.project,
+    directories: () => server.projects.list(),
+    peek: (directory) => sync.peek(directory, { bootstrap: false })[0],
+  })
+  return null
 }
 
 export function AppInterface(props: {
@@ -409,9 +439,10 @@ export function AppInterface(props: {
     >
       <ConnectionGate disableHealthCheck={props.disableHealthCheck}>
         <ServerKey>
-          <QueryProvider>
+          {(displayCache) => (
             <GlobalSDKProvider>
-              <GlobalSyncProvider>
+              <GlobalSyncProvider displayCache={displayCache}>
+                <DesktopCacheWriter cache={displayCache} />
                 <Dynamic
                   component={props.router ?? Router}
                   root={(routerProps) => <RouterRoot appChildren={props.children}>{routerProps.children}</RouterRoot>}
@@ -428,7 +459,7 @@ export function AppInterface(props: {
                 </Dynamic>
               </GlobalSyncProvider>
             </GlobalSDKProvider>
-          </QueryProvider>
+          )}
         </ServerKey>
       </ConnectionGate>
     </ServerProvider>

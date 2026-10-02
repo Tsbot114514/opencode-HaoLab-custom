@@ -38,6 +38,8 @@ const api: ElectronAPI = {
   storeClear: (name) => ipcRenderer.invoke("store-clear", name),
   storeKeys: (name) => ipcRenderer.invoke("store-keys", name),
   storeLength: (name) => ipcRenderer.invoke("store-length", name),
+  transcriptMutate: (scope, owner, operations) => ipcRenderer.invoke("transcript-mutate", scope, owner, operations),
+  transcriptAcquire: (scope, owner, directory, sessionID) => ipcRenderer.invoke("transcript-acquire", scope, owner, directory, sessionID),
 
   getWindowCount: () => ipcRenderer.invoke("get-window-count"),
   onSqliteMigrationProgress: (cb) => {
