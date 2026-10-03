@@ -1,0 +1,1 @@
+CREATE INDEX `session_sidebar_base_project_directory_updated_id_idx` ON `session_sidebar_base` (`project_id`,`directory`,`time_updated`,`session_id`);

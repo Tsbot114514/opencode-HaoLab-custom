@@ -14,6 +14,7 @@ import { useServer } from "@/context/server"
 import { terminalFontFamily, useSettings } from "@/context/settings"
 import type { LocalPTY } from "@/context/terminal"
 import { disposeIfDisposable, getHoveredLinkText, setOptionIfSupported } from "@/utils/runtime-adapters"
+import { authTokenFromCredentials } from "@/utils/server"
 import { terminalWriter } from "@/utils/terminal-writer"
 import { terminalWebSocketURL } from "@/utils/terminal-websocket-url"
 
@@ -530,19 +531,42 @@ export const Terminal = (props: TerminalProps) => {
         if (once.value) return
         if (disposed) return
 
-        const socket = new WebSocket(
-          terminalWebSocketURL({
-            url,
-            id,
-            directory,
-            cursor: seek,
-            ticket,
-            sameOrigin,
-            username,
-            password,
-            authToken: server.current?.type === "http" ? server.current.authToken : false,
-          }),
-        )
+        const socketURL = terminalWebSocketURL({
+          url,
+          id,
+          directory,
+          cursor: seek,
+          ticket,
+          sameOrigin,
+          username,
+          password: server.current?.type === "tunnel" ? undefined : password,
+          authToken: server.current?.type === "http" ? server.current.authToken : false,
+        })
+        if (server.current?.type === "tunnel") {
+          const response = await (platform.fetch ?? fetch)(`${url}/__haolab/ws-ticket`, {
+            method: "POST",
+            headers: { Authorization: `Basic ${authTokenFromCredentials({ username, password })}` },
+          }).catch((err) => {
+            fail(err)
+            return undefined
+          })
+          if (disposed || once.value) return
+          if (!response?.ok) {
+            fail(new Error(`Remote terminal authorization failed (${response?.status ?? "network error"})`))
+            return
+          }
+          const bridge = await response.json().catch((err: unknown) => {
+            fail(err)
+            return undefined
+          })
+          if (disposed || once.value) return
+          if (typeof bridge?.ticket !== "string") {
+            fail(new Error("Remote terminal returned an invalid ticket"))
+            return
+          }
+          socketURL.searchParams.set("bridge_ticket", bridge.ticket)
+        }
+        const socket = new WebSocket(socketURL)
         socket.binaryType = "arraybuffer"
         ws = socket
 

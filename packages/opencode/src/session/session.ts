@@ -421,10 +421,12 @@ export const MessagesInput = Schema.Struct({
 })
 export type ListInput = {
   directory?: string
+  directoryOnly?: boolean
   scope?: "project"
   path?: string
   workspaceID?: WorkspaceID
   roots?: boolean
+  archived?: boolean
   start?: number
   search?: string
   limit?: number
@@ -1057,13 +1059,16 @@ function* listByProject(
           : or(...conds)!,
       )
     }
-  } else if (input.scope !== "project" && !input.experimentalWorkspaces) {
+  } else if (input.directoryOnly || (input.scope !== "project" && !input.experimentalWorkspaces)) {
     if (input.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
     }
   }
   if (input.roots) {
     conditions.push(isNull(SessionTable.parent_id))
+  }
+  if (input.archived === false) {
+    conditions.push(isNull(SessionTable.time_archived))
   }
   if (input.start) {
     conditions.push(gte(SessionTable.time_updated, input.start))

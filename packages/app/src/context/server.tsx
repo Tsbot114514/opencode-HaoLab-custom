@@ -1,12 +1,29 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { showToast } from "@opencode-ai/ui/toast"
 import { type Accessor, batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
 import { useCheckServerHealth } from "@/utils/server-health"
+import { authTokenFromCredentials } from "@/utils/server"
+import { usePlatform } from "./platform"
 
 type StoredProject = { worktree: string; expanded: boolean }
-type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http
+type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http | ServerConnection.Tunnel
 const HEALTH_POLL_INTERVAL_MS = 10_000
+
+export function sidebarProjects(current: StoredProject[], directories: unknown): StoredProject[] | undefined {
+  if (!Array.isArray(directories) || directories.some((directory) => typeof directory !== "string" || !directory.trim())) return
+  const expanded = new Map(current.map((project) => [project.worktree, project.expanded]))
+  const next = [...new Set(directories)].map((worktree) => ({ worktree, expanded: expanded.get(worktree) ?? true }))
+  if (next.length === current.length && next.every((project, index) => project.worktree === current[index]?.worktree))
+    return current
+  return next
+}
+
+export function canRestoreTunnelSidebar(conn: ServerConnection.Any | undefined, verified?: ServerConnection.HttpBase) {
+  return conn?.type === "tunnel" && !!verified && verified.url === conn.http.url &&
+    verified.username === conn.http.username && verified.password === conn.http.password
+}
 
 export function normalizeServerUrl(input: string) {
   const trimmed = input.trim()
@@ -38,14 +55,23 @@ export function resolveServerList(input: {
   stored: StoredServer[]
 }): Array<ServerConnection.Any> {
   const servers = [
-    ...input.stored.map((value) =>
-      typeof value === "string"
-        ? {
-            type: "http" as const,
-            http: { url: value },
-          }
-        : value,
-    ),
+    ...input.stored
+      .filter(
+        (value) =>
+          typeof value === "string" ||
+          !("type" in value) ||
+          value.type !== "tunnel" ||
+          !input.props ||
+          input.props.some((conn) => conn.type === "tunnel" && conn.host === value.host),
+      )
+      .map((value) =>
+        typeof value === "string"
+          ? {
+              type: "http" as const,
+              http: { url: value },
+            }
+          : value,
+      ),
     ...(input.props ?? []),
   ]
 
@@ -98,10 +124,17 @@ export namespace ServerConnection {
     http: HttpBase
   } & Base
 
+  export type Tunnel = {
+    type: "tunnel"
+    host: string
+    cacheKey?: string
+    http: HttpBase
+  } & Base
+
   export type Any =
     | Http
     // All these are desktop-only
-    | (Sidecar | Ssh)
+    | (Sidecar | Ssh | Tunnel)
 
   export const key = (conn: Any): Key => {
     switch (conn.type) {
@@ -113,6 +146,8 @@ export namespace ServerConnection {
       }
       case "ssh":
         return Key.make(`ssh:${conn.host}`)
+      case "tunnel":
+        return Key.make(`tunnel:${conn.host}`)
     }
   }
 
@@ -128,6 +163,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     servers?: Array<ServerConnection.Any>
   }) => {
     const checkServerHealth = useCheckServerHealth()
+    const platform = usePlatform()
 
     const [store, setStore, _, ready] = persisted(
       Persist.global("server", ["server.v3"]),
@@ -137,6 +173,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         lastProject: {} as Record<string, string>,
       }),
     )
+    const [remote, setRemote] = createStore({ loaded: {} as Record<string, ServerConnection.HttpBase | undefined> })
 
     const url = (x: StoredServer) => (typeof x === "string" ? x : "type" in x ? x.http.url : x.url)
 
@@ -176,8 +213,15 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       }
     }
 
+    const remember = (key: ServerConnection.Key) => {
+      if (platform.platform !== "desktop") return
+      void Promise.resolve(platform.setDefaultServer?.(key)).catch(() => undefined)
+    }
+
     function setActive(input: ServerConnection.Key) {
-      if (state.active !== input) setState("active", input)
+      if (state.active === input) return
+      setState("active", input)
+      remember(input)
     }
 
     function add(input: ServerConnection.Http) {
@@ -192,17 +236,41 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           setStore("list", store.list.length, conn)
         }
         setState("active", ServerConnection.key(conn))
+        remember(ServerConnection.key(conn))
+        return conn
+      })
+    }
+
+    function addTunnel(conn: ServerConnection.Tunnel) {
+      if (!conn.host || !conn.http.url) return
+      return batch(() => {
+        const key = ServerConnection.key(conn)
+        const existing = store.list.findIndex((value) =>
+          typeof value !== "string" && "type" in value && value.type === "tunnel"
+            ? ServerConnection.key(value) === key
+            : false,
+        )
+        if (existing !== -1) setStore("list", existing, conn)
+        else setStore("list", store.list.length, conn)
+        setState("active", key)
+        remember(key)
         return conn
       })
     }
 
     function remove(key: ServerConnection.Key) {
-      const list = store.list.filter((x) => url(x) !== key)
+      const list = store.list.filter((x) => {
+        const conn: ServerConnection.Any =
+          typeof x === "string" ? { type: "http", http: { url: x } } : "type" in x ? x : { type: "http", http: x }
+        return ServerConnection.key(conn) !== key
+      })
       batch(() => {
         setStore("list", list)
         if (state.active === key) {
-          const next = list[0]
-          setState("active", next ? ServerConnection.Key.make(url(next)) : props.defaultServer)
+          const next = allServers().find((conn) => ServerConnection.key(conn) !== key)
+          const selected = next ? ServerConnection.key(next) : ServerConnection.Key.make("sidecar")
+          setState("active", selected)
+          remember(selected)
         }
       })
     }
@@ -224,13 +292,69 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     })
 
     const origin = createMemo(() => projectsKey(state.active))
-    const projectsList = createMemo(() => store.projects[origin()] ?? [])
     const current: Accessor<ServerConnection.Any | undefined> = createMemo(
       () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
     )
+    const projectsList = createMemo(() => {
+      const conn = current()
+      if (conn?.type === "tunnel") {
+        if (!canRestoreTunnelSidebar(conn, remote.loaded[origin()])) return []
+      }
+      return store.projects[origin()] ?? []
+    })
     const isLocal = createMemo(() => {
       const c = current()
       return (c?.type === "sidecar" && c.variant === "base") || (c?.type === "http" && isLocalHost(c.http.url))
+    })
+
+    createEffect(() => {
+      const conn = current()
+      const password = conn?.http.password
+      if (!ready() || healthy() !== true || conn?.type !== "tunnel" || !password) return
+      const bridge = (() => {
+        try {
+          const url = new URL(conn.http.url)
+          if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port) return
+          return new URL("/__haolab/projects", url)
+        } catch {
+          return
+        }
+      })()
+      if (!bridge) return
+
+      const key = projectsKey(ServerConnection.key(conn))
+      const controller = new AbortController()
+      let alive = true
+      const load = async () => {
+        try {
+          const response = await fetch(bridge, {
+            headers: {
+              Authorization: `Basic ${authTokenFromCredentials({ username: conn.http.username, password })}`,
+            },
+            signal: controller.signal,
+          })
+          if (!response.ok) {
+            if (response.status === 404 && alive) {
+              showToast({ variant: "error", title: "设备 A 未提供侧栏清单", description: "请在 A 安装支持侧栏共享的 Desktop。" })
+            }
+            return
+          }
+          const data: unknown = await response.json()
+          if (!alive || !data || typeof data !== "object" || !Array.isArray((data as { directories?: unknown }).directories)) return
+          const currentProjects = store.projects[key] ?? []
+          const next = sidebarProjects(currentProjects, (data as { directories: unknown[] }).directories)
+          if (!next) return
+          if (next !== currentProjects) setStore("projects", key, next)
+          setRemote("loaded", key, { url: conn.http.url, username: conn.http.username, password })
+        } catch {
+          // Reconnecting can request A's sidebar again.
+        }
+      }
+      void load()
+      onCleanup(() => {
+        alive = false
+        controller.abort()
+      })
     })
 
     return {
@@ -251,6 +375,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       },
       setActive,
       add,
+      addTunnel,
       remove,
       projects: {
         list: projectsList,

@@ -38,7 +38,7 @@ bun run build && bun run package
 For a HaoLab production Windows installer:
 
 ```powershell
-$env:OPENCODE_VERSION='1.15.13'
+$env:OPENCODE_VERSION='1.15.20'
 $env:OPENCODE_CHANNEL='prod'
 $env:OPENCODE_BRANDING='haolab'
 bun ./scripts/prepare.ts

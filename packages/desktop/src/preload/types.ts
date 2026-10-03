@@ -1,4 +1,5 @@
 import type { DesktopMenuAction } from "@opencode-ai/app/desktop-menu"
+import type { TranscriptMutation } from "../../../app/src/context/global-sync/transcript-cache"
 
 export type InitStep = { phase: "server_waiting" } | { phase: "sqlite_waiting" } | { phase: "done" }
 
@@ -6,6 +7,18 @@ export type ServerReadyData = {
   url: string
   username: string | null
   password: string | null
+}
+
+export type RemoteStatus = {
+  enabled: boolean
+  online: boolean
+  hasAuthKey: boolean
+  autoJoin: boolean
+  authUrl?: string
+  loginError?: string
+  share?: string
+  cacheKey?: string
+  connection?: { host: string; url: string; username: string; password: string }
 }
 
 export type SqliteMigrationProgress = { type: "InProgress"; value: number } | { type: "Done" }
@@ -62,6 +75,12 @@ export type ElectronAPI = {
   consumeInitialDeepLinks: () => Promise<string[]>
   getDefaultServerUrl: () => Promise<string | null>
   setDefaultServerUrl: (url: string | null) => Promise<void>
+  remoteStatus: () => Promise<RemoteStatus>
+  remoteEnable: () => Promise<RemoteStatus>
+  remoteSetAuthKey: (authKey: string) => Promise<RemoteStatus>
+  remoteDisable: () => Promise<RemoteStatus>
+  remoteConnect: (share: string) => Promise<RemoteStatus>
+  remoteDisconnect: () => Promise<RemoteStatus>
   getWslConfig: () => Promise<WslConfig>
   setWslConfig: (config: WslConfig) => Promise<void>
   getDisplayBackend: () => Promise<LinuxDisplayBackend | null>
@@ -79,6 +98,8 @@ export type ElectronAPI = {
   storeClear: (name: string) => Promise<void>
   storeKeys: (name: string) => Promise<string[]>
   storeLength: (name: string) => Promise<number>
+  transcriptMutate: (scope: string, owner: string, operations: TranscriptMutation[]) => Promise<void>
+  transcriptAcquire: (scope: string, owner: string, directory: string, sessionID: string) => Promise<{ token: string; revalidate: boolean } | undefined>
 
   getWindowCount: () => Promise<number>
   onSqliteMigrationProgress: (cb: (progress: SqliteMigrationProgress) => void) => () => void
@@ -98,7 +119,7 @@ export type ElectronAPI = {
     extensions?: string[]
   }) => Promise<string | string[] | null>
   saveFilePicker: (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>
-  openLink: (url: string) => void
+  openLink: (url: string) => Promise<void>
   openPath: (path: string, app?: string) => Promise<void>
   readClipboardImage: () => Promise<{ buffer: ArrayBuffer; width: number; height: number } | null>
   showNotification: (title: string, body?: string) => void

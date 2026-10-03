@@ -77,7 +77,9 @@ const listenForDeepLinks = () => {
   return window.api.onDeepLink((urls) => emitDeepLinks(urls))
 }
 
-const createPlatform = (): Platform => {
+const createPlatform = (
+  onRemoteChange: (status: Awaited<ReturnType<typeof window.api.remoteStatus>>, refetch: boolean) => void,
+): Platform => {
   const os = (() => {
     const ua = navigator.userAgent
     if (ua.includes("Mac")) return "macos"
@@ -129,6 +131,7 @@ const createPlatform = (): Platform => {
     const createStorage = (name: string) => {
       const api: AsyncStorage = {
         getItem: (key: string) => window.api.storeGet(name, key),
+        ...(name === "opencode.transcripts.dat" ? { transcriptMutate: window.api.transcriptMutate, transcriptAcquire: window.api.transcriptAcquire } : {}),
         setItem: (key: string, value: string) => window.api.storeSet(name, key, value),
         removeItem: (key: string) => window.api.storeDelete(name, key),
         clear: () => window.api.storeClear(name),
@@ -149,6 +152,15 @@ const createPlatform = (): Platform => {
       return api
     }
   })()
+
+  const updateRemote = async (
+    request: Promise<Awaited<ReturnType<typeof window.api.remoteStatus>>>,
+    refetch = true,
+  ) => {
+    const status = await request
+    onRemoteChange(status, refetch)
+    return status
+  }
 
   return {
     platform: "desktop",
@@ -184,7 +196,7 @@ const createPlatform = (): Platform => {
     },
 
     openLink(url: string) {
-      window.api.openLink(url)
+      return window.api.openLink(url)
     },
     async openPath(path: string, app?: string) {
       if (os === "windows") {
@@ -271,6 +283,13 @@ const createPlatform = (): Platform => {
       await window.api.setDefaultServerUrl(url)
     },
 
+    remoteStatus: () => updateRemote(window.api.remoteStatus(), false),
+    remoteEnable: () => updateRemote(window.api.remoteEnable()),
+    remoteSetAuthKey: (authKey) => updateRemote(window.api.remoteSetAuthKey(authKey), false),
+    remoteDisable: () => updateRemote(window.api.remoteDisable()),
+    remoteConnect: (share) => updateRemote(window.api.remoteConnect(share)),
+    remoteDisconnect: () => updateRemote(window.api.remoteDisconnect()),
+
     getDisplayBackend: async () => {
       return window.api.getDisplayBackend().catch(() => null)
     },
@@ -335,7 +354,13 @@ window.api.onMenuCommand((id) => {
 listenForDeepLinks()
 
 render(() => {
-  const platform = createPlatform()
+  const [remote, { mutate: mutateRemote, refetch: refetchRemote }] = createResource(() =>
+    window.api.remoteStatus().catch(() => null),
+  )
+  const platform = createPlatform((status, refetch) => {
+    mutateRemote(status)
+    if (refetch) void refetchRemote()
+  })
   const [windowConfig] = createResource(() => window.api.getWindowConfig().catch(() => ({ updaterEnabled: false })))
   const loadLocale = async () => {
     const current = await platform.storage?.("opencode.global.dat").getItem("language")
@@ -356,7 +381,7 @@ render(() => {
 
   const [defaultServer] = createResource(() =>
     platform.getDefaultServer?.().then((url) => {
-      if (url) return ServerConnection.key({ type: "http", http: { url } })
+      if (url) return ServerConnection.Key.make(url)
     }),
   )
   const [locale] = createResource(loadLocale)
@@ -374,14 +399,32 @@ render(() => {
         password: data.password ?? undefined,
       },
     }
-    return [server] as ServerConnection.Any[]
+    const connection = remote()?.connection
+    if (!connection) return [server]
+    return [
+      server,
+      {
+        type: "tunnel",
+        host: connection.host,
+        cacheKey: remote()?.cacheKey,
+        displayName: connection.host,
+        http: { url: connection.url, username: connection.username, password: connection.password },
+      } satisfies ServerConnection.Tunnel,
+    ]
+  }
+
+  const startupServer = () => {
+    const preferred = defaultServer.latest
+    if (preferred?.startsWith("tunnel:") && (preferred !== `tunnel:${remote()?.connection?.host}` || !remote()?.online))
+      return ServerConnection.Key.make("sidecar")
+    return preferred ?? ServerConnection.Key.make("sidecar")
   }
 
   function handleClick(e: MouseEvent) {
     const link = (e.target as HTMLElement).closest("a.external-link") as HTMLAnchorElement | null
     if (link?.href) {
       e.preventDefault()
-      platform.openLink(link.href)
+      void Promise.resolve(platform.openLink(link.href)).catch(() => undefined)
     }
   }
 
@@ -417,6 +460,7 @@ render(() => {
           when={
             !defaultServer.loading &&
             !sidecar.loading &&
+            !remote.loading &&
             !windowConfig.loading &&
             !windowCount.loading &&
             !locale.loading
@@ -425,7 +469,7 @@ render(() => {
           {(_) => {
             return (
               <AppInterface
-                defaultServer={defaultServer.latest ?? ServerConnection.Key.make("sidecar")}
+                defaultServer={startupServer()}
                 servers={servers()}
                 router={(props) => <MemoryRouter {...props} history={routerHistory} />}
               >

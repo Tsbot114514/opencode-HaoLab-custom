@@ -23,6 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 out/
+remote-helper/bin/
+dist-remote-auth-fix/
 
 resources/opencode-cli*
 resources/icons

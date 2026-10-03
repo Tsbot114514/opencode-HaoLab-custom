@@ -227,12 +227,12 @@ describe("project restore cache invalidation", () => {
       await client.sync.session.diff("ses_same")
       await client.sync.session.todo("ses_same")
       expect(client.store.session.map((session) => session.id).sort()).toEqual(["ses_new", "ses_same"])
-      expect(client.store.part.msg_same).toMatchObject([{ id: "prt_same", text: "B" }])
+      expect([...client.store.part.msg_same]).toMatchObject([{ id: "prt_same", text: "B" }])
       expect(client.store.session_diff.ses_same[0].file).toBe("B")
       expect(client.todos.get("ses_same")).toMatchObject([{ content: "B" }])
       expect(client.sync.session.history.more("ses_same")).toBe(false)
     }
-    expect(unrelated.store.part.msg_same).toMatchObject([{ text: "A" }])
+    expect([...unrelated.store.part.msg_same]).toMatchObject([{ text: "A" }])
     expect(unrelated.calls).toEqual([])
   })
 
@@ -258,7 +258,7 @@ describe("project restore cache invalidation", () => {
     await client.sync.session.todo("ses_same")
     gates.forEach((gate) => gate.response.resolve())
     await old
-    expect(client.store.part.msg_same).toMatchObject([{ text: "B" }])
+    expect([...client.store.part.msg_same]).toMatchObject([{ text: "B" }])
     expect(client.store.session.find((session) => session.id === "ses_same")?.title).toBe("B")
     expect(client.store.session_diff.ses_same[0].file).toBe("B")
     expect(client.todos.get("ses_same")).toMatchObject([{ content: "B" }])
@@ -283,7 +283,7 @@ describe("project restore cache invalidation", () => {
     await client.sync.session.sync("ses_same")
     gate.resolve()
     await pending
-    expect(client.store.part.msg_same).toMatchObject([{ text: "B" }])
+    expect([...client.store.part.msg_same]).toMatchObject([{ text: "B" }])
   })
 
   test("a reader from an unmounted context cannot write into the shared store after reset", async () => {
@@ -313,6 +313,6 @@ describe("project restore cache invalidation", () => {
     expect(client.calls.filter((path) => path.endsWith("/message"))).toHaveLength(2)
     second.response.resolve()
     await Promise.all([fresh, repeated])
-    expect(client.store.part.msg_same).toMatchObject([{ text: "B" }])
+    expect([...client.store.part.msg_same]).toMatchObject([{ text: "B" }])
   })
 })

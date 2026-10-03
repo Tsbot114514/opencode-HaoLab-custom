@@ -584,7 +584,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
   ),
 )
 
-it.live("session.processor effect tests publish retry status updates", () =>
+it.live("session.processor keeps retry status when the response has no output", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
@@ -598,10 +598,10 @@ it.live("session.processor effect tests publish retry status updates", () =>
         const parent = yield* user(chat.id, "retry")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-        const states: number[] = []
+        const states: SessionStatus.Info[] = []
         const off = yield* bus.subscribeCallback(SessionStatus.Event.Status, (evt) => {
           if (evt.properties.sessionID !== chat.id) return
-          if (evt.properties.status.type === "retry") states.push(evt.properties.status.attempt)
+          states.push(evt.properties.status)
         })
         const handle = yield* processors.create({
           assistantMessage: msg,
@@ -630,7 +630,8 @@ it.live("session.processor effect tests publish retry status updates", () =>
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
-        expect(states).toStrictEqual([1])
+        expect(states.filter((state) => state.type === "retry").map((state) => state.attempt)).toStrictEqual([1])
+        expect(states.filter((state) => state.type === "busy")).toHaveLength(1)
       }),
     { config: (url) => providerCfg(url) },
   ),

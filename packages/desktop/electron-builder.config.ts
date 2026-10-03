@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process"
+import { constants } from "node:fs"
+import { access } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import type { Configuration } from "electron-builder"
+import { Arch, type Configuration } from "electron-builder"
+import pkg from "./package.json"
 
 const execFileAsync = promisify(execFile)
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -28,7 +31,12 @@ const channel = (() => {
 const branding = process.env.OPENCODE_BRANDING === "haolab" ? "haolab" : undefined
 
 const getBase = (): Configuration => ({
-  artifactName: branding === "haolab" ? "HaoLab-OpenCode-${os}-${arch}.${ext}" : "opencode-desktop-${os}-${arch}.${ext}",
+  artifactName:
+    branding === "haolab" ? "HaoLab-OpenCode-${os}-${arch}.${ext}" : "opencode-desktop-${os}-${arch}.${ext}",
+  releaseInfo:
+    branding === "haolab" && channel === "prod"
+      ? { releaseNotesFile: path.join(rootDir, "packages", "desktop", "release-notes", `${pkg.version}.md`) }
+      : undefined,
   directories: {
     output: "dist",
     buildResources: "resources",
@@ -48,7 +56,40 @@ const getBase = (): Configuration => ({
       filter: ["index.js", "index.d.ts", "build/Release/mac_window.node", "swift-build/**"],
     },
   ],
+  beforePack: async (context) => {
+    const target = `${context.electronPlatformName}-${Arch[context.arch]}`
+    await access(
+      path.join(
+        rootDir,
+        "packages",
+        "desktop",
+        "remote-helper",
+        "bin",
+        target,
+        `haolab-remote${context.electronPlatformName === "win32" ? ".exe" : ""}`,
+      ),
+      constants.F_OK,
+    ).catch(() => {
+      throw new Error(`Remote helper missing for ${target}. Set HAOLAB_REMOTE_ARCH before running the desktop build.`)
+    })
+  },
+  afterPack: async (context) => {
+    const platform = context.electronPlatformName
+    const binary = path.join(
+      context.packager.getResourcesDir(context.appOutDir),
+      "remote-helper",
+      platform,
+      `haolab-remote${platform === "win32" ? ".exe" : ""}`,
+    )
+    await access(binary, platform === "win32" ? constants.F_OK : constants.X_OK).catch(() => {
+      throw new Error(
+        `Remote helper missing or not executable at ${binary}. Build the matching target in remote-helper/bin/ before packaging.`,
+      )
+    })
+  },
   mac: {
+    extraResources: [{ from: "remote-helper/bin/darwin-${arch}/", to: "remote-helper/darwin/" }],
+    binaries: ["Contents/Resources/remote-helper/darwin/haolab-remote"],
     category: "public.app-category.developer-tools",
     icon: `resources/icons/icon.icns`,
     hardenedRuntime: true,
@@ -66,6 +107,7 @@ const getBase = (): Configuration => ({
     schemes: ["opencode"],
   },
   win: {
+    extraResources: [{ from: "remote-helper/bin/win32-${arch}/", to: "remote-helper/win32/" }],
     icon: `resources/icons/icon.ico`,
     signtoolOptions: {
       sign: signWindows,
@@ -80,6 +122,7 @@ const getBase = (): Configuration => ({
     installerHeaderIcon: `resources/icons/icon.ico`,
   },
   linux: {
+    extraResources: [{ from: "remote-helper/bin/linux-${arch}/", to: "remote-helper/linux/" }],
     icon: `resources/icons`,
     category: "Development",
     target: ["AppImage", "deb", "rpm"],

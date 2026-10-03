@@ -5,15 +5,16 @@ import { Bus } from "@/bus"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { ProxyConfig } from "@/server/proxy-config"
+import { Bark } from "@/server/bark"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect, Queue, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
-import { GlobalProxyUpdateInput, GlobalUpgradeInput } from "../groups/global"
+import { BarkEndpointInput, BarkKeyInput, GlobalProxyUpdateInput, GlobalUpgradeInput } from "../groups/global"
 
 const log = Log.create({ service: "server" })
 
@@ -166,6 +167,28 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handle("configUpdate", configUpdate)
       .handle("proxyGet", proxyGet)
       .handle("proxyUpdate", proxyUpdate)
+      .handle("barkGet", () => Effect.promise(() => Bark.configured()))
+       .handle("barkSet", (ctx: { payload: typeof BarkKeyInput.Type }) =>
+         Effect.gen(function* () {
+           if (!(yield* Effect.promise(() => Bark.setKey(ctx.payload.key)))) {
+             return yield* new HttpApiError.BadRequest()
+           }
+           return yield* Effect.promise(() => Bark.configured())
+         }),
+       )
+       .handle("barkUpdate", (ctx: { payload: typeof BarkEndpointInput.Type }) =>
+         Effect.gen(function* () {
+           if (!(yield* Effect.promise(() => Bark.setEndpoint(ctx.payload.endpoint)))) {
+             return yield* new HttpApiError.BadRequest()
+           }
+           return yield* Effect.promise(() => Bark.configured())
+         }),
+       )
+       .handle("barkDelete", () => Effect.promise(async () => {
+         await Bark.clearKey()
+         return Bark.configured()
+      }))
+      .handle("barkTest", () => Effect.promise(() => Bark.test()))
       .handle("dispose", dispose)
       .handleRaw("upgrade", upgradeRaw)
   }),

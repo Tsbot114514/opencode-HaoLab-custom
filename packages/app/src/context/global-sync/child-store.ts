@@ -18,13 +18,15 @@ import { useQueries } from "@tanstack/solid-query"
 import { QueryOptionsApi } from "../global-sync"
 import { directoryKey, type DirectoryKey } from "./utils"
 import { NormalizedProviderListResponse } from "@opencode-ai/ui/context"
+import { restoreDirectory, type DisplayCache } from "./server-cache"
 
 export function createChildStoreManager(input: {
   owner: Owner
   isBooting: (directory: string) => boolean
   isLoadingSessions: (directory: string) => boolean
   onBootstrap: (directory: string) => void
-  onDispose: (directory: string) => void
+  onDispose: (directory: string, store: Store<State>) => void
+  displayCache?: DisplayCache
   translate: (key: string, vars?: Record<string, string | number>) => string
   queryOptions: QueryOptionsApi
   global: {
@@ -115,8 +117,8 @@ export function createChildStoreManager(input: {
       dispose()
       disposers.delete(key)
     }
+    input.onDispose(key, children[key][0])
     delete children[key]
-    input.onDispose(key)
     return true
   }
 
@@ -173,6 +175,7 @@ export function createChildStoreManager(input: {
         createRoot((dispose) => {
           const initialMeta = meta[0].value
           const initialIcon = icon[0].value
+          const restored = restoreDirectory(input.displayCache, key)
 
           const [pathQuery, mcpQuery, lspQuery, providerQuery] = useQueries(() => ({
             queries: [
@@ -184,7 +187,7 @@ export function createChildStoreManager(input: {
           }))
 
           const child = createStore<State>({
-            project: "",
+            project: restored?.project ?? "",
             projectMeta: initialMeta,
             icon: initialIcon,
             get provider_ready() {
@@ -205,8 +208,8 @@ export function createChildStoreManager(input: {
             status: "complete" as const,
             agent: [],
             command: [],
-            session: [],
-            sessionTotal: 0,
+            session: restored?.sessions ?? [],
+            sessionTotal: restored?.total ?? 0,
             session_status: {},
             session_working(id: string) {
               const type = this.session_status[id]?.type
@@ -230,8 +233,8 @@ export function createChildStoreManager(input: {
             },
             vcs: vcsStore.value,
             limit: 5,
-            message: {},
-            part: {},
+            message: restored?.transcript ? { [restored.transcript.sessionID]: restored.transcript.messages } : {},
+            part: restored?.transcript?.parts ?? {},
             part_text_accum_delta: {},
           })
           children[key] = child

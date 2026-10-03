@@ -202,7 +202,7 @@ export async function bootstrapDirectory(input: {
   store: Store<State>
   setStore: SetStoreFunction<State>
   vcsCache: VcsCache
-  loadSessions: (directory: string) => Promise<void> | void
+  loadSessions: (directory: string) => Promise<unknown> | void
   translate: (key: string, vars?: Record<string, string | number>) => string
   global: {
     config: Config

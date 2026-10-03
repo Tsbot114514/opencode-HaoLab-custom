@@ -93,6 +93,10 @@ export function pruneSessionKeys(input: {
     .slice(input.max)
 }
 
+export function loadProjectSessionLists(directories: string[], load: (directory: string) => Promise<unknown>) {
+  return Promise.allSettled(directories.map(load))
+}
+
 function nextSessionTabsForOpen(current: SessionTabs | undefined, tab: string): SessionTabs {
   const all = current?.all ?? []
   if (tab === "review") return { all: all.filter((x) => x !== "review"), active: tab }
@@ -524,26 +528,29 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       }
     })
 
-    let sessionFrame: number | undefined
-    let sessionTimer: number | undefined
-
-    onMount(() => {
-      sessionFrame = requestAnimationFrame(() => {
-        sessionFrame = undefined
-        sessionTimer = window.setTimeout(() => {
-          sessionTimer = undefined
-          void Promise.all(
-            server.projects.list().map((project) => {
-              return globalSync.project.loadSessions(project.worktree)
-            }),
-          )
-        }, 0)
+    const loadedSessions = new Set<string>()
+    const sessionQueue: string[] = []
+    let alive = true
+    createEffect(() => {
+      if (!server.ready()) return
+      const directories = server.projects
+        .list()
+        .map((project) => project.worktree)
+        .filter((directory) => !loadedSessions.has(directory))
+      if (!directories.length) return
+      directories.forEach((directory) => loadedSessions.add(directory))
+      const last = server.projects.last()
+      sessionQueue.push(...directories.sort((a, b) => Number(b === last) - Number(a === last)))
+      requestAnimationFrame(() => {
+        if (!alive) return
+        void loadProjectSessionLists(
+          sessionQueue.splice(0).filter((directory) => server.projects.list().some((project) => project.worktree === directory)),
+          globalSync.project.loadSessions,
+        )
       })
     })
-
     onCleanup(() => {
-      if (sessionFrame !== undefined) cancelAnimationFrame(sessionFrame)
-      if (sessionTimer !== undefined) window.clearTimeout(sessionTimer)
+      alive = false
     })
 
     return {

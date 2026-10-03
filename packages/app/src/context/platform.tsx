@@ -52,6 +52,17 @@ export type FatalRendererErrorLog = {
   os?: DesktopOS
 }
 
+export type RemoteStatus = {
+  enabled: boolean
+  online: boolean
+  hasAuthKey: boolean
+  autoJoin: boolean
+  authUrl?: string
+  loginError?: string
+  share?: string
+  connection?: { host: string; url: string; username: string; password: string }
+}
+
 export type Platform = {
   /** Platform discriminator */
   platform: PlatformName
@@ -63,7 +74,7 @@ export type Platform = {
   version?: string
 
   /** Open a URL in the default browser */
-  openLink(url: string): void
+  openLink(url: string): void | Promise<void>
 
   /** Open a local path in a local app (desktop only) */
   openPath?(path: string, app?: string): Promise<void>
@@ -109,6 +120,13 @@ export type Platform = {
 
   /** Set the default server URL to use on app startup (platform-specific) */
   setDefaultServer?(url: ServerConnection.Key | null): Promise<void> | void
+
+  remoteStatus?(): Promise<RemoteStatus>
+  remoteEnable?(): Promise<RemoteStatus>
+  remoteSetAuthKey?(authKey: string): Promise<RemoteStatus>
+  remoteDisable?(): Promise<RemoteStatus>
+  remoteConnect?(share: string): Promise<RemoteStatus>
+  remoteDisconnect?(): Promise<RemoteStatus>
 
   /** Get the configured WSL integration (desktop only) */
   getWslEnabled?(): Promise<boolean>

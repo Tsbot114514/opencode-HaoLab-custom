@@ -200,7 +200,7 @@ function parseJSON(value: unknown) {
   })
 }
 
-export function policy(opts: {
+type PolicyOptions = {
   provider: string
   parse: (error: unknown) => Err
   maxAttempts?: number
@@ -213,35 +213,53 @@ export function policy(opts: {
     action?: Retryable["action"]
     next: number
   }) => Effect.Effect<void>
-}) {
+}
+
+function makePolicy(opts: PolicyOptions, attempt: (meta: Schedule.InputMetadata<unknown>) => number) {
   return Schedule.fromStepWithMetadata(
     Effect.sync(() => {
-      let attempt = 0
+      let attempts = 0
       let progress = opts.progress?.()
       return (meta: Schedule.InputMetadata<unknown>) => {
         const error = opts.parse(meta.input)
         const retry = retryable(error, opts.provider)
-        if (!retry) return Cause.done(attempt)
+        if (!retry) return Cause.done(attempts)
         const current = opts.progress?.()
-        attempt = current !== progress ? 1 : attempt + 1
+        const currentAttempt = opts.progress ? (attempts = current !== progress ? 1 : attempts + 1) : attempt(meta)
         progress = current
         const maxAttempts = opts.maxAttempts ?? RETRY_DEFAULT_MAX_ATTEMPTS
-        if (attempt > maxAttempts) return Cause.done(attempt)
+        if (currentAttempt > maxAttempts) return Cause.done(currentAttempt)
         return Effect.gen(function* () {
-          const wait = delay(attempt, MessageV2.APIError.isInstance(error) ? error : undefined, opts.random?.() ?? Math.random())
+          const wait = delay(currentAttempt, MessageV2.APIError.isInstance(error) ? error : undefined, opts.random?.() ?? Math.random())
           const now = yield* Clock.currentTimeMillis
           yield* opts.set({
-            attempt,
+            attempt: currentAttempt,
             maxAttempts,
             message: retry.message,
             action: retry.action,
             next: now + wait,
           })
-          return [attempt, Duration.millis(wait)] as [number, Duration.Duration]
+          return [currentAttempt, Duration.millis(wait)] as [number, Duration.Duration]
         })
       }
     }),
   )
+}
+
+export function policy(opts: PolicyOptions) {
+  return makePolicy(opts, (meta) => meta.attempt)
+}
+
+export function resettablePolicy(opts: PolicyOptions) {
+  const state = { attempt: 0 }
+  return {
+    schedule: makePolicy(opts, () => ++state.attempt),
+    reset() {
+      const retried = state.attempt > 0
+      state.attempt = 0
+      return retried
+    },
+  }
 }
 
 export * as SessionRetry from "./retry"

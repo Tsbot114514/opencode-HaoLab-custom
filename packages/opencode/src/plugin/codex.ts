@@ -382,11 +382,11 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
           Object.entries(provider.models)
             .filter(([, model]) => {
               if (ALLOWED_MODELS.has(model.api.id)) return true
-              const match = model.api.id.match(/^gpt-(\d+)(?:\.(\d+))?/)
-              if (!match) return false
-              const major = Number(match[1])
-              const minor = Number(match[2] ?? 0)
-              return major > 5 || (major === 5 && minor > 4)
+               const match = model.api.id.match(/^gpt-(\d+)(?:\.(\d+))?/)
+               if (!match) return false
+               const major = Number(match[1])
+               const minor = Number(match[2] ?? 0)
+               return major > 5 || (major === 5 && minor > 4)
             })
             .map(([modelID, model]) => [
               modelID,

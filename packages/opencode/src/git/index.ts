@@ -1,6 +1,7 @@
 import { AppProcess } from "@opencode-ai/core/process"
 import { Effect, Layer, Context, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
+import path from "node:path"
 
 const cfg = [
   "--no-optional-locks",
@@ -17,6 +18,7 @@ const cfg = [
 
 const out = (result: { text(): string }) => result.text().trim()
 const nuls = (text: string) => text.split("\0").filter(Boolean)
+const MAX_UNTRACKED_FILE_BYTES = 10_000_000
 const fail = (err: unknown) =>
   ({
     exitCode: 1,
@@ -279,6 +281,9 @@ export const layer = Layer.effect(
       file: string,
       options?: PatchOptions,
     ) {
+      if (Bun.file(path.join(cwd, file)).size > (options?.maxOutputBytes ?? MAX_UNTRACKED_FILE_BYTES)) {
+        return { text: "", truncated: true }
+      }
       const result = yield* run(
         [
           "diff",
@@ -297,6 +302,7 @@ export const layer = Layer.effect(
     })
 
     const statUntracked = Effect.fn("Git.statUntracked")(function* (cwd: string, file: string) {
+      if (Bun.file(path.join(cwd, file)).size > MAX_UNTRACKED_FILE_BYTES) return
       const result = yield* run(["diff", "--no-index", "--numstat", "--", "/dev/null", file], {
         cwd,
         maxOutputBytes: 4096,

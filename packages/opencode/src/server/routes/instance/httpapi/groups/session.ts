@@ -2,6 +2,7 @@ import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Session } from "@/session/session"
+import { ProjectID } from "@/project/schema"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
@@ -32,6 +33,63 @@ export const ListQuery = Schema.Struct({
   start: Schema.optional(Schema.NumberFromString),
   search: Schema.optional(Schema.String),
   limit: Schema.optional(Schema.NumberFromString),
+})
+export const ReconcilePayload = Schema.Struct({
+  known: Schema.Array(
+    Schema.Struct({
+      id: SessionID,
+      title: Schema.String,
+      updated: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+      archived: Schema.optional(Session.ArchivedTimestamp),
+    }),
+  ).check(Schema.isMaxLength(200)),
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
+})
+export const ReconcileResult = Schema.Struct({
+  upserts: Schema.Array(Session.Info),
+  removed: Schema.Array(SessionID),
+  limit: ReconcilePayload.fields.limit,
+  limited: Schema.Boolean,
+})
+export const SidebarTitle = Schema.Struct({
+  id: SessionID,
+  slug: Schema.String,
+  title: Schema.String,
+  directory: Schema.String,
+  projectID: ProjectID,
+  version: Schema.String,
+  time: Schema.Struct({ created: Schema.Number, updated: Schema.Number }),
+})
+export class SidebarCursorExpiredError extends Schema.ErrorClass<SidebarCursorExpiredError>("SidebarCursorExpiredError")(
+  { message: Schema.String },
+  { httpApiStatus: 410 },
+) {}
+export const SidebarSnapshotQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  cursor: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER))),
+  afterUpdated: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER))),
+  afterID: Schema.optional(SessionID),
+  limit: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
+})
+export const SidebarChangesQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  cursor: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  limit: SidebarSnapshotQuery.fields.limit,
+})
+export const SidebarSnapshotResult = Schema.Struct({
+  cursor: Schema.Number,
+  total: Schema.Number,
+  items: Schema.Array(SidebarTitle),
+  next: Schema.NullOr(Schema.Struct({ updated: Schema.Number, id: SessionID })),
+})
+export const SidebarChangesResult = Schema.Struct({
+  cursor: Schema.Number,
+  total: Schema.Number,
+  changes: Schema.Array(Schema.Union([
+    Schema.Struct({ seq: Schema.Number, type: Schema.Literal("upsert"), session: SidebarTitle }),
+    Schema.Struct({ seq: Schema.Number, type: Schema.Literal("remove"), id: SessionID }),
+  ])),
+  more: Schema.Boolean,
 })
 export const DiffQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
@@ -73,6 +131,9 @@ export const PermissionResponsePayload = Schema.Struct({
 
 export const SessionPaths = {
   list: root,
+  reconcile: `${root}/sidebar/reconcile`,
+  sidebarSnapshot: `${root}/sidebar/snapshot`,
+  sidebarChanges: `${root}/sidebar/changes`,
   status: `${root}/status`,
   get: `${root}/:sessionID`,
   children: `${root}/:sessionID/children`,
@@ -114,6 +175,29 @@ export const SessionApi = HttpApi.make("session")
             description: "Get a list of all OpenCode sessions, sorted by most recently updated.",
           }),
         ),
+        HttpApiEndpoint.post("reconcile", SessionPaths.reconcile, {
+          query: WorkspaceRoutingQuery,
+          payload: ReconcilePayload,
+          success: described(ReconcileResult, "Session sidebar changes"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.reconcile",
+            summary: "Reconcile session sidebar",
+            description:
+              "Compare bounded root session summaries with the current directory, including known sessions outside the newest window. Return new or changed sessions and IDs that were deleted or archived.",
+          }),
+        ),
+        HttpApiEndpoint.get("sidebarSnapshot", SessionPaths.sidebarSnapshot, {
+          query: SidebarSnapshotQuery,
+          success: described(SidebarSnapshotResult, "Session sidebar snapshot page"),
+          error: [HttpApiError.BadRequest, SidebarCursorExpiredError],
+        }).annotateMerge(OpenApi.annotations({ identifier: "session.sidebarSnapshot", summary: "Page session sidebar snapshot" })),
+        HttpApiEndpoint.get("sidebarChanges", SessionPaths.sidebarChanges, {
+          query: SidebarChangesQuery,
+          success: described(SidebarChangesResult, "Session sidebar changes page"),
+          error: [HttpApiError.BadRequest, SidebarCursorExpiredError],
+        }).annotateMerge(OpenApi.annotations({ identifier: "session.sidebarChanges", summary: "Page session sidebar changes" })),
         HttpApiEndpoint.get("status", SessionPaths.status, {
           query: WorkspaceRoutingQuery,
           success: described(StatusMap, "Get session status"),
