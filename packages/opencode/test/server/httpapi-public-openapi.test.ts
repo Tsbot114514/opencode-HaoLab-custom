@@ -15,6 +15,7 @@ type OpenApiResponse = {
 }
 type OpenApiOperation = {
   readonly description?: string
+  readonly requestBody?: { readonly content?: Record<string, { readonly schema?: OpenApiSchema }> }
   readonly responses?: Record<string, OpenApiResponse>
   readonly security?: unknown
 }
@@ -25,7 +26,7 @@ const methods = ["get", "post", "put", "delete", "patch"] as const
 
 const allowedV2BuiltInEndpointErrors: string[] = []
 
-test("migration OpenAPI documents agent discovery and explicit overwrite consent", () => {
+test("migration OpenAPI documents incremental defaults and explicit replacement consent", () => {
   const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
   const backup = spec.paths["/project/backup"].post?.description
   const inspect = spec.paths["/project/backup/inspect"].post?.description
@@ -35,9 +36,11 @@ test("migration OpenAPI documents agent discovery and explicit overwrite consent
   expect(backup).toContain("management session outside the source")
   expect(inspect).toContain("15 minutes")
   expect(inspect).toContain("Times are advisory")
+  expect(inspect).toContain("without extracting sessions.sqlite")
   expect(restore).toContain("explicit user confirmation")
-  expect(restore).toContain("BOTH files and sessions")
-  expect(restore).toContain("do not prove human consent")
+  expect(restore).toContain("mode=merge")
+  expect(restore).toContain("verify=false")
+  expect(restore).toContain("without inspection or a preview token")
   expect(restore).toContain("never blindly retry")
 })
 
@@ -63,6 +66,21 @@ test("migration responses preserve genuine nulls without making fields optional"
   expect(restore?.properties?.safetyPath.anyOf).toContainEqual(nil)
   expect(restore?.required).toContain("safetyPath")
   expect(restore?.properties?.directory.anyOf).toBeUndefined()
+})
+
+test("migration restore publishes the incremental request contract", () => {
+  const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+  const payload = spec.paths["/project/restore"].post?.requestBody?.content?.["application/json"].schema
+
+  expect(Object.keys(payload?.properties ?? {}).sort()).toEqual([
+    "directory",
+    "mode",
+    "path",
+    "previewToken",
+    "safetyBackup",
+    "verify",
+  ])
+  expect(payload?.required?.sort()).toEqual(["directory", "path"])
 })
 
 function v2Operations(spec: OpenApiSpec) {

@@ -26,7 +26,8 @@ import { BusEvent } from "../bus/bus-event"
 import { Bus } from "@/bus"
 import { TuiEvent } from "@/cli/cmd/tui/event"
 import open from "open"
-import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
+import path from "path"
+import { Effect, Exit, Layer, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -34,6 +35,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
 const log = Log.create({ service: "mcp" })
 const DEFAULT_TIMEOUT = 30_000
+const MAX_LIST_PAGES = 1_000
 
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
   tools: ToolSchema.omit({ outputSchema: true }).array(),
@@ -121,33 +123,47 @@ function isOutputSchemaValidationError(error: Error) {
   )
 }
 
+async function paginate<T, R extends { nextCursor?: string }>(
+  list: (cursor?: string) => Promise<R>,
+  items: (result: R) => T[],
+) {
+  const result: T[] = []
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+
+  for (let index = 0; index < MAX_LIST_PAGES; index++) {
+    const page = await list(cursor)
+    result.push(...items(page))
+    if (page.nextCursor === undefined) return result
+    if (cursors.has(page.nextCursor)) throw new Error(`MCP list returned duplicate cursor: ${page.nextCursor}`)
+    cursors.add(page.nextCursor)
+    cursor = page.nextCursor
+  }
+
+  throw new Error(`MCP list exceeded ${MAX_LIST_PAGES} pages`)
+}
+
 function listTools(key: string, client: MCPClient, timeout: number) {
   return Effect.tryPromise({
-    try: () => client.listTools(undefined, { timeout }),
+    try: () =>
+      paginate(
+        async (cursor) => {
+          const params = cursor === undefined ? undefined : { cursor }
+          try {
+            return await client.listTools(params, { timeout })
+          } catch (error) {
+            if (!(error instanceof Error) || !isOutputSchemaValidationError(error)) throw error
+            log.warn("failed to validate MCP tool output schemas, retrying without output schema validation", {
+              key,
+              error,
+            })
+            return client.request({ method: "tools/list", params }, TolerantListToolsResultSchema, { timeout })
+          }
+        },
+        (result) => result.tools,
+      ),
     catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-  }).pipe(
-    Effect.map((result) => result.tools),
-    Effect.catch((error) => {
-      if (!isOutputSchemaValidationError(error)) return Effect.fail(error)
-
-      log.warn("failed to validate MCP tool output schemas, retrying without output schema validation", { key, error })
-      return Effect.tryPromise({
-        try: () =>
-          client.request({ method: "tools/list" }, TolerantListToolsResultSchema, {
-            timeout,
-          }),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.map((result) =>
-          result.tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          })),
-        ),
-      )
-    }),
-  )
+  })
 }
 
 // Convert MCP tool definition to AI SDK Tool type
@@ -165,8 +181,8 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
   return dynamicTool({
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
-    execute: async (args: unknown) => {
-      return client.callTool(
+    execute: async (args: unknown, options) => {
+      const result = await client.callTool(
         {
           name: mcpTool.name,
           arguments: (args || {}) as Record<string, unknown>,
@@ -174,11 +190,34 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
         CallToolResultSchema,
         {
           resetTimeoutOnProgress: true,
+          signal: options.abortSignal,
           timeout,
+          onprogress: () => {},
         },
       )
+      if (result.isError) throw new Error(formatToolErrorContent(result.content))
+      if (result.structuredContent === undefined || result.structuredContent === null) return result
+      if (Array.isArray(result.content) && result.content.length > 0) return result
+      return {
+        ...result,
+        content: [{ type: "text" as const, text: JSON.stringify(result.structuredContent) }],
+      }
     },
   })
+}
+
+function formatToolErrorContent(content: unknown) {
+  if (!Array.isArray(content)) return "MCP tool returned an error"
+  return (
+    content
+      .flatMap((item) => {
+        if (typeof item !== "object" || item === null) return []
+        const value = item as Record<string, unknown>
+        return value.type === "text" && typeof value.text === "string" ? [value.text] : []
+      })
+      .filter((text) => text.trim())
+      .join("\n\n") || "MCP tool returned an error"
+  )
 }
 
 function defs(key: string, client: MCPClient, timeout?: number) {
@@ -416,7 +455,8 @@ export const layer = Layer.effect(
       mcp: ConfigMCP.Info & { type: "local" },
     ) {
       const [cmd, ...args] = mcp.command
-      const cwd = yield* InstanceState.directory
+      const directory = yield* InstanceState.directory
+      const cwd = mcp.cwd ? path.resolve(directory, mcp.cwd) : directory
       const transport = new StdioClientTransport({
         stderr: "pipe",
         command: cmd,
@@ -706,12 +746,34 @@ export const layer = Layer.effect(
 
     const prompts = Effect.fn("MCP.prompts")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listPrompts().then((r) => r.prompts), "prompts")
+      return yield* collectFromConnected(
+        s,
+        (client) =>
+          client.getServerCapabilities()?.prompts
+            ? paginate(
+                (cursor) =>
+                  client.listPrompts(cursor === undefined ? undefined : { cursor }, { timeout: DEFAULT_TIMEOUT }),
+                (result) => result.prompts,
+              )
+            : Promise.resolve([]),
+        "prompts",
+      )
     })
 
     const resources = Effect.fn("MCP.resources")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listResources().then((r) => r.resources), "resources")
+      return yield* collectFromConnected(
+        s,
+        (client) =>
+          client.getServerCapabilities()?.resources
+            ? paginate(
+                (cursor) =>
+                  client.listResources(cursor === undefined ? undefined : { cursor }, { timeout: DEFAULT_TIMEOUT }),
+                (result) => result.resources,
+              )
+            : Promise.resolve([]),
+        "resources",
+      )
     })
 
     const withClient = Effect.fnUntraced(function* <A>(
@@ -794,7 +856,10 @@ export const layer = Layer.effect(
         auth,
       )
 
-      const transport = new StreamableHTTPClientTransport(url, { authProvider })
+      const transport = new StreamableHTTPClientTransport(url, {
+        authProvider,
+        requestInit: mcpConfig.headers ? { headers: mcpConfig.headers } : undefined,
+      })
 
       return yield* Effect.tryPromise({
         try: () => {
@@ -883,10 +948,18 @@ export const layer = Layer.effect(
           log.error("failed to finish oauth", { mcpName, error })
           return error
         },
-      }).pipe(Effect.option)
+      }).pipe(
+        Effect.match({
+          onFailure: (error) => ({ ok: false as const, error }),
+          onSuccess: () => ({ ok: true as const }),
+        }),
+      )
 
-      if (Option.isNone(result)) {
-        return { status: "failed", error: "OAuth completion failed" } as Status
+      if (!result.ok) {
+        return {
+          status: "failed",
+          error: result.error instanceof Error ? result.error.message : String(result.error),
+        } as Status
       }
 
       yield* auth.clearCodeVerifier(mcpName)
@@ -912,15 +985,19 @@ export const layer = Layer.effect(
     })
 
     const hasStoredTokens = Effect.fn("MCP.hasStoredTokens")(function* (mcpName: string) {
-      const entry = yield* auth.get(mcpName)
+      const mcpConfig = yield* getMcpConfig(mcpName)
+      if (!mcpConfig || mcpConfig.type !== "remote") return false
+      const entry = yield* auth.getForUrl(mcpName, mcpConfig.url)
       return !!entry?.tokens
     })
 
     const getAuthStatus = Effect.fn("MCP.getAuthStatus")(function* (mcpName: string) {
-      const entry = yield* auth.get(mcpName)
+      const mcpConfig = yield* getMcpConfig(mcpName)
+      if (!mcpConfig || mcpConfig.type !== "remote") return "not_authenticated" as AuthStatus
+      const entry = yield* auth.getForUrl(mcpName, mcpConfig.url)
       if (!entry?.tokens) return "not_authenticated" as AuthStatus
-      const expired = yield* auth.isTokenExpired(mcpName)
-      return (expired ? "expired" : "authenticated") as AuthStatus
+      if (entry.tokens.expiresAt && entry.tokens.expiresAt < Date.now() / 1000) return "expired" as AuthStatus
+      return "authenticated" as AuthStatus
     })
 
     return Service.of({

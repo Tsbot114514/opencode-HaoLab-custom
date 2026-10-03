@@ -38,7 +38,7 @@ import { pathToFileURL } from "url"
 import { Filesystem } from "@/util/filesystem"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { ACPSessionManager } from "./session"
-import type { ACPConfig } from "./types"
+import type { ACPConfig, ACPSessionState } from "./types"
 import { ACPRuntime } from "./runtime"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
@@ -467,7 +467,7 @@ export class Agent implements ACPAgent {
               sessionId,
               update: {
                 sessionUpdate: "agent_message_chunk",
-                messageId: props.messageID,
+                messageId: props.partID,
                 content: {
                   type: "text",
                   text: props.delta,
@@ -596,10 +596,10 @@ export class Agent implements ACPAgent {
       const model = await defaultModel(this.config, directory)
 
       // Store ACP session state
-      await this.sessionManager.load(sessionId, params.cwd, params.mcpServers, model)
+      await this.sessionManager.load(sessionId, params.cwd, params.mcpServers)
 
       const messages = await this.loadSessionMessages(directory, sessionId)
-      this.restoreSessionStateFromMessages(sessionId, messages)
+      this.restoreSessionStateFromMessages(sessionId, messages, model)
 
       log.info("load_session", { sessionId, mcpServers: params.mcpServers.length })
 
@@ -695,10 +695,10 @@ export class Agent implements ACPAgent {
       }
 
       const sessionId = forked.id
-      await this.sessionManager.load(sessionId, directory, mcpServers, model)
+      await this.sessionManager.load(sessionId, directory, mcpServers)
 
       const messages = await this.loadSessionMessages(directory, sessionId)
-      this.restoreSessionStateFromMessages(sessionId, messages)
+      this.restoreSessionStateFromMessages(sessionId, messages, model)
 
       log.info("fork_session", { sessionId, mcpServers: mcpServers.length })
 
@@ -734,10 +734,10 @@ export class Agent implements ACPAgent {
 
     try {
       const model = await defaultModel(this.config, directory)
-      await this.sessionManager.load(sessionId, directory, mcpServers, model)
+      await this.sessionManager.load(sessionId, directory, mcpServers)
 
       const messages = await this.loadSessionMessages(directory, sessionId, 20)
-      this.restoreSessionStateFromMessages(sessionId, messages)
+      this.restoreSessionStateFromMessages(sessionId, messages, model)
 
       log.info("resume_session", { sessionId, mcpServers: mcpServers.length })
 
@@ -916,7 +916,7 @@ export class Agent implements ACPAgent {
               sessionId,
               update: {
                 sessionUpdate: message.info.role === "user" ? "user_message_chunk" : "agent_message_chunk",
-                messageId: message.info.id,
+                messageId: part.id,
                 content: {
                   type: "text",
                   text: part.text,
@@ -1526,18 +1526,47 @@ export class Agent implements ACPAgent {
       })
   }
 
-  private restoreSessionStateFromMessages(sessionId: string, messages: SessionMessageResponse[] | undefined) {
-    const lastUser = messages?.findLast((message) => message.info.role === "user")?.info
-    if (lastUser?.role !== "user") return
+  private restoreSessionStateFromMessages(
+    sessionId: string,
+    messages: SessionMessageResponse[] | undefined,
+    fallbackModel?: ACPSessionState["model"],
+  ) {
+    const state = this.sessionManager.get(sessionId)
+    const latest = messages?.findLast(
+      (message) => message.info.role === "user" || message.info.role === "assistant",
+    )?.info
 
-    this.sessionManager.setModel(sessionId, {
-      providerID: ProviderID.make(lastUser.model.providerID),
-      modelID: ModelID.make(lastUser.model.modelID),
-    })
-    this.sessionManager.setVariant(sessionId, lastUser.model.variant)
-    if (lastUser.agent) {
-      this.sessionManager.setMode(sessionId, lastUser.agent)
+    if (
+      !state.model &&
+      latest?.role === "user" &&
+      typeof latest.model?.providerID === "string" &&
+      typeof latest.model.modelID === "string"
+    ) {
+      this.sessionManager.setModel(sessionId, {
+        providerID: ProviderID.make(latest.model.providerID),
+        modelID: ModelID.make(latest.model.modelID),
+      })
     }
+    if (
+      !state.model &&
+      latest?.role === "assistant" &&
+      typeof latest.providerID === "string" &&
+      typeof latest.modelID === "string"
+    ) {
+      this.sessionManager.setModel(sessionId, {
+        providerID: ProviderID.make(latest.providerID),
+        modelID: ModelID.make(latest.modelID),
+      })
+    }
+    if (!this.sessionManager.getModel(sessionId) && fallbackModel) this.sessionManager.setModel(sessionId, fallbackModel)
+
+    if (!state.variant) {
+      this.sessionManager.setVariant(
+        sessionId,
+        latest?.role === "user" ? latest.model?.variant : latest?.role === "assistant" ? latest.variant : undefined,
+      )
+    }
+    if (!state.modeId && latest?.agent) this.sessionManager.setMode(sessionId, latest.agent)
   }
 }
 

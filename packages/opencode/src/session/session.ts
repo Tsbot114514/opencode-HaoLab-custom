@@ -272,7 +272,7 @@ function init(info: Info) {
             usage:
               "Read this file to discover the HTTP API base URL and credentials. Send requests with x-opencode-directory set to the target project directory.",
             project_migration:
-              "Discover available migration APIs and their agent workflow via authenticated GET /doc: project.backup, project.inspectBackup, project.restore. Use a management session outside the project being migrated; active target sessions are refused. Always inspect before loading and show timestamps, destination and warnings. Replacing existing files AND sessions requires explicit user confirmation, not just a previewToken. Do not print credentials or bypass missing APIs by modifying the live database.",
+              "Discover available migration APIs and their agent workflow via authenticated GET /doc: project.backup, project.inspectBackup, project.restore. Use a management session outside the project being migrated; active selected sessions are refused. Restore defaults to a direct incremental merge; inspect is optional for identity discovery. Replacing existing files and sessions requires a fresh previewToken and explicit user confirmation. Do not print credentials or bypass missing APIs by modifying the live database.",
           },
           session_local_tools: {
             path: path.join(dir, "tool", "README.md"),

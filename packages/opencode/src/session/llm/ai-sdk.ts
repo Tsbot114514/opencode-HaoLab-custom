@@ -70,6 +70,9 @@ export function toLLMEvents(
       return Effect.succeed([LLMEvent.stepStart({ index: state.step })])
 
     case "finish-step":
+      if (event.rawFinishReason === "network_error") {
+        return Effect.fail(new Error("Provider finish_reason: network_error"))
+      }
       return Effect.sync(() => [
         LLMEvent.stepFinish({
           index: state.step++,

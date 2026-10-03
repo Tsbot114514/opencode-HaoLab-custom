@@ -133,6 +133,10 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
       this._state?.notificationHandlers.set(schema, handler)
     }
 
+    getServerCapabilities() {
+      return { tools: {}, prompts: {}, resources: {} }
+    }
+
     async listTools() {
       if (this._state) this._state.listToolsCalls++
       if (this._state?.listToolsShouldFail) {

@@ -160,6 +160,15 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
         responseBody,
       }
   }
+
+  const errorMessage = typeof body?.error?.message === "string" ? body.error.message : undefined
+  if (!errorMessage) return
+  return {
+    type: "api_error",
+    message: errorMessage,
+    isRetryable: true,
+    responseBody,
+  }
 }
 
 export type ParsedAPICallError =

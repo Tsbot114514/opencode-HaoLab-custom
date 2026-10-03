@@ -437,8 +437,9 @@ const reset = Effect.fn("TestLLMServer.reset")(function* (item: Sse) {
     res.writeHead(200, { "content-type": "text/event-stream" })
     for (const part of item.head) res.write(line(part))
     for (const part of item.tail) res.write(line(part))
-    res.destroy(new Error("connection reset"))
   })
+  if (item.wait) yield* Effect.promise(() => Promise.resolve(item.wait))
+  yield* Effect.sync(() => res.destroy(new Error("connection reset")))
   return yield* Effect.never
 })
 

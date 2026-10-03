@@ -1054,11 +1054,18 @@ export type ProviderConfig = {
     enterpriseUrl?: string
     setCacheKey?: boolean
     /**
-     * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
+     * Overall timeout in milliseconds for each request to this provider, including streamed generation. Default is 1200000 (20 minutes). Set to false to disable timeout.
      */
     timeout?: number | false
-    chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | undefined
+    /**
+     * Timeout in milliseconds waiting for provider response headers. Default is 300000 (5 minutes). Set to false to disable.
+     */
+    headerTimeout?: number | false
+    /**
+     * Timeout in milliseconds between streamed SSE chunks. Default is 300000 (5 minutes). Set to false to disable.
+     */
+    chunkTimeout?: number | false
+    [key: string]: unknown | string | boolean | number | false | number | false | number | false | undefined
   }
   models?: {
     [key: string]: {
@@ -1133,6 +1140,7 @@ export type McpLocalConfig = {
   environment?: {
     [key: string]: string
   }
+  cwd?: string
   enabled?: boolean
   timeout?: number
 }
@@ -1223,6 +1231,7 @@ export type Config = {
   model?: string
   small_model?: string
   default_agent?: string
+  subagent_depth?: number
   username?: string
   mode?: {
     build?: AgentConfig
@@ -1311,7 +1320,7 @@ export type Config = {
   }
   retry?: {
     /**
-     * Maximum automatic retries per model request (default: 5). Set to 0 to disable retries.
+     * Maximum consecutive automatic retries without model output (default: 5). Resets when output resumes. Set to 0 to disable retries.
      */
     maxAttempts?: number
   }
@@ -5545,7 +5554,7 @@ export type ProjectInspectBackupResponses = {
     }
     candidates: Array<string>
     directory: string | ProjectMigrationNull
-    action: "select-target" | "create" | "replace"
+    action: "select-target" | "create" | "merge" | "replace"
     local:
       | {
           filesUpdatedAt:
@@ -5581,8 +5590,10 @@ export type ProjectRestoreData = {
   body?: {
     path: string
     directory: string
-    previewToken: string
-    overwrite: boolean
+    mode?: "merge" | "replace"
+    verify?: boolean
+    safetyBackup?: boolean
+    previewToken?: string
   }
   path?: never
   query?: {
@@ -5610,6 +5621,8 @@ export type ProjectRestoreResponses = {
     sessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     warnings: Array<string>
+    skippedSessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    skippedFiles: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     safetyPath: string | ProjectMigrationNull
   }
 }

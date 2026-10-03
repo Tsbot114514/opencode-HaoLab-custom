@@ -782,6 +782,7 @@ export const layer = Layer.effect(
         ctx.needsCompaction = false
         const cfg = yield* config.get()
         ctx.shouldBreak = cfg.experimental?.continue_loop_on_deny !== true
+        let progress = 0
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
@@ -793,7 +794,26 @@ export const layer = Layer.effect(
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap(
+                Effect.fnUntraced(function* (event) {
+                  yield* handleEvent(event)
+                  // Start events alone do not prove the provider has resumed generation.
+                  if (
+                    event.type !== "tool-call" &&
+                    !(
+                      (event.type === "reasoning-delta" ||
+                        event.type === "text-delta" ||
+                        event.type === "tool-input-delta") &&
+                      event.text.length > 0
+                    )
+                  )
+                    return
+                  progress++
+                  if ((yield* status.get(ctx.sessionID)).type === "retry") {
+                    yield* status.set(ctx.sessionID, { type: "busy" })
+                  }
+                }),
+              ),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
@@ -815,6 +835,7 @@ export const layer = Layer.effect(
                 provider: input.model.providerID,
                 parse,
                 maxAttempts: cfg.retry?.maxAttempts,
+                progress: () => progress,
                 set: (info) => {
                   // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
                   const event = flags.experimentalEventSystem

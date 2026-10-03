@@ -7,7 +7,7 @@ export type ProjectPreview = {
   package: Snapshot & { name: string; identity: string; createdAt: number }
   candidates: string[]
   directory: string | null
-  action: "select-target" | "create" | "replace"
+  action: "select-target" | "create" | "merge" | "replace"
   local: Snapshot | null
   previewToken: string | null
   warnings: string[]
@@ -30,9 +30,20 @@ export async function inspectProject(input: Connection & { destination?: string 
 
 export async function transferProject(
   input: Connection &
-    ({ mode: "backup" } | { mode: "restore"; destination: string; previewToken: string; overwrite: boolean }),
+    (
+      | { mode: "backup" }
+      | {
+          mode: "restore"
+          destination: string
+          restoreMode?: "merge" | "replace"
+          verify?: boolean
+          safetyBackup?: boolean
+          previewToken?: string
+        }
+    ),
 ) {
-  if (input.mode === "restore" && !input.previewToken.trim()) throw new Error("请先重新读取迁移包并确认预览。")
+  if (input.mode === "restore" && input.restoreMode === "replace" && !input.previewToken?.trim())
+    throw new Error("完整替换前请先重新读取迁移包并确认预览。")
   const data = await requestProject(
     input,
     input.mode,
@@ -41,8 +52,10 @@ export async function transferProject(
       : {
           path: input.path,
           directory: input.destination,
-          previewToken: input.previewToken,
-          overwrite: input.overwrite,
+          mode: input.restoreMode ?? "merge",
+          verify: input.verify ?? false,
+          safetyBackup: input.safetyBackup ?? false,
+          ...(input.previewToken ? { previewToken: input.previewToken } : {}),
         },
   )
   if (!record(data) || !count(data.sessions) || !count(data.files) || !strings(data.warnings)) {
@@ -53,7 +66,16 @@ export async function transferProject(
   if (!absolute(target) || (safetyPath !== null && !absolute(safetyPath))) {
     throw new Error("服务器返回了无效的目标或安全备份路径。")
   }
-  return { target, sessions: data.sessions, files: data.files, warnings: data.warnings, safetyPath }
+  const result = {
+    target,
+    sessions: data.sessions,
+    files: data.files,
+    warnings: data.warnings,
+    safetyPath,
+  }
+  if (input.mode === "backup") return { ...result, skippedSessions: 0, skippedFiles: 0 }
+  if (!count(data.skippedSessions) || !count(data.skippedFiles)) throw new Error("服务器返回了无效的迁移结果。")
+  return { ...result, skippedSessions: data.skippedSessions, skippedFiles: data.skippedFiles }
 }
 
 export function parseProjectPreview(data: unknown): ProjectPreview {
@@ -68,11 +90,14 @@ export function parseProjectPreview(data: unknown): ProjectPreview {
     (data.directory !== null && !absolute(data.directory)) ||
     (data.local !== null && !snapshot(data.local)) ||
     !strings(data.warnings) ||
-    (data.action !== "select-target" && data.action !== "create" && data.action !== "replace") ||
-    (data.action === "select-target"
-      ? data.previewToken !== null
-      : !text(data.previewToken) || !absolute(data.directory)) ||
-    (data.action === "replace" && data.local === null)
+    (data.action !== "select-target" &&
+      data.action !== "create" &&
+      data.action !== "merge" &&
+      data.action !== "replace") ||
+    (data.previewToken !== null && !text(data.previewToken)) ||
+    (data.action === "select-target" ? data.previewToken !== null : !absolute(data.directory)) ||
+    ((data.action === "merge" || data.action === "replace") && data.local === null) ||
+    (data.action === "replace" && !text(data.previewToken))
   ) {
     throw new Error("服务器返回了无效的迁移预览，请重新读取迁移包。")
   }

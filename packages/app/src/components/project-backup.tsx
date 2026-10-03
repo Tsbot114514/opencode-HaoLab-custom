@@ -40,7 +40,10 @@ export function ProjectBackup() {
     destination: "",
     manager: "",
     confirmed: false,
+    restoreMode: "merge" as "merge" | "replace",
     overwrite: false,
+    verify: false,
+    safetyBackup: false,
     busy: false,
     error: "",
     preview: undefined as ProjectPreview | undefined,
@@ -59,7 +62,10 @@ export function ProjectBackup() {
           preview: undefined,
           candidates: [],
           confirmed: false,
+          restoreMode: "merge",
           overwrite: false,
+          verify: false,
+          safetyBackup: false,
           result: undefined,
           error: "服务器已更改，请重新选择路径并读取迁移包。",
         }),
@@ -78,7 +84,10 @@ export function ProjectBackup() {
       destination: "",
       manager: "",
       confirmed: false,
+      restoreMode: "merge",
       overwrite: false,
+      verify: false,
+      safetyBackup: false,
       error: "",
       preview: undefined,
       candidates: [],
@@ -92,15 +101,15 @@ export function ProjectBackup() {
   }
   const validZip = () => isAbsoluteProjectPath(state.path) && /\.zip$/i.test(state.path)
   const canRead = () => validZip() && (!state.destination || isAbsoluteProjectPath(state.destination))
+  const destination = () => state.preview?.directory ?? state.destination
   const canApply = () =>
     !state.busy &&
     state.confirmed &&
     (state.mode === "backup"
       ? validZip() && isAbsoluteProjectPath(state.source)
-      : !!state.preview?.previewToken &&
-        !!state.preview.directory &&
-        state.preview.action !== "select-target" &&
-        (state.preview.action !== "replace" || state.overwrite))
+      : validZip() &&
+        isAbsoluteProjectPath(destination()) &&
+        (state.restoreMode === "merge" || (!!state.preview?.previewToken && state.overwrite)))
 
   async function pick(field: "source" | "path" | "destination") {
     if (state.busy || !server.isLocal()) return
@@ -146,7 +155,12 @@ export function ProjectBackup() {
         destination: state.destination || undefined,
       })
       if (scope !== context()) return
-      setState({ preview, manager, candidates: preview.candidates })
+      setState({
+        preview,
+        manager,
+        candidates: preview.candidates,
+        destination: preview.directory ?? state.destination,
+      })
     } catch (error) {
       if (scope === context()) setState("error", error instanceof Error ? error.message : String(error))
     } finally {
@@ -158,9 +172,14 @@ export function ProjectBackup() {
     if (!canApply() || !state.mode || !server.current) return
     const scope = context()
     const current = server.current
-    const preview = state.preview
     setState({ busy: true, error: "", result: undefined })
     try {
+      const manager =
+        state.mode === "restore" && !state.manager
+          ? (await sdk.createClient({}).path.get()).data?.directory
+          : state.manager
+      if (scope !== context()) return
+      if (state.mode === "restore" && !manager) throw new Error("无法获取管理页面当前目录。")
       const result =
         state.mode === "backup"
           ? await transferProject({
@@ -170,27 +189,27 @@ export function ProjectBackup() {
               directory: state.source,
               path: state.path,
             })
-          : preview?.previewToken && preview.directory
-            ? await transferProject({
-                server: current.http,
-                fetch: platform.fetch,
-                mode: "restore",
-                directory: state.manager,
-                path: state.path,
-                destination: preview.directory,
-                previewToken: preview.previewToken,
-                overwrite: preview.action === "replace" && state.overwrite,
-              })
-            : undefined
+          : await transferProject({
+              server: current.http,
+              fetch: platform.fetch,
+              mode: "restore",
+              directory: manager!,
+              path: state.path,
+              destination: destination(),
+              restoreMode: state.restoreMode,
+              verify: state.verify,
+              safetyBackup: state.safetyBackup,
+              previewToken: state.restoreMode === "replace" ? (state.preview?.previewToken ?? undefined) : undefined,
+            })
       if (scope === context()) setState({ result, preview: undefined, confirmed: false, overwrite: false })
     } catch (error) {
       if (scope !== context()) return
-      // Any failed apply invalidates consent and the token, including stale previews and uncertain network outcomes.
+      // Any failed apply invalidates consent and a replacement token after an uncertain network outcome.
       setState({
         preview: undefined,
         confirmed: false,
         overwrite: false,
-        error: `${error instanceof Error ? error.message : String(error)}${state.mode === "restore" ? " 请重新读取迁移包、核对当前状态并确认后再加载。" : ""}`,
+        error: `${error instanceof Error ? error.message : String(error)}${state.mode === "restore" && state.restoreMode === "replace" ? " 请重新读取迁移包、核对当前状态并确认后再替换。" : ""}`,
       })
     } finally {
       setState("busy", false)
@@ -202,7 +221,7 @@ export function ProjectBackup() {
       <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
         <div class="mb-2 text-12-medium text-v2-text-text-base">项目迁移包</div>
         <p class="text-12-regular leading-5 text-v2-text-text-muted">
-          A 设备导出项目，B 设备读取并识别已有项目，核对文件与会话时间后加载。独立于整个应用的数据目录迁移。
+          A 设备导出项目，B 设备增量加载。默认保留本地独有及更新的文件和会话，独立于整个应用的数据目录迁移。
         </p>
         <div class="mt-3 grid grid-cols-1 gap-2">
           <Button variant="primary" size="small" disabled={state.busy} onClick={() => open("backup")}>
@@ -232,7 +251,7 @@ export function ProjectBackup() {
           >
             <div class="max-h-[70vh] w-[min(calc(100vw-48px),720px)] space-y-4 overflow-y-auto pb-1 text-12-regular leading-5 text-v2-text-text-muted">
               <p>
-                迁移包可保存到云同步文件夹、共享磁盘，或手动传到另一台设备。请等待同步完成后再读取；此功能不连接云服务商，不自动同步或合并。
+                迁移包可保存到云同步文件夹、共享磁盘，或手动传到另一台设备。请等待同步完成后再读取；此功能不连接云服务商，也不会持续自动同步。
               </p>
               <p class="break-words">
                 {server.isLocal()
@@ -300,11 +319,11 @@ export function ProjectBackup() {
                 </For>
                 <Show when={state.mode === "restore"}>
                   <p>
-                    先读取迁移包。未匹配到项目时可新建项目：选择空目录，或输入尚不存在的目录（父目录必须已存在）。也可手动指定已有项目目录，但会替换该目录的文件与全部项目会话，请仔细核对身份。
+                    默认执行增量合并：导入迁移包中缺少或更新的项目内容，保留本地独有及更新的文件和会话。目标目录已知时可直接加载；留空时先读取迁移包以自动发现目标。
                   </p>
                   <Show when={state.candidates.length > 0}>
                     <label class="flex flex-col gap-2">
-                      匹配到的项目目录（选择后重新读取）
+                      匹配到的项目目录（选择后可直接增量加载）
                       <select
                         class="w-full min-w-0 rounded-xl border border-v2-border-border-base bg-v2-background-bg-base p-2"
                         value={state.destination}
@@ -324,8 +343,56 @@ export function ProjectBackup() {
                     disabled={state.busy || !canRead()}
                     onClick={() => void readPackage()}
                   >
-                    {state.preview ? "重新读取迁移包" : "读取迁移包"}
+                    {state.preview ? "重新读取迁移包" : state.destination ? "读取并核对迁移包" : "读取迁移包并发现目标"}
                   </Button>
+                  <div class="space-y-3 rounded-2xl border border-v2-border-border-base p-3">
+                    <div class="text-12-medium text-v2-text-text-base">加载方式</div>
+                    <label class="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="project-restore-mode"
+                        class="mt-1 shrink-0"
+                        checked={state.restoreMode === "merge"}
+                        disabled={state.busy}
+                        onChange={() => setState({ restoreMode: "merge", overwrite: false })}
+                      />
+                      <span>增量合并（推荐）：保留本地独有及更新的文件和会话。</span>
+                    </label>
+                    <label class="flex items-start gap-2 text-danger-base">
+                      <input
+                        type="radio"
+                        name="project-restore-mode"
+                        class="mt-1 shrink-0"
+                        checked={state.restoreMode === "replace"}
+                        disabled={state.busy}
+                        onChange={() => setState({ restoreMode: "replace", overwrite: false, confirmed: false })}
+                      />
+                      <span>完整替换（危险）：删除本地独有内容，以迁移包替换项目文件和全部会话。</span>
+                    </label>
+                    <label class="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        class="mt-1 shrink-0"
+                        checked={state.verify}
+                        disabled={state.busy}
+                        onChange={(event) => setState("verify", event.currentTarget.checked)}
+                      />
+                      <span>执行完整校验（更慢，会完整验证迁移包内容）</span>
+                    </label>
+                    <label class="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        class="mt-1 shrink-0"
+                        checked={state.safetyBackup}
+                        disabled={state.busy}
+                        onChange={(event) => setState("safetyBackup", event.currentTarget.checked)}
+                      />
+                      <span>加载前创建本地安全备份（需要额外磁盘空间）</span>
+                    </label>
+                  </div>
+                  <Show when={state.restoreMode === "replace" && !state.preview?.previewToken}>
+                    <p class="text-danger-base">完整替换需要先读取迁移包，取得当前目标的最新预览。</p>
+                  </Show>
                 </Show>
                 <Show when={state.preview}>
                   {(preview) => (
@@ -333,10 +400,12 @@ export function ProjectBackup() {
                       <div class="break-words text-13-medium text-v2-text-text-base">
                         {preview().package.name} ·{" "}
                         {preview().action === "replace"
-                          ? "替换已有项目"
-                          : preview().action === "create"
-                            ? "加载为新项目"
-                            : "请选择目标目录并重新读取"}
+                          ? "已有项目（可完整替换）"
+                          : preview().action === "merge"
+                            ? "增量合并到已有项目"
+                            : preview().action === "create"
+                              ? "加载为新项目"
+                              : "请选择目标目录并重新读取"}
                       </div>
                       <p class="break-all">项目身份：{preview().package.identity}</p>
                       <p>迁移包创建时间：{formatProjectTime(preview().package.createdAt)}（不是项目内容更新时间）</p>
@@ -394,11 +463,10 @@ export function ProjectBackup() {
                       <For each={preview().warnings}>
                         {(warning) => <p class="break-words text-icon-warning-base">警告：{warning}</p>}
                       </For>
-                      <Show when={preview().action === "replace"}>
+                      <Show when={state.restoreMode === "replace"}>
                         <div class="space-y-2 rounded-xl border border-danger-base/30 bg-danger-base/5 p-3">
                           <p class="text-danger-base">
-                            替换不是合并：会删除本地独有文件与会话，用迁移包快照替换项目文件和全部项目会话。根目录 Git
-                            元数据是明确例外，会由后端保留。替换前自动保留安全迁移包。
+                            替换不是合并：会删除本地独有文件与会话，用迁移包快照替换项目文件和全部项目会话。必须先读取迁移包取得最新预览；如需保留替换前状态，请启用安全备份。
                           </p>
                           <label class="flex items-start gap-2">
                             <input
@@ -434,7 +502,7 @@ export function ProjectBackup() {
                       type="checkbox"
                       class="mt-1 shrink-0"
                       checked={state.confirmed}
-                      disabled={state.busy || (state.mode === "restore" && !state.preview?.previewToken)}
+                      disabled={state.busy}
                       onChange={(event) => setState("confirmed", event.currentTarget.checked)}
                     />
                     <span>
@@ -471,6 +539,13 @@ export function ProjectBackup() {
                     <For each={result().warnings}>
                       {(warning) => <p class="break-words text-icon-warning-base">警告：{warning}</p>}
                     </For>
+                    <Show
+                      when={state.mode === "restore" && (result().skippedSessions > 0 || result().skippedFiles > 0)}
+                    >
+                      <p>
+                        增量合并保留并跳过：{result().skippedSessions} 个会话，{result().skippedFiles} 个文件。
+                      </p>
+                    </Show>
                     <Show when={state.mode === "restore"}>
                       <Button
                         variant="secondary"
@@ -498,11 +573,9 @@ export function ProjectBackup() {
                   <Button variant="primary" size="small" disabled={!canApply()} onClick={() => void apply()}>
                     {state.mode === "backup"
                       ? "导出迁移包"
-                      : state.preview?.action === "replace"
+                      : state.restoreMode === "replace"
                         ? "确认替换文件与全部会话"
-                        : state.preview?.action === "create"
-                          ? "加载为新项目"
-                          : "读取预览后加载"}
+                        : "增量加载迁移包"}
                   </Button>
                 </Show>
               </div>

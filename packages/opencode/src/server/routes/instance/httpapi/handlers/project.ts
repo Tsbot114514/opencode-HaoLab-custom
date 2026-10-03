@@ -74,6 +74,9 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
             try: async () => {
               const result = await ProjectBackup.restore({
                 ...payload,
+                mode: payload.mode ?? "merge",
+                verify: payload.verify ?? false,
+                safetyBackup: payload.safetyBackup ?? false,
                 resolveProject: (directory) =>
                   Effect.runPromise(svc.fromDirectory(directory, { persist: false, cacheIdentity: false })).then(
                     (result) => result.project,
