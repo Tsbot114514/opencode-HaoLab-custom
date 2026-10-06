@@ -94,6 +94,10 @@ export function pruneSessionKeys(input: {
     .slice(input.max)
 }
 
+export function loadProjectSessionLists(directories: string[], load: (directory: string) => Promise<unknown>) {
+  return Promise.allSettled(directories.map(load))
+}
+
 function nextSessionTabsForOpen(current: SessionTabs | undefined, tab: string): SessionTabs {
   const all = current?.all ?? []
   if (tab === "review") return { all: all.filter((x) => x !== "review"), active: tab }
@@ -538,17 +542,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     const loadedSessions = new Set<string>()
     const sessionQueue: string[] = []
     let alive = true
-    let loadingSessions = false
-    const loadQueuedSessions = async () => {
-      if (loadingSessions) return
-      loadingSessions = true
-      while (alive && sessionQueue.length) {
-        const directory = sessionQueue.shift()
-        if (!directory || !server.projects.list().some((project) => project.worktree === directory)) continue
-        await globalSync.project.loadSessions(directory).catch(() => undefined)
-      }
-      loadingSessions = false
-    }
     createEffect(() => {
       if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
         return
@@ -563,7 +556,10 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       sessionQueue.push(...directories.sort((a, b) => Number(b === last) - Number(a === last)))
       requestAnimationFrame(() => {
         if (!alive) return
-        void loadQueuedSessions()
+        void loadProjectSessionLists(
+          sessionQueue.splice(0).filter((directory) => server.projects.list().some((project) => project.worktree === directory)),
+          globalSync.project.loadSessions,
+        )
       })
     })
     onCleanup(() => {

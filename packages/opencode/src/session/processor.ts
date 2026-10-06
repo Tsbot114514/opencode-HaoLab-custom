@@ -782,38 +782,7 @@ export const layer = Layer.effect(
         ctx.needsCompaction = false
         const cfg = yield* config.get()
         ctx.shouldBreak = cfg.experimental?.continue_loop_on_deny !== true
-
-        const retry = SessionRetry.resettablePolicy({
-          provider: input.model.providerID,
-          parse,
-          maxAttempts: cfg.retry?.maxAttempts,
-          set: (info) => {
-            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            const event = flags.experimentalEventSystem
-              ? events.publish(SessionEvent.Retried, {
-                  sessionID: ctx.sessionID,
-                  attempt: info.attempt,
-                  error: {
-                    message: info.message,
-                    isRetryable: true,
-                  },
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                })
-              : Effect.void
-            return event.pipe(
-              Effect.andThen(
-                status.set(ctx.sessionID, {
-                  type: "retry",
-                  attempt: info.attempt,
-                  maxAttempts: info.maxAttempts,
-                  message: info.message,
-                  action: info.action,
-                  next: info.next,
-                }),
-              ),
-            )
-          },
-        })
+        let progress = 0
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
@@ -825,10 +794,24 @@ export const layer = Layer.effect(
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
-              Stream.tap((event) =>
-                Effect.gen(function* () {
+              Stream.tap(
+                Effect.fnUntraced(function* (event) {
                   yield* handleEvent(event)
-                  if (retry.reset()) yield* status.set(ctx.sessionID, { type: "busy" })
+                  // Start events alone do not prove the provider has resumed generation.
+                  if (
+                    event.type !== "tool-call" &&
+                    !(
+                      (event.type === "reasoning-delta" ||
+                        event.type === "text-delta" ||
+                        event.type === "tool-input-delta") &&
+                      event.text.length > 0
+                    )
+                  )
+                    return
+                  progress++
+                  if ((yield* status.get(ctx.sessionID)).type === "retry") {
+                    yield* status.set(ctx.sessionID, { type: "busy" })
+                  }
                 }),
               ),
               Stream.takeUntil(() => ctx.needsCompaction),
@@ -847,7 +830,40 @@ export const layer = Layer.effect(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
             ),
-            Effect.retry(retry.schedule),
+            Effect.retry(
+              SessionRetry.policy({
+                provider: input.model.providerID,
+                parse,
+                maxAttempts: cfg.retry?.maxAttempts,
+                progress: () => progress,
+                set: (info) => {
+                  // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+                  const event = flags.experimentalEventSystem
+                    ? events.publish(SessionEvent.Retried, {
+                        sessionID: ctx.sessionID,
+                        attempt: info.attempt,
+                        error: {
+                          message: info.message,
+                          isRetryable: true,
+                        },
+                        timestamp: DateTime.makeUnsafe(Date.now()),
+                      })
+                    : Effect.void
+                  return event.pipe(
+                    Effect.andThen(
+                      status.set(ctx.sessionID, {
+                        type: "retry",
+                        attempt: info.attempt,
+                        maxAttempts: info.maxAttempts,
+                        message: info.message,
+                        action: info.action,
+                        next: info.next,
+                      }),
+                    ),
+                  )
+                },
+              }),
+            ),
             Effect.catch(halt),
             Effect.ensuring(cleanup()),
           )

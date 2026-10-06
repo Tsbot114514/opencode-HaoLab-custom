@@ -45,10 +45,20 @@ const HTML_ERROR = (error: string) => `<!DOCTYPE html>
   <div class="container">
     <h1>Authorization Failed</h1>
     <p>An error occurred during authorization.</p>
-    <div class="error">${error}</div>
+    <div class="error">${escapeHtml(error)}</div>
   </div>
 </body>
 </html>`
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => {
+    if (character === "&") return "&amp;"
+    if (character === "<") return "&lt;"
+    if (character === ">") return "&gt;"
+    if (character === '"') return "&quot;"
+    return "&#39;"
+  })
+}
 
 interface PendingAuth {
   resolve: (code: string) => void
@@ -71,6 +81,13 @@ function cleanupStateIndex(oauthState: string) {
       break
     }
   }
+}
+
+function stopWhenIdle() {
+  if (pendingAuths.size > 0) return
+  setTimeout(() => {
+    if (pendingAuths.size === 0) void stop()
+  }, 0)
 }
 
 function handleRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse) {
@@ -106,6 +123,7 @@ function handleRequest(req: import("http").IncomingMessage, res: import("http").
       pendingAuths.delete(state)
       cleanupStateIndex(state)
       pending.reject(new Error(errorMsg))
+      stopWhenIdle()
     }
     res.writeHead(200, { "Content-Type": "text/html" })
     res.end(HTML_ERROR(errorMsg))
@@ -133,6 +151,7 @@ function handleRequest(req: import("http").IncomingMessage, res: import("http").
   pendingAuths.delete(state)
   cleanupStateIndex(state)
   pending.resolve(code)
+  stopWhenIdle()
 
   res.writeHead(200, { "Content-Type": "text/html" })
   res.end(HTML_SUCCESS)
@@ -161,7 +180,7 @@ export async function ensureRunning(redirectUri?: string): Promise<void> {
 
   server = createServer(handleRequest)
   await new Promise<void>((resolve, reject) => {
-    server!.listen(currentPort, () => {
+    server!.listen(currentPort, "127.0.0.1", () => {
       log.info("oauth callback server started", { port: currentPort, path: currentPath })
       resolve()
     })
@@ -177,6 +196,7 @@ export function waitForCallback(oauthState: string, mcpName?: string): Promise<s
         pendingAuths.delete(oauthState)
         if (mcpName) mcpNameToState.delete(mcpName)
         reject(new Error("OAuth callback timeout - authorization took too long"))
+        stopWhenIdle()
       }
     }, CALLBACK_TIMEOUT_MS)
 
@@ -194,6 +214,7 @@ export function cancelPending(mcpName: string): void {
     pendingAuths.delete(key)
     mcpNameToState.delete(mcpName)
     pending.reject(new Error("Authorization cancelled"))
+    stopWhenIdle()
   }
 }
 

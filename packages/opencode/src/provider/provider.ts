@@ -30,8 +30,9 @@ import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const log = Log.create({ service: "provider" })
-const DEFAULT_REQUEST_TIMEOUT = 300_000
-const DEFAULT_CHUNK_TIMEOUT = 20_000
+const DEFAULT_REQUEST_TIMEOUT = 1_200_000
+const DEFAULT_HEADER_TIMEOUT = 300_000
+const DEFAULT_CHUNK_TIMEOUT = 300_000
 
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
@@ -51,7 +52,7 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
         const id = setTimeout(() => {
           const err = new Error("SSE read timed out")
           ctl.abort(err)
-          void reader.cancel(err)
+          reader.cancel(err).catch(() => {})
           reject(err)
         }, ms)
 
@@ -76,7 +77,7 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     },
     async cancel(reason) {
       ctl.abort(reason)
-      await reader.cancel(reason)
+      await reader.cancel(reason).catch(() => {})
     },
   })
 
@@ -85,6 +86,15 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     status: res.status,
     statusText: res.statusText,
   })
+}
+
+function timeoutController(ms: number) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`Provider response headers timed out after ${ms}ms`)), ms)
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(timeout),
+  }
 }
 
 function googleVertexAnthropicBaseURL(project: string | undefined, location: string | undefined) {
@@ -1587,19 +1597,30 @@ export const layer = Layer.effect(
         if (existing) return existing
 
         const customFetch = options["fetch"]
-        const requestTimeout = options["timeout"] === undefined ? DEFAULT_REQUEST_TIMEOUT : options["timeout"]
+        const requestTimeout = options["timeout"] ?? DEFAULT_REQUEST_TIMEOUT
+        const headerTimeout =
+          options["headerTimeout"] === undefined
+            ? (options["timeout"] ?? DEFAULT_HEADER_TIMEOUT)
+            : options["headerTimeout"]
         const chunkTimeout =
-          options["chunkTimeout"] === undefined && requestTimeout !== false ? DEFAULT_CHUNK_TIMEOUT : options["chunkTimeout"]
+          options["chunkTimeout"] === undefined
+            ? requestTimeout === false
+              ? false
+              : DEFAULT_CHUNK_TIMEOUT
+            : options["chunkTimeout"]
         delete options["chunkTimeout"]
+        delete options["headerTimeout"]
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
+          const headerTimeoutCtl = typeof headerTimeout === "number" ? timeoutController(headerTimeout) : undefined
           const signals: AbortSignal[] = []
 
           if (opts.signal) signals.push(opts.signal)
           if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
+          if (headerTimeoutCtl) signals.push(headerTimeoutCtl.signal)
           if (requestTimeout !== undefined && requestTimeout !== null && requestTimeout !== false)
             signals.push(AbortSignal.timeout(requestTimeout))
 
@@ -1628,7 +1649,7 @@ export const layer = Layer.effect(
             ...opts,
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
-          })
+          }).finally(() => headerTimeoutCtl?.clear())
 
           if (!chunkAbortCtl) return res
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)

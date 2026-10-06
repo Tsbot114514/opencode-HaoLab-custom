@@ -15,7 +15,8 @@ const MAX_SESSIONS = 55
 type Storage = SyncStorage | AsyncStorage
 
 export function desktopCacheKey(connection: ServerConnection.Any | undefined) {
-  if (connection?.type === "sidecar" && connection.variant === "base") return KEY
+  // The sidecar's data directory can change without changing its server key.
+  if (connection?.type === "sidecar") return
   if (connection?.type === "tunnel" && /^[a-f0-9]{64}$/.test(connection.cacheKey ?? ""))
     return `tunnel.v1.${connection.cacheKey}`
 }

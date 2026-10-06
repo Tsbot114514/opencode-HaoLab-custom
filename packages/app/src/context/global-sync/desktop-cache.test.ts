@@ -89,6 +89,7 @@ describe("desktop sidebar cache", () => {
   })
 
   test("isolates paired identities and rejects invalid storage keys", async () => {
+    expect(desktopCacheKey({ type: "sidecar", variant: "base", http: { url: "http://127.0.0.1:4096" } })).toBeUndefined()
     const disk = new Map<string, string>()
     const storage: AsyncStorage = {
       getItem: async (key) => disk.get(key) ?? null,

@@ -82,7 +82,9 @@ type helper struct {
 	stateDir    string
 	node        *tsnet.Server
 	server      *http.Server
+	serverConn  *trackedListener
 	bridge      *http.Server
+	bridgeConn  *trackedListener
 	sidecar     *url.URL
 	sidecarUser string
 	sidecarPass string
@@ -190,7 +192,9 @@ func (h *helper) execute(cmd command) (*result, error) {
 	case "disable":
 		if h.server != nil {
 			_ = h.server.Close()
+			h.serverConn.closeAll()
 			h.server = nil
+			h.serverConn = nil
 		}
 	case "connect":
 		peer, err := parseShare(cmd.Share)
@@ -209,7 +213,9 @@ func (h *helper) execute(cmd command) (*result, error) {
 	case "disconnect":
 		if h.bridge != nil {
 			_ = h.bridge.Close()
+			h.bridgeConn.closeAll()
 			h.bridge = nil
+			h.bridgeConn = nil
 			h.peer = nil
 			h.bridgeAddr = ""
 		}
@@ -454,8 +460,10 @@ func (h *helper) enable() error {
 	}
 	srv := &http.Server{ErrorLog: log.New(io.Discard, "", 0), Handler: h.tailnetHandler(proxy, secret)}
 	h.server = srv
+	h.serverConn = trackConnections(ln)
+	connections := h.serverConn
 	go func() {
-		_ = srv.Serve(ln)
+		_ = srv.Serve(connections)
 		transport.CloseIdleConnections()
 	}()
 	return nil
@@ -536,14 +544,18 @@ func (h *helper) connect(peer *invitation) error {
 	address := ln.Addr().String()
 	srv := &http.Server{ErrorLog: log.New(io.Discard, "", 0), Handler: bridgeHandler(proxy, address, secret, os.Getenv("ELECTRON_RENDERER_URL"))}
 	h.localSecret, h.peer, h.bridge, h.bridgeAddr = secret, peer, srv, address
+	h.bridgeConn = trackConnections(ln)
+	connections := h.bridgeConn
 	go func() {
-		_ = srv.Serve(ln)
+		_ = srv.Serve(connections)
 		transport.CloseIdleConnections()
 	}()
 	return nil
 }
 
 func bridgeHandler(proxy http.Handler, address, secret, devURL string) http.Handler {
+	var mu sync.Mutex
+	tickets := make(map[string]time.Time)
 	devOrigin := ""
 	if u, err := url.Parse(devURL); err == nil && u != nil && u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") && u.Port() != "" && u.User == nil {
 		devOrigin = u.Scheme + "://" + u.Host
@@ -590,6 +602,58 @@ func bridgeHandler(proxy http.Handler, address, secret, devURL string) http.Hand
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/__haolab/ws-ticket" {
+			user, pass, ok := r.BasicAuth()
+			if !ok || !secureEqual(user, "client") || !secureEqual(pass, secret) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			mu.Lock()
+			for key, expires := range tickets {
+				if time.Now().After(expires) {
+					delete(tickets, key)
+				}
+			}
+			if len(tickets) >= 128 {
+				mu.Unlock()
+				http.Error(w, "too many pending tickets", http.StatusTooManyRequests)
+				return
+			}
+			bytes := make([]byte, 32)
+			if _, err := rand.Read(bytes); err != nil {
+				mu.Unlock()
+				http.Error(w, "unable to issue ticket", http.StatusInternalServerError)
+				return
+			}
+			ticket := hex.EncodeToString(bytes)
+			tickets[ticket] = time.Now().Add(30 * time.Second)
+			mu.Unlock()
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(struct {
+				Ticket string `json:"ticket"`
+			}{ticket})
+			return
+		}
+		if token := r.URL.Query().Get("bridge_ticket"); token != "" {
+			if r.Method != http.MethodGet || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || !strings.HasPrefix(r.URL.Path, "/pty/") || !strings.HasSuffix(r.URL.Path, "/connect") || strings.Count(r.URL.Path, "/") != 3 || len(r.URL.Query()["bridge_ticket"]) != 1 {
+				http.Error(w, "invalid ticket", http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			expires, ok := tickets[token]
+			delete(tickets, token)
+			mu.Unlock()
+			if !ok || time.Now().After(expires) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			query := r.URL.Query()
+			query.Del("bridge_ticket")
+			r.URL.RawQuery = query.Encode()
+			proxy.ServeHTTP(w, r)
+			return
+		}
 		user, pass, ok := r.BasicAuth()
 		if !ok || !secureEqual(user, "client") || !secureEqual(pass, secret) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="client"`)
@@ -600,6 +664,60 @@ func bridgeHandler(proxy http.Handler, address, secret, devURL string) http.Hand
 	})
 }
 
+type trackedListener struct {
+	net.Listener
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	closed bool
+}
+
+type trackedConn struct {
+	net.Conn
+	owner *trackedListener
+}
+
+func trackConnections(ln net.Listener) *trackedListener {
+	return &trackedListener{Listener: ln, conns: make(map[net.Conn]struct{})}
+}
+
+func (l *trackedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tracked := &trackedConn{Conn: conn, owner: l}
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		_ = conn.Close()
+		return nil, net.ErrClosed
+	}
+	l.conns[tracked] = struct{}{}
+	l.mu.Unlock()
+	return tracked, nil
+}
+
+func (c *trackedConn) Close() error {
+	c.owner.mu.Lock()
+	delete(c.owner.conns, c)
+	c.owner.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (l *trackedListener) closeAll() {
+	l.mu.Lock()
+	l.closed = true
+	conns := make([]net.Conn, 0, len(l.conns))
+	for conn := range l.conns {
+		conns = append(conns, conn)
+	}
+	l.mu.Unlock()
+	_ = l.Listener.Close()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
 func (h *helper) close() {
 	h.mu.Lock()
 	if h.watchCancel != nil {
@@ -608,9 +726,11 @@ func (h *helper) close() {
 	}
 	if h.bridge != nil {
 		_ = h.bridge.Close()
+		h.bridgeConn.closeAll()
 	}
 	if h.server != nil {
 		_ = h.server.Close()
+		h.serverConn.closeAll()
 	}
 	if h.node != nil {
 		_ = h.node.Close()
@@ -747,7 +867,7 @@ func safeRedirect(r *http.Response) error {
 		return nil
 	}
 	u, err := url.Parse(location)
-	if err != nil || u.IsAbs() || u.Host != "" || u.User != nil || strings.HasPrefix(location, "\\") {
+	if err != nil || u.IsAbs() || u.Host != "" || u.User != nil || strings.HasPrefix(strings.ReplaceAll(location, "\\", "/"), "//") {
 		r.Header.Del("Location")
 		return nil
 	}

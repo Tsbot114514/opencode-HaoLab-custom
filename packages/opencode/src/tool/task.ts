@@ -100,6 +100,13 @@ function errorText(error: unknown) {
   return String(error)
 }
 
+function assistantErrorText(error: NonNullable<MessageV2.Assistant["error"]>) {
+  const data = Reflect.get(error, "data")
+  const message = data && typeof data === "object" ? Reflect.get(data, "message") : undefined
+  if (typeof message === "string" && message) return message
+  return error.name
+}
+
 export const TaskTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -124,6 +131,20 @@ export const TaskTool = Tool.define(
         )
       }
 
+      const parent = yield* sessions.get(ctx.sessionID)
+      const maxDepth = cfg.subagent_depth ?? 1
+      let current = parent
+      let depth = 0
+      while (current.parentID) {
+        depth++
+        current = yield* sessions.get(current.parentID)
+      }
+      if (depth >= maxDepth) {
+        return yield* Effect.fail(
+          new Error(`Subagent depth limit reached (${maxDepth}). Increase "subagent_depth" to allow nested subagents.`),
+        )
+      }
+
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: id,
@@ -145,16 +166,16 @@ export const TaskTool = Tool.define(
       const session = taskID
         ? yield* sessions.get(SessionID.make(taskID)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
-      const parent = yield* sessions.get(ctx.sessionID)
       const parentAgent = parent.agent
         ? yield* agent.get(parent.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
       const nextSession =
         session ??
-        (yield* sessions.create({
-          parentID: ctx.sessionID,
-          title: params.description + ` (@${next.name} subagent)`,
-          permission: [
+         (yield* sessions.create({
+           parentID: ctx.sessionID,
+           title: params.description + ` (@${next.name} subagent)`,
+           agent: next.name,
+           permission: [
             ...deriveSubagentSessionPermission({
               parentSessionPermission: parent.permission ?? [],
               parentAgent,
@@ -208,6 +229,15 @@ export const TaskTool = Tool.define(
           },
           parts,
         })
+        if (result.info.role === "assistant" && result.info.error) {
+          return yield* Effect.fail(
+            new Error(`Subagent failed (task_id: ${nextSession.id}): ${assistantErrorText(result.info.error)}`),
+          )
+        }
+        const failed = result.parts.findLast((item) => item.type === "tool" && item.state.status === "error")
+        if (failed?.type === "tool" && failed.state.status === "error") {
+          return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${failed.state.error}`))
+        }
         return result.parts.findLast((item) => item.type === "text")?.text ?? ""
       })
 
@@ -282,6 +312,7 @@ export const TaskTool = Tool.define(
           title: params.description,
           metadata,
           run: runTask().pipe(
+            Effect.onInterrupt(() => ops.cancel(nextSession.id)),
             Effect.tap((text) => inject("completed", text).pipe(Effect.ignore)),
             Effect.catchCause((cause) =>
               (Cause.hasInterruptsOnly(cause)

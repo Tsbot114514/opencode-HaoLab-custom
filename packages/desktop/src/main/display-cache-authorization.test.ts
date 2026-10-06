@@ -20,7 +20,7 @@ describe("desktop display cache ownership", () => {
       expect(allowDisplayCacheKey(name, first, () => "b".repeat(64))).toBe(false)
       expect(allowDisplayCacheKey(name, first, () => undefined)).toBe(false)
       expect(allowDisplayCacheKey(name, "invalid", () => "a".repeat(64))).toBe(false)
-      expect(allowDisplayCacheKey(name, "sidecar.v1", () => undefined)).toBe(true)
+      expect(allowDisplayCacheKey(name, "sidecar.v1", () => undefined)).toBe(false)
     }
     expect(allowDisplayCacheKey("opencode.global.dat", first, () => undefined)).toBe(true)
   })

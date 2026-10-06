@@ -9,6 +9,9 @@ export const Local = Schema.Struct({
   environment: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description: "Environment variables to set when running the MCP server",
   }),
+  cwd: Schema.optional(Schema.String).annotate({
+    description: "Working directory for the MCP server. Relative paths resolve from the current workspace.",
+  }),
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
   }),

@@ -17,8 +17,6 @@ CREATE TABLE `session_sidebar_change` (
 CREATE INDEX `session_sidebar_change_session_seq_idx` ON `session_sidebar_change` (`session_id`,`seq`);--> statement-breakpoint
 CREATE INDEX `session_sidebar_change_project_directory_seq_idx` ON `session_sidebar_change` (`project_id`,`directory`,`seq`);--> statement-breakpoint
 CREATE INDEX `session_sidebar_change_old_project_directory_seq_idx` ON `session_sidebar_change` (`old_project_id`,`old_directory`,`seq`);--> statement-breakpoint
-INSERT INTO session_sidebar_change (session_id, project_id, directory, parent_id, time_archived, title, time_created, time_updated)
-SELECT id, project_id, directory, parent_id, time_archived, title, time_created, time_updated FROM session;--> statement-breakpoint
 CREATE TRIGGER session_sidebar_insert AFTER INSERT ON session BEGIN
   INSERT INTO session_sidebar_change (session_id, project_id, directory, parent_id, time_archived, title, time_created, time_updated)
   VALUES (NEW.id, NEW.project_id, NEW.directory, NEW.parent_id, NEW.time_archived, NEW.title, NEW.time_created, NEW.time_updated);

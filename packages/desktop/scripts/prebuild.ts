@@ -7,14 +7,15 @@ import path from "node:path"
 import { resolveChannel } from "./utils"
 
 const platform = { darwin: "darwin", win32: "windows", linux: "linux" }[process.platform]
-const arch = { arm64: "arm64", x64: "amd64" }[process.arch]
-if (!platform || !arch) throw new Error(`Unsupported remote helper build target: ${process.platform}-${process.arch}`)
+const targetArch = process.env.HAOLAB_REMOTE_ARCH || process.arch
+const arch = { arm64: "arm64", x64: "amd64" }[targetArch]
+if (!platform || !arch) throw new Error(`Unsupported remote helper build target: ${process.platform}-${targetArch}`)
 
 const directory = path.resolve(import.meta.dir, "../remote-helper")
 const output = path.join(
   directory,
   "bin",
-  `${process.platform}-${process.arch}`,
+  `${process.platform}-${targetArch}`,
   `haolab-remote${process.platform === "win32" ? ".exe" : ""}`,
 )
 mkdirSync(path.dirname(output), { recursive: true })

@@ -245,6 +245,27 @@ describe("sidebar cursor feed", () => {
     expect(store.session.map((item) => item.id)).toEqual(["ses_old", "ses_child"])
   })
 
+  test("resnapshots after a database restore makes the cached cursor newer than the server", async () => {
+    const urls: URL[] = []
+    const client = createOpencodeClient({ baseUrl: "http://sessions.test", fetch: Object.assign(async (request: RequestInfo | URL) => {
+      const url = new URL(request instanceof Request ? request.url : String(request))
+      urls.push(url)
+      if (url.pathname.endsWith("changes")) return Response.json({ name: "Invalid cursor" }, { status: 400 })
+      return Response.json({ cursor: 5, total: 1, items: [title("ses_restored")], next: null })
+    }, { preconnect: fetch.preconnect }) })
+    const [store, setStore] = state()
+    expect(await loadSidebarFeed({ sdk: client, directory: "/work", cursor: "1200" })).toBe("expired")
+    expect(store.session.map((item) => item.id)).toContain("ses_old")
+    const fresh = await loadSidebarFeed({ sdk: client, directory: "/work" })
+    expect(fresh && fresh !== "expired" && fresh.kind).toBe("snapshot")
+    if (!fresh || fresh === "expired" || fresh.kind !== "snapshot") return
+    applySidebarFeed({ store, setStore, feed: fresh, clearTodo: () => undefined })
+    expect(store.session.find((item) => item.id === "ses_restored")?.title).toBe("ses_restored")
+    expect(store.session.some((item) => item.id === "ses_old")).toBe(false)
+    expect(urls.map((url) => url.pathname)).toEqual(["/session/sidebar/changes", "/session/sidebar/snapshot"])
+    expect(urls[1].searchParams.has("cursor")).toBe(false)
+  })
+
   test("an expired older page leaves cached titles intact until a new snapshot succeeds", async () => {
     const urls: URL[] = []
     const client = createOpencodeClient({ baseUrl: "http://sessions.test", fetch: Object.assign(async (request: RequestInfo | URL) => {

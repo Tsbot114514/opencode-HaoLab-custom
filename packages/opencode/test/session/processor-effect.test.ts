@@ -431,52 +431,68 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
   ),
 )
 
-it.live("session.processor effect tests reset reasoning state across retries", () =>
-  provideTmpdirServer(
-    ({ dir, llm }) =>
-      Effect.gen(function* () {
-        const { processors, session, provider } = yield* boot()
+for (const kind of ["reason", "text"] as const) {
+  it.live(`session.processor resets retry count and status after ${kind} output resumes`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
 
-        yield* llm.push(reply().reason("one").reset(), reply().reason("two").stop())
+          const gate = defer<void>()
+          yield* llm.error(503, { error: "boom" })
+          yield* llm.push(reply()[kind]("one").wait(gate.promise).reset(), reply()[kind]("two").stop())
 
-        const chat = yield* session.create({})
-        const parent = yield* user(chat.id, "reason")
-        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
-        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-        const handle = yield* processors.create({
-          assistantMessage: msg,
-          sessionID: chat.id,
-          model: mdl,
-        })
-
-        const value = yield* handle.process({
-          user: {
-            id: parent.id,
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "reason")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const states: Array<string | number> = []
+          const bus = yield* Bus.Service
+          const off = yield* bus.subscribeCallback(SessionStatus.Event.Status, (evt) => {
+            if (evt.properties.sessionID !== chat.id) return
+            states.push(
+              evt.properties.status.type === "retry" ? evt.properties.status.attempt : evt.properties.status.type,
+            )
+            if (evt.properties.status.type === "busy" && states.includes(1)) gate.resolve()
+          })
+          const handle = yield* processors.create({
+            assistantMessage: msg,
             sessionID: chat.id,
-            role: "user",
-            time: parent.time,
-            agent: parent.agent,
-            model: { providerID: ref.providerID, modelID: ref.modelID },
-          } satisfies MessageV2.User,
-          sessionID: chat.id,
-          model: mdl,
-          agent: agent(),
-          system: [],
-          messages: [{ role: "user", content: "reason" }],
-          tools: {},
-        })
+            model: mdl,
+          })
 
-        const parts = MessageV2.parts(msg.id)
-        const reasoning = parts.filter((part): part is MessageV2.ReasoningPart => part.type === "reasoning")
+          const value = yield* handle.process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies MessageV2.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "reason" }],
+            tools: {},
+          })
 
-        expect(value).toBe("continue")
-        expect(yield* llm.calls).toBe(2)
-        expect(reasoning.some((part) => part.text === "two")).toBe(true)
-        expect(reasoning.some((part) => part.text === "onetwo")).toBe(false)
-      }),
-    { config: (url) => providerCfg(url) },
-  ),
-)
+          const parts = MessageV2.parts(msg.id)
+          const output = parts.filter((part) => part.type === "reasoning" || part.type === "text")
+          off()
+
+          expect(value).toBe("continue")
+          expect(yield* llm.calls).toBe(3)
+          expect(output.some((part) => part.text === "two")).toBe(true)
+          expect(output.some((part) => part.text === "onetwo")).toBe(false)
+          expect(handle.message.error).toBeUndefined()
+          expect(states).toEqual(["busy", 1, "busy", 1, "busy"])
+        }),
+      { config: (url) => ({ ...providerCfg(url), retry: { maxAttempts: 1 } }) },
+    ),
+  )
+}
 
 it.live("session.processor effect tests do not retry unknown json errors", () =>
   provideTmpdirServer(
@@ -568,7 +584,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
   ),
 )
 
-it.live("session.processor effect tests publish retry status updates", () =>
+it.live("session.processor keeps retry status when the response has no output", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
@@ -615,7 +631,7 @@ it.live("session.processor effect tests publish retry status updates", () =>
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
         expect(states.filter((state) => state.type === "retry").map((state) => state.attempt)).toStrictEqual([1])
-        expect(states.filter((state) => state.type === "busy")).toHaveLength(2)
+        expect(states.filter((state) => state.type === "busy")).toHaveLength(1)
       }),
     { config: (url) => providerCfg(url) },
   ),

@@ -970,6 +970,29 @@ describe("session HttpApi", () => {
   )
 
   it.instance(
+    "reconciles active roots when newer archived sessions fill the window",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const svc = yield* Session.Service
+        const active = yield* createSession({ title: "active" })
+        const archived = yield* Effect.forEach([1, 2, 3], (index) => createSession({ title: `archived-${index}` }))
+        yield* Effect.forEach(archived, (item) => svc.setArchived({ sessionID: item.id, time: Date.now() }))
+        yield* Effect.sync(() => Database.use((db) => archived.forEach((item) =>
+          db.update(SessionTable).set({ time_updated: Date.now() + 60_000 }).where(eq(SessionTable.id, item.id)).run(),
+        )))
+        const result = yield* requestJson<{ upserts: Session.Info[]; limited: boolean }>(SessionPaths.reconcile, {
+          method: "POST",
+          headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+          body: JSON.stringify({ known: [], limit: 1 }),
+        })
+        expect(result.upserts.map((item) => item.id)).toEqual([active.id])
+        expect(result.limited).toBe(false)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
     "rejects unbounded reconciliation inputs",
     () =>
       Effect.gen(function* () {

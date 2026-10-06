@@ -187,6 +187,9 @@ export const Info = Schema.Struct({
     description:
       "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.",
   }),
+  subagent_depth: Schema.optional(NonNegativeInt).annotate({
+    description: "Maximum nested subagent depth (default: 1). Set to 0 to disable subagent launches.",
+  }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
   }),
@@ -289,7 +292,8 @@ export const Info = Schema.Struct({
     Schema.Struct({
       maxAttempts: Schema.optional(
         Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 })).annotate({
-          description: "Maximum automatic retries per model request (default: 5). Set to 0 to disable retries.",
+          description:
+            "Maximum consecutive automatic retries without model output (default: 5). Resets when output resumes. Set to 0 to disable retries.",
         }),
       ),
     }),

@@ -16,7 +16,7 @@ export async function loadSidebarFeed(input: { sdk: OpencodeClient; directory: s
   const unavailable = (result: { response: Response; data?: unknown }) =>
     result.response.status === 404 || (result.response.ok &&
       (!result.response.headers.get("content-type")?.includes("json") || typeof result.data === "string"))
-  const request = async <T>(call: () => Promise<{ response: Response; data?: T; error?: unknown }>) => {
+  const request = async <T>(call: () => Promise<{ response: Response; data?: T; error?: unknown }>, resetOnBadCursor = false) => {
     const result = await call().catch((error: unknown) => {
       if (error instanceof Error && error.message === "Request is not supported by this version of OpenCode Server (Server responded with text/html)") return undefined
       throw error
@@ -24,7 +24,7 @@ export async function loadSidebarFeed(input: { sdk: OpencodeClient; directory: s
     if (!result) return undefined
     if (!result.response) throw result.error ?? new Error("Sidebar feed unavailable")
     if (unavailable(result)) return undefined
-    if (result.response.status === 410) return "expired" as const
+    if (result.response.status === 410 || (resetOnBadCursor && result.response.status === 400)) return "expired" as const
     if (!result.response.ok || !result.data) throw result.error ?? new Error("Invalid sidebar feed response")
     return result.data
   }
@@ -33,7 +33,7 @@ export async function loadSidebarFeed(input: { sdk: OpencodeClient; directory: s
     let cursor = Number(input.cursor)
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("Invalid sidebar cursor")
     for (;;) {
-      const page = await request(() => input.sdk.session.sidebarChanges({ directory: input.directory, limit, cursor: String(cursor) }, { throwOnError: false }))
+      const page = await request(() => input.sdk.session.sidebarChanges({ directory: input.directory, limit, cursor: String(cursor) }, { throwOnError: false }), true)
       if (!page || page === "expired") return page
       if (!Array.isArray(page.changes) || typeof page.cursor !== "number" || !Number.isSafeInteger(page.cursor) || page.cursor < cursor ||
         typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0 || typeof page.more !== "boolean" ||

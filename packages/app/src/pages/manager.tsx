@@ -31,6 +31,7 @@ import { compareMessages } from "@/utils/message-order"
 const managerSessionID = "ses_manager_agent"
 const managerTitle = "管理agent"
 const defaultProxyPrefix = "http://127.0.0.1:"
+const barkGetTemplate = "curl -X GET 'https://api.day.app/{{token}}/{{title}}/{{body}}'"
 
 type ProxyConfig = {
   enabled: boolean
@@ -136,6 +137,7 @@ export default function ManagerPage() {
   })
   const [bark, setBark] = createStore({
     key: "",
+    endpoint: "",
     configured: false,
     loading: false,
     saving: false,
@@ -242,14 +244,14 @@ export default function ManagerPage() {
   createEffect(() => {
     if (!remote.open || !server.current) return
     const key = server.key
-    setBark({ configured: false, loading: true, message: "" })
+    setBark({ configured: false, endpoint: "", loading: true, saving: false, message: "" })
     void sdk.client.global.notifications.bark.get({ throwOnError: false }).then((result) => {
       if (server.key !== key || !remote.open) return
       if (!result.response.ok || typeof result.data?.configured !== "boolean") {
         setBark("message", "当前服务器暂不支持 Bark 设置，请更新服务器版本。")
         return
       }
-      setBark("configured", result.data.configured)
+      setBark({ configured: result.data.configured, endpoint: result.data.endpoint ?? "" })
     }).catch(() => {
       if (server.key === key && remote.open) setBark("message", "无法读取当前服务器的 Bark 设置。")
     }).finally(() => {
@@ -271,13 +273,29 @@ export default function ManagerPage() {
     }
   }
 
+  const saveBarkEndpoint = async (template = bark.endpoint) => {
+    if (bark.saving || !template.trim()) return
+    const key = server.key
+    setBark({ saving: true, message: "" })
+    try {
+      const result = await sdk.client.global.notifications.bark.update({ endpoint: template.trim() }, { throwOnError: false })
+      if (server.key !== key) return
+      if (!result.response.ok || !result.data?.endpoint) throw new Error("Bark request configuration failed")
+      setBark({ endpoint: result.data.endpoint, configured: result.data.configured, message: "推送请求已保存到当前服务器。" })
+    } catch {
+      if (server.key === key) setBark("message", "保存失败，请检查 curl 命令或服务器版本。支持 GET、POST、-H、-d 和 -L。")
+    } finally {
+      if (server.key === key) setBark("saving", false)
+    }
+  }
+
   const clearBark = async () => {
     if (bark.saving) return
     setBark({ saving: true, message: "" })
     try {
       const result = await sdk.client.global.notifications.bark.delete({ throwOnError: false })
-      if (!result.response.ok || result.data?.configured !== false) throw new Error("Bark removal failed")
-      setBark({ key: "", configured: false, message: "已从当前服务器移除 Bark key。" })
+      if (!result.response.ok || typeof result.data?.configured !== "boolean") throw new Error("Bark removal failed")
+      setBark({ key: "", configured: result.data.configured, message: "已从当前服务器移除单独保存的 key。" })
     } catch {
       setBark("message", "移除失败，请检查服务器连接。")
     } finally {
@@ -290,7 +308,9 @@ export default function ManagerPage() {
     setBark({ saving: true, message: "" })
     try {
       const result = await sdk.client.global.notifications.bark.test({ throwOnError: false })
-      setBark("message", result.response.ok && result.data?.success ? "测试通知已发送。" : "发送失败，请检查 Bark key 和服务器网络。")
+      setBark("message", result.response.ok && result.data?.success ? "测试通知已发送。"
+        : result.response.ok && result.data?.reason === "rate_limit" ? "推送服务限制了发送频率，请稍后再试；反复点击测试也会占用额度。"
+        : "发送失败，请检查 Bark key 和服务器网络。")
     } catch {
       setBark("message", "发送失败，请检查服务器连接。")
     } finally {
@@ -481,8 +501,26 @@ export default function ManagerPage() {
       <div class="mt-4 border-t border-v2-border-border-base pt-4">
         <p class="text-12-medium text-v2-text-text-base">Bark 手机通知</p>
         <p class="mt-1 text-12-regular leading-5 text-v2-text-text-muted">
-          配置到当前选中的服务器（{server.name}）。该服务器在权限请求、交互提问和任务完成时直接推送；不包含会话正文。
+          配置到当前选中的服务器（{server.name}）。通知区分本轮完成、运行出错、中断、等待回答和请求权限，包含会话标题与短标识；不发送会话正文、命令或错误原文。
+          可粘贴 curl 请求；用 {'{{title}}'}、{'{{body}}'} 填入每次通知的内容。{'{{token}}'} 引用下方单独保存的 key，也可以直接粘贴含 token 的完整 curl。旧的纯 URL 配置继续按原 POST JSON 方式发送。
         </p>
+        <textarea
+          value={bark.endpoint}
+          onInput={(event) => setBark("endpoint", event.currentTarget.value)}
+          rows={3}
+          placeholder={barkGetTemplate}
+          aria-label="Bark 推送 curl 请求"
+          autocomplete="off"
+          class="mt-3 w-full resize-y rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep px-3 py-2 font-mono text-11-regular text-v2-text-text-base"
+        />
+        <div class="mt-2 flex flex-wrap gap-2">
+          <Button variant="secondary" size="small" disabled={bark.saving || bark.loading} onClick={() => void saveBarkEndpoint(barkGetTemplate)}>
+            使用 Bark GET 模板
+          </Button>
+          <Button variant="secondary" size="small" disabled={bark.saving || bark.loading || !bark.endpoint.trim()} onClick={() => void saveBarkEndpoint()}>
+            保存推送请求
+          </Button>
+        </div>
         <input
           type="password"
           value={bark.key}
@@ -504,7 +542,7 @@ export default function ManagerPage() {
           </Button>
         </div>
         <p class="mt-2 text-12-regular text-v2-text-text-muted">
-          {bark.loading ? "正在读取设置..." : bark.configured ? "当前服务器已配置 Bark。" : "当前服务器尚未配置 Bark。"}
+          {bark.loading ? "正在读取设置..." : bark.configured ? "当前服务器已配置通知。" : "当前服务器尚未配置可用的通知请求。"}
         </p>
         <Show when={bark.message}>
           <p role="status" class="mt-2 text-12-regular text-v2-text-text-muted">{bark.message}</p>

@@ -90,6 +90,8 @@ import type {
   GlobalNotificationsBarkSetResponses,
   GlobalNotificationsBarkTestErrors,
   GlobalNotificationsBarkTestResponses,
+  GlobalNotificationsBarkUpdateErrors,
+  GlobalNotificationsBarkUpdateResponses,
   GlobalProxyGetErrors,
   GlobalProxyGetResponses,
   GlobalProxyUpdateErrors,
@@ -635,6 +637,32 @@ export class Bark extends HeyApiClient {
       GlobalNotificationsBarkGetErrors,
       ThrowOnError
     >({ url: "/global/notifications/bark", ...options })
+  }
+
+  /**
+   * Set Bark push endpoint
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      endpoint?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "endpoint" }] }])
+    return (options?.client ?? this.client).patch<
+      GlobalNotificationsBarkUpdateResponses,
+      GlobalNotificationsBarkUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/global/notifications/bark",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
   }
 
   /**

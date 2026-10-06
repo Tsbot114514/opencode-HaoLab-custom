@@ -2,6 +2,7 @@ import { RequestError, type McpServer } from "@agentclientprotocol/sdk"
 import type { ACPSessionState } from "./types"
 import * as Log from "@opencode-ai/core/util/log"
 import type { OpencodeClient } from "@opencode-ai/sdk/v2"
+import { ModelID, ProviderID } from "../provider/schema"
 
 const log = Log.create({ service: "acp-session-manager" })
 
@@ -28,14 +29,12 @@ export class ACPSessionManager {
       .then((x) => x.data!)
 
     const sessionId = session.id
-    const resolvedModel = model
-
     const state: ACPSessionState = {
       id: sessionId,
       cwd,
       mcpServers,
       createdAt: new Date(),
-      model: resolvedModel,
+      model,
     }
     log.info("creating_session", { state })
 
@@ -47,7 +46,6 @@ export class ACPSessionManager {
     sessionId: string,
     cwd: string,
     mcpServers: McpServer[],
-    model?: ACPSessionState["model"],
   ): Promise<ACPSessionState> {
     const session = await this.sdk.session
       .get(
@@ -59,14 +57,19 @@ export class ACPSessionManager {
       )
       .then((x) => x.data!)
 
-    const resolvedModel = model
-
     const state: ACPSessionState = {
       id: sessionId,
       cwd,
       mcpServers,
       createdAt: new Date(session.time.created),
-      model: resolvedModel,
+      model: session.model
+        ? {
+            providerID: ProviderID.make(session.model.providerID),
+            modelID: ModelID.make(session.model.id),
+          }
+        : undefined,
+      variant: session.model?.variant,
+      modeId: session.agent,
     }
     log.info("loading_session", { state })
 

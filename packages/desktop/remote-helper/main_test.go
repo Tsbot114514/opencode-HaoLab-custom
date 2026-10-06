@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net"
@@ -187,7 +188,7 @@ func TestAuthAndRequestFiltering(t *testing.T) {
 	if len(header) != 1 || header.Get("Accept") != "text/event-stream" {
 		t.Fatalf("unsafe forwarded headers: %v", header)
 	}
-	for _, location := range []string{"https://attacker.example/", "//attacker.example/", "/?auth_token=secret"} {
+	for _, location := range []string{"https://attacker.example/", "//attacker.example/", "///attacker.example/", "/\\attacker.example/", "/?auth_token=secret"} {
 		resp := &http.Response{Header: http.Header{"Location": {location}}}
 		_ = safeRedirect(resp)
 		if resp.Header.Get("Location") != "" {
@@ -291,6 +292,100 @@ func TestBridgeCORSAndAuthentication(t *testing.T) {
 		if !authorized && resp.StatusCode != http.StatusUnauthorized || authorized && (resp.StatusCode != http.StatusOK || string(body) != "data: ok\n\n" || resp.Header.Get("Access-Control-Allow-Origin") != "oc://renderer") {
 			t.Errorf("request authenticated=%v: %d %q", authorized, resp.StatusCode, body)
 		}
+	}
+}
+
+func TestBridgeWebSocketTicket(t *testing.T) {
+	address := "127.0.0.1:41643"
+	called := 0
+	handler := bridgeHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		if r.URL.RawQuery != "ticket=sidecar" {
+			t.Errorf("forwarded bridge credential: %q", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}), address, "secret", "")
+	request := httptest.NewRequest(http.MethodPost, "/__haolab/ws-ticket", nil)
+	request.Host = address
+	request.SetBasicAuth("client", "secret")
+	issued := httptest.NewRecorder()
+	handler.ServeHTTP(issued, request)
+	if issued.Code != http.StatusOK || issued.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("failed to issue bridge ticket: %d %s", issued.Code, issued.Body.String())
+	}
+	var result struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &result); err != nil || len(result.Ticket) != 64 {
+		t.Fatal("invalid bridge ticket")
+	}
+	for index, path := range []string{
+		"/session?bridge_ticket=" + result.Ticket,
+		"/pty/pty-1/connect?ticket=sidecar&bridge_ticket=" + result.Ticket,
+		"/pty/pty-1/connect?ticket=sidecar&bridge_ticket=" + result.Ticket,
+	} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = address
+		r.Header.Set("Origin", "oc://renderer")
+		r.Header.Set("Upgrade", "websocket")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		expected := []int{http.StatusBadRequest, http.StatusSwitchingProtocols, http.StatusUnauthorized}[index]
+		if w.Code != expected {
+			t.Errorf("unexpected ticket response: %d, want %d", w.Code, expected)
+		}
+	}
+	if called != 1 {
+		t.Fatalf("expected one authenticated upgrade, got %d", called)
+	}
+	unauthorized := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/__haolab/ws-ticket", nil)
+	request.Host = address
+	handler.ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatal("issued ticket without local credentials")
+	}
+}
+
+func TestTrackedListenerClosesHijackedConnections(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked := trackConnections(ln)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\n\r\n"))
+	})}
+	go func() { _ = srv.Serve(tracked) }()
+	conn, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	_, _ = conn.Write([]byte("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"))
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	_ = srv.Close()
+	tracked.closeAll()
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := reader.ReadByte(); err == nil {
+		t.Fatal("hijacked connection survived shutdown")
+	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatal("hijacked connection was not closed")
 	}
 }
 

@@ -428,6 +428,7 @@ export type ListInput = {
   path?: string
   workspaceID?: WorkspaceID
   roots?: boolean
+  archived?: boolean
   start?: number
   search?: string
   limit?: number
@@ -1104,6 +1105,9 @@ function* listByProject(
   }
   if (input.roots) {
     conditions.push(isNull(SessionTable.parent_id))
+  }
+  if (input.archived === false) {
+    conditions.push(isNull(SessionTable.time_archived))
   }
   if (input.start) {
     conditions.push(gte(SessionTable.time_updated, input.start))

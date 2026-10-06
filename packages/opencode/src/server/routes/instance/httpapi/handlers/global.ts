@@ -14,7 +14,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
-import { BarkKeyInput, GlobalProxyUpdateInput, GlobalUpgradeInput } from "../groups/global"
+import { BarkEndpointInput, BarkKeyInput, GlobalProxyUpdateInput, GlobalUpgradeInput } from "../groups/global"
 
 const log = Log.create({ service: "server" })
 
@@ -168,17 +168,25 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handle("proxyGet", proxyGet)
       .handle("proxyUpdate", proxyUpdate)
       .handle("barkGet", () => Effect.promise(() => Bark.configured()))
-      .handle("barkSet", (ctx: { payload: typeof BarkKeyInput.Type }) =>
-        Effect.gen(function* () {
-          if (!(yield* Effect.promise(() => Bark.setKey(ctx.payload.key)))) {
-            return yield* new HttpApiError.BadRequest()
-          }
-          return { configured: true }
-        }),
-      )
-      .handle("barkDelete", () => Effect.promise(async () => {
-        await Bark.clearKey()
-        return { configured: false }
+       .handle("barkSet", (ctx: { payload: typeof BarkKeyInput.Type }) =>
+         Effect.gen(function* () {
+           if (!(yield* Effect.promise(() => Bark.setKey(ctx.payload.key)))) {
+             return yield* new HttpApiError.BadRequest()
+           }
+           return yield* Effect.promise(() => Bark.configured())
+         }),
+       )
+       .handle("barkUpdate", (ctx: { payload: typeof BarkEndpointInput.Type }) =>
+         Effect.gen(function* () {
+           if (!(yield* Effect.promise(() => Bark.setEndpoint(ctx.payload.endpoint)))) {
+             return yield* new HttpApiError.BadRequest()
+           }
+           return yield* Effect.promise(() => Bark.configured())
+         }),
+       )
+       .handle("barkDelete", () => Effect.promise(async () => {
+         await Bark.clearKey()
+         return Bark.configured()
       }))
       .handle("barkTest", () => Effect.promise(() => Bark.test()))
       .handle("dispose", dispose)

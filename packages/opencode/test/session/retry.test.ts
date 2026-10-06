@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Layer, Schedule, Schema } from "effect"
+import { Duration, Effect, Layer, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -142,6 +142,31 @@ describe("session.retry.delay", () => {
     }),
   )
 
+  it.live("policy resets attempts and backoff on progress but still limits consecutive failures", () =>
+    Effect.gen(function* () {
+      let progress = 0
+      const attempts: number[] = []
+      const error = apiError()
+      const step = yield* Schedule.toStep(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+          maxAttempts: 2,
+          progress: () => progress,
+          random: () => 0,
+          set: (info) => Effect.sync(() => attempts.push(info.attempt)),
+        }),
+      )
+      expect(Duration.toMillis((yield* step(0, error))[1])).toBe(2000)
+      expect(Duration.toMillis((yield* step(0, error))[1])).toBe(4000)
+      progress++
+      expect(Duration.toMillis((yield* step(0, error))[1])).toBe(2000)
+      expect(Duration.toMillis((yield* step(0, error))[1])).toBe(4000)
+      expect((yield* step(0, error).pipe(Effect.exit))._tag).toBe("Failure")
+      expect(attempts).toEqual([1, 2, 1, 2])
+    }),
+  )
+
   it.live("resettable policy restarts attempts after recovery", () =>
     Effect.gen(function* () {
       const attempts: number[] = []
@@ -231,6 +256,33 @@ describe("session.retry.retryable", () => {
     const msg = "Too many requests, please slow down"
     const error = wrap(msg)
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: msg })
+  })
+
+  test.each([
+    "network error",
+    "network-error",
+    "network_error",
+    "fetch failed",
+    "socket hang up",
+    "ECONNRESET",
+    "EAI_AGAIN",
+    "response timed out",
+    "temporarily at capacity",
+  ])("retries transient provider failure: %s", (message) => {
+    expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
+  })
+
+  test("retries API errors whose body describes a transient failure", () => {
+    const error = Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: "Request failed",
+        isRetryable: false,
+        statusCode: 400,
+        responseBody: '{"error":{"message":"Provider is temporarily at capacity"}}',
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Request failed" })
   })
 
   test("does not retry context overflow errors", () => {

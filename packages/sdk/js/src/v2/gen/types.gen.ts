@@ -1054,11 +1054,18 @@ export type ProviderConfig = {
     enterpriseUrl?: string
     setCacheKey?: boolean
     /**
-     * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
+     * Overall timeout in milliseconds for each request to this provider, including streamed generation. Default is 1200000 (20 minutes). Set to false to disable timeout.
      */
     timeout?: number | false
-    chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | undefined
+    /**
+     * Timeout in milliseconds waiting for provider response headers. Default is 300000 (5 minutes). Set to false to disable.
+     */
+    headerTimeout?: number | false
+    /**
+     * Timeout in milliseconds between streamed SSE chunks. Default is 300000 (5 minutes). Set to false to disable.
+     */
+    chunkTimeout?: number | false
+    [key: string]: unknown | string | boolean | number | false | number | false | number | false | undefined
   }
   models?: {
     [key: string]: {
@@ -1133,6 +1140,7 @@ export type McpLocalConfig = {
   environment?: {
     [key: string]: string
   }
+  cwd?: string
   enabled?: boolean
   timeout?: number
 }
@@ -1223,6 +1231,7 @@ export type Config = {
   model?: string
   small_model?: string
   default_agent?: string
+  subagent_depth?: number
   username?: string
   mode?: {
     build?: AgentConfig
@@ -1311,7 +1320,7 @@ export type Config = {
   }
   retry?: {
     /**
-     * Maximum automatic retries per model request (default: 5). Set to 0 to disable retries.
+     * Maximum consecutive automatic retries without model output (default: 5). Resets when output resumes. Set to 0 to disable retries.
      */
     maxAttempts?: number
   }
@@ -4215,6 +4224,7 @@ export type GlobalNotificationsBarkDeleteResponses = {
    */
   200: {
     configured: boolean
+    endpoint: string
   }
 }
 
@@ -4243,11 +4253,44 @@ export type GlobalNotificationsBarkGetResponses = {
    */
   200: {
     configured: boolean
+    endpoint: string
   }
 }
 
 export type GlobalNotificationsBarkGetResponse =
   GlobalNotificationsBarkGetResponses[keyof GlobalNotificationsBarkGetResponses]
+
+export type GlobalNotificationsBarkUpdateData = {
+  body?: {
+    endpoint: string
+  }
+  path?: never
+  query?: never
+  url: "/global/notifications/bark"
+}
+
+export type GlobalNotificationsBarkUpdateErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type GlobalNotificationsBarkUpdateError =
+  GlobalNotificationsBarkUpdateErrors[keyof GlobalNotificationsBarkUpdateErrors]
+
+export type GlobalNotificationsBarkUpdateResponses = {
+  /**
+   * Success
+   */
+  200: {
+    configured: boolean
+    endpoint: string
+  }
+}
+
+export type GlobalNotificationsBarkUpdateResponse =
+  GlobalNotificationsBarkUpdateResponses[keyof GlobalNotificationsBarkUpdateResponses]
 
 export type GlobalNotificationsBarkSetData = {
   body?: {
@@ -4273,6 +4316,7 @@ export type GlobalNotificationsBarkSetResponses = {
    */
   200: {
     configured: boolean
+    endpoint: string
   }
 }
 
@@ -4302,6 +4346,7 @@ export type GlobalNotificationsBarkTestResponses = {
    */
   200: {
     success: boolean
+    reason?: "rate_limit"
   }
 }
 

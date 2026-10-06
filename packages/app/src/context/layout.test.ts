@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
-import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./layout"
+import { createSessionKeyReader, ensureSessionKey, loadProjectSessionLists, pruneSessionKeys } from "./layout"
+
+test("project session lists start independently when one project stalls or fails", async () => {
+  let finishSlow!: () => void
+  const slow = new Promise<void>((resolve) => (finishSlow = resolve))
+  const started: string[] = []
+  const result = loadProjectSessionLists(["slow", "fast", "failed"], (directory) => {
+    started.push(directory)
+    if (directory === "slow") return slow
+    if (directory === "failed") return Promise.reject(new Error("failed"))
+    return Promise.resolve()
+  })
+
+  expect(started).toEqual(["slow", "fast", "failed"])
+  finishSlow()
+  expect((await result).map((entry) => entry.status)).toEqual(["fulfilled", "fulfilled", "rejected"])
+})
 
 describe("layout session-key helpers", () => {
   test("couples touch and scroll seed in order", () => {

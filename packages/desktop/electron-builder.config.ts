@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { Arch, type Configuration } from "electron-builder"
+import pkg from "./package.json"
 
 const execFileAsync = promisify(execFile)
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -32,6 +33,10 @@ const branding = process.env.OPENCODE_BRANDING === "haolab" ? "haolab" : undefin
 const getBase = (): Configuration => ({
   artifactName:
     branding === "haolab" ? "HaoLab-OpenCode-${os}-${arch}.${ext}" : "opencode-desktop-${os}-${arch}.${ext}",
+  releaseInfo:
+    branding === "haolab" && channel === "prod"
+      ? { releaseNotesFile: path.join(rootDir, "packages", "desktop", "release-notes", `${pkg.version}.md`) }
+      : undefined,
   directories: {
     output: "dist",
     buildResources: "resources",
@@ -51,11 +56,22 @@ const getBase = (): Configuration => ({
       filter: ["index.js", "index.d.ts", "build/Release/mac_window.node", "swift-build/**"],
     },
   ],
-  beforePack: (context) => {
-    if (context.electronPlatformName === process.platform && Arch[context.arch] === process.arch) return
-    throw new Error(
-      `Remote helper prebuild targets ${process.platform}-${process.arch}, but packaging targets ${context.electronPlatformName}-${Arch[context.arch]}. Run prebuild and package on a matching host/architecture.`,
-    )
+  beforePack: async (context) => {
+    const target = `${context.electronPlatformName}-${Arch[context.arch]}`
+    await access(
+      path.join(
+        rootDir,
+        "packages",
+        "desktop",
+        "remote-helper",
+        "bin",
+        target,
+        `haolab-remote${context.electronPlatformName === "win32" ? ".exe" : ""}`,
+      ),
+      constants.F_OK,
+    ).catch(() => {
+      throw new Error(`Remote helper missing for ${target}. Set HAOLAB_REMOTE_ARCH before running the desktop build.`)
+    })
   },
   afterPack: async (context) => {
     const platform = context.electronPlatformName

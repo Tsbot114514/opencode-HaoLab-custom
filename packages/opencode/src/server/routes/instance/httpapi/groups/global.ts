@@ -34,8 +34,9 @@ export const GlobalUpgradeInput = Schema.Struct({
 })
 
 export const BarkKeyInput = Schema.Struct({ key: Schema.String })
-const BarkStatus = Schema.Struct({ configured: Schema.Boolean })
-const BarkTestResult = Schema.Struct({ success: Schema.Boolean })
+export const BarkEndpointInput = Schema.Struct({ endpoint: Schema.String })
+const BarkStatus = Schema.Struct({ configured: Schema.Boolean, endpoint: Schema.String })
+const BarkTestResult = Schema.Struct({ success: Schema.Boolean, reason: Schema.optional(Schema.Literals(["rate_limit"])) })
 
 const GlobalUpgradeResult = Schema.Union([
   Schema.Struct({
@@ -148,6 +149,11 @@ export const GlobalApi = HttpApi.make("global").add(
         success: BarkStatus,
         error: HttpApiError.BadRequest,
       }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.set", summary: "Set Bark key" })),
+      HttpApiEndpoint.patch("barkUpdate", GlobalPaths.bark, {
+        payload: BarkEndpointInput,
+        success: BarkStatus,
+        error: HttpApiError.BadRequest,
+      }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.update", summary: "Set Bark push endpoint" })),
       HttpApiEndpoint.delete("barkDelete", GlobalPaths.bark, {
         success: BarkStatus,
       }).annotateMerge(OpenApi.annotations({ identifier: "global.notifications.bark.delete", summary: "Clear Bark key" })),

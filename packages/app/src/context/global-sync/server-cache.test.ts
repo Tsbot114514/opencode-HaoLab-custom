@@ -9,6 +9,16 @@ const connection = (password: string): ServerConnection.Any => ({
 })
 
 describe("server display cache", () => {
+  test("reuses the cache across identical sidecar status polls and replaces it when the address changes", () => {
+    const conn: ServerConnection.Sidecar = {
+      type: "sidecar", variant: "base",
+      http: { url: "http://127.0.0.1:4096", username: "opencode", password: "secret" },
+    }
+    const snapshot = serverDisplayCache("sidecar", conn)
+    expect(serverDisplayCache("sidecar", { ...conn, http: { ...conn.http } })).toBe(snapshot)
+    expect(serverDisplayCache("sidecar", { ...conn, http: { ...conn.http, url: "http://127.0.0.1:4097" } })).not.toBe(snapshot)
+  })
+
   test("isolates server keys and credential changes without retaining secrets in snapshots", () => {
     const a = connection("secret-a")
     const first = serverDisplayCache("server-a", a)!

@@ -89,7 +89,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       const route = yield* WorkspaceRouteContext
       const directory = ctx.query.directory ?? route.directory
-      const rows = yield* session.list({ directory, directoryOnly: true, roots: true, limit: ctx.payload.limit + 1 })
+      const rows = yield* session.list({ directory, directoryOnly: true, roots: true, archived: false, limit: ctx.payload.limit + 1 })
       const limited = rows.length > ctx.payload.limit
       const current = rows.slice(0, ctx.payload.limit)
       const known = new Map(ctx.payload.known.map((item) => [item.id, item]))
