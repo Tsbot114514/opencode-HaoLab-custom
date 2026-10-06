@@ -39,6 +39,7 @@ import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { usePrompt } from "@/context/prompt"
 import { useSDK } from "@/context/sdk"
+import { mobileCache } from "@/context/server"
 import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
@@ -75,6 +76,7 @@ const emptyFollowups: FollowupItem[] = []
 type ChangeMode = "git" | "branch" | "turn"
 type VcsMode = "git" | "branch"
 const USE_NEW_SESSION_DESIGN = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
+const mobileWebView = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
 
 type SessionHistoryWindowInput = {
   sessionID: () => string | undefined
@@ -122,6 +124,7 @@ function createSessionHistoryLoader(input: SessionHistoryWindowInput) {
     const beforeVisible = input.visibleUserMessages().length
     let loaded = input.loaded()
     let growth = 0
+    let added = 0
 
     cancelShiftReset()
     setState("shift", true)
@@ -132,15 +135,17 @@ function createSessionHistoryLoader(input: SessionHistoryWindowInput) {
 
       const nextLoaded = input.loaded()
       const raw = nextLoaded - loaded
+      added = raw
       loaded = nextLoaded
       growth = input.visibleUserMessages().length - beforeVisible
 
+      if (mobileWebView) break
       if (growth > 0) break
       if (raw <= 0) break
       if (!input.historyMore()) break
     }
 
-    if (growth > 0) {
+    if (growth > 0 || (mobileWebView && added > 0)) {
       scheduleShiftReset()
       return
     }
@@ -151,6 +156,7 @@ function createSessionHistoryLoader(input: SessionHistoryWindowInput) {
   const loadAndReveal = () => fetchOlderMessages()
 
   const onScrollerScroll = () => {
+    if (mobileWebView) return
     if (!input.userScrolled()) return
     const el = input.scroller()
     if (!el) return
@@ -190,6 +196,7 @@ export default function Page() {
   const dialog = useDialog()
   const language = useLanguage()
   const sdk = useSDK()
+  const cachedTranscript = mobileWebView ? mobileCache()?.transcript : undefined
   const settings = useSettings()
   const prompt = usePrompt()
   const comments = useComments()
@@ -261,7 +268,7 @@ export default function Page() {
     ),
   )
 
-  const isDesktop = createMediaQuery("(min-width: 768px)")
+  const isDesktop = mobileWebView ? () => false : createMediaQuery("(min-width: 768px)")
   const size = createSizing()
   const isV2NewSessionPage = () => import.meta.env.VITE_OPENCODE_CHANNEL === "prod" || !params.id
   const desktopReviewOpen = createMemo(() => isDesktop() && !!params.id && view().reviewPanel.opened())
@@ -296,6 +303,7 @@ export default function Page() {
   }
 
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
+  const transcriptError = createMemo(() => (mobileWebView && params.id ? sync.session.error(params.id) : undefined))
   const isChildSession = createMemo(() => !!info()?.parentID)
   const diffs = createMemo(() => (params.id ? list(sync.data.session_diff[params.id]) : []))
   const canReview = createMemo(() => !!sync.project)
@@ -315,6 +323,11 @@ export default function Page() {
     const id = params.id
     if (!id) return true
     return sync.data.message[id] !== undefined
+  })
+  const offlineTranscript = createMemo(() => {
+    if (!mobileWebView || messagesReady()) return
+    if (cachedTranscript?.directory !== sdk.directory || cachedTranscript.sessionID !== params.id) return
+    return cachedTranscript
   })
   const historyMore = createMemo(() => {
     const id = params.id
@@ -382,6 +395,30 @@ export default function Page() {
     newSessionWorktree: "main",
     deferRender: false,
   })
+
+  if (mobileWebView) {
+    const owner = Symbol("session-mobile-header")
+    createEffect(() => {
+      if (!params.id) return layout.mobileHeader.clear(owner)
+      layout.mobileHeader.register(owner, {
+        id: params.id,
+        title: info()?.title ?? "",
+        currentTab: store.mobileTab,
+        onTabChange: (tab) => setStore("mobileTab", tab),
+      })
+    })
+    onCleanup(() => layout.mobileHeader.clear(owner))
+  }
+
+  createEffect(
+    on(
+      () => params.id,
+      (id, previous) => {
+        if (mobileWebView && id !== previous) setStore("mobileTab", "session")
+      },
+      { defer: true },
+    ),
+  )
 
   const [followup, setFollowup] = persisted(
     Persist.workspace(sdk.directory, "followup", ["followup.v1"]),
@@ -620,6 +657,12 @@ export default function Page() {
 
   const hasScrollGesture = () => Date.now() - ui.scrollGesture < scrollGestureWindowMs
 
+  createEffect(() => {
+    if (!mobileWebView || !location.hash) return
+    // A hash seek must not inherit a recent wheel and clear itself as a return to the bottom.
+    setUi("scrollGesture", 0)
+  })
+
   const [sessionSync] = createResource(
     () => [sdk.directory, params.id] as const,
     ([directory, id]) => {
@@ -652,7 +695,8 @@ export default function Page() {
         }, 0)
       })
 
-      return sync.session.sync(id)
+      const request = sync.session.sync(id)
+      return mobileWebView ? request.catch(() => undefined) : request
     },
   )
 
@@ -1283,6 +1327,7 @@ export default function Page() {
   })
 
   fill = () => {
+    if (mobileWebView) return
     if (fillFrame !== undefined) return
 
     fillFrame = requestAnimationFrame(() => {
@@ -1711,23 +1756,29 @@ export default function Page() {
   return (
     <div class="relative bg-background-base size-full overflow-hidden flex flex-col">
       {sessionSync() ?? ""}
-      <SessionHeader />
+      <SessionHeader
+        mobileTab={mobileWebView && !!params.id ? store.mobileTab : undefined}
+        onMobileTabChange={(tab) => {
+          setStore("mobileTab", tab)
+          layout.mobileNavigation.collapse()
+        }}
+      />
       <div class="flex-1 min-h-0 flex flex-col md:flex-row">
-        <Show when={!isDesktop() && !!params.id}>
+        <Show when={!mobileWebView && !isDesktop() && !!params.id}>
           <Tabs value={store.mobileTab} class="h-auto">
-            <Tabs.List>
+            <Tabs.List class="!h-9">
               <Tabs.Trigger
                 value="session"
-                class="!w-1/2 !max-w-none"
-                classes={{ button: "w-full" }}
+                class="!w-1/2 !max-w-none !text-sm"
+                classes={{ button: "w-full h-full !px-2 !py-0" }}
                 onClick={() => setStore("mobileTab", "session")}
               >
                 {language.t("session.tab.session")}
               </Tabs.Trigger>
               <Tabs.Trigger
                 value="changes"
-                class="!w-1/2 !max-w-none !border-r-0"
-                classes={{ button: "w-full" }}
+                class="!w-1/2 !max-w-none !border-r-0 !text-sm"
+                classes={{ button: "w-full h-full !px-2 !py-0" }}
                 onClick={() => setStore("mobileTab", "changes")}
               >
                 {hasReview()
@@ -1756,12 +1807,12 @@ export default function Page() {
                   {reviewContent({
                     diffStyle: "unified",
                     classes: {
-                      root: "pb-8",
-                      header: "px-4",
-                      container: "px-4",
+                      root: "pb-4",
+                      header: "px-2",
+                      container: "px-2",
                     },
-                    loadingClass: "px-4 py-4 text-text-weak",
-                    emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
+                    loadingClass: "px-2 py-2 text-text-weak",
+                    emptyClass: "h-full pb-8 flex flex-col items-center justify-center text-center gap-3",
                   })}
                 </div>
               </Match>
@@ -1791,12 +1842,46 @@ export default function Page() {
                       if (root) scheduleScrollState(root)
                     }}
                     historyShift={historyLoader.shift()}
+                    mobileHistory={mobileWebView}
+                    mobileHeader={mobileWebView && !isDesktop()}
+                    historyMore={historyMore()}
+                    historyLoading={historyLoading()}
+                    onLoadHistory={historyLoader.loadAndReveal}
                     userMessages={historyLoader.userMessages()}
+                    revertMessageID={revertMessageID()}
                     anchor={anchor}
                     setRevealMessage={(fn) => {
                       revealMessage = fn
                     }}
                   />
+                </Show>
+                <Show when={offlineTranscript()}>
+                  {(transcript) => (
+                    <div class="h-full overflow-y-auto px-4 py-5 text-text-base" aria-label="Cached transcript">
+                      <p class="text-sm text-text-weak mb-5">
+                        {language.locale().startsWith("zh")
+                          ? "本地缓存 · 正在同步最新消息（只读）"
+                          : "Cached messages · Syncing latest (read-only)"}
+                      </p>
+                      <div class="flex flex-col gap-5 max-w-3xl mx-auto">
+                        {transcript().messages.map((message) => (
+                          <div class="rounded-lg bg-background-base p-4">
+                            <div class="text-sm font-medium text-text-weak mb-2">
+                              {message.role === "user"
+                                ? language.locale().startsWith("zh") ? "我" : "You"
+                                : language.locale().startsWith("zh") ? "助手" : "Assistant"}
+                            </div>
+                            <p class="whitespace-pre-wrap break-words text-base leading-relaxed">{message.text}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </Show>
+                <Show when={mobileWebView && !messagesReady() && !offlineTranscript() && !transcriptError()}>
+                  <div role="status" class="flex h-full items-center justify-center px-5 text-sm text-text-weak">
+                    {language.locale().startsWith("zh") ? "正在读取会话消息..." : "Loading session messages..."}
+                  </div>
                 </Show>
               </Match>
               <Match when={true}>
@@ -1808,6 +1893,29 @@ export default function Page() {
               </Match>
             </Switch>
           </div>
+
+          <Show when={!mobileChanges() && transcriptError()}>
+            {(error) => (
+              <div role="status" class="flex shrink-0 items-center gap-3 px-4 py-3 text-sm text-text-weak">
+                <p class="min-w-0 flex-1 break-words">
+                  {language.locale().startsWith("zh") ? "会话消息读取失败：" : "Unable to load session messages: "}
+                  {error()}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="small"
+                  class="shrink-0"
+                  onClick={() => {
+                    const id = params.id
+                    if (!id) return
+                    void sync.session.sync(id, { force: true }).catch(() => undefined)
+                  }}
+                >
+                  {language.locale().startsWith("zh") ? "重试" : "Retry"}
+                </Button>
+              </div>
+            )}
+          </Show>
 
           <Show when={params.id || !USE_NEW_SESSION_DESIGN}>{composerRegion("dock")}</Show>
 

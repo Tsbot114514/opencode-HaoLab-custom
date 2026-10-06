@@ -132,6 +132,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const permission = usePermission()
   const language = useLanguage()
   const platform = usePlatform()
+  const mobile = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
   const { params, tabs, view } = useSessionLayout()
   let editorRef!: HTMLDivElement
   let fileInputRef: HTMLInputElement | undefined
@@ -175,11 +176,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   }
 
+  const scrollFrames = new Set<number>()
+  onCleanup(() => scrollFrames.forEach(cancelAnimationFrame))
   const queueScroll = (count = 2) => {
-    requestAnimationFrame(() => {
+    if (mobile) {
+      scrollFrames.forEach(cancelAnimationFrame)
+      scrollFrames.clear()
+    }
+    const frame = requestAnimationFrame(() => {
+      scrollFrames.delete(frame)
       scrollCursorIntoView()
       if (count > 1) queueScroll(count - 1)
     })
+    scrollFrames.add(frame)
   }
 
   const activeFileTab = createSessionTabs({
@@ -552,6 +561,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const isImeComposing = (event: KeyboardEvent) => event.isComposing || composing() || event.keyCode === 229
 
   const handleBlur = () => {
+    prompt.flush()
     closePopover()
     setComposing(false)
   }
@@ -1116,6 +1126,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     onQueue: props.onQueue,
     onAbort: props.onAbort,
     onSubmit: props.onSubmit,
+    dismissKeyboard: () => {
+      if (mobile) editorRef.blur()
+    },
   })
 
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -1264,6 +1277,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault()
       if (event.repeat) return
+      if (
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        window.matchMedia("(hover: none) and (pointer: coarse)").matches
+      ) {
+        addPart({ type: "text", content: "\n", start: 0, end: 0 })
+        return
+      }
       if (
         working() &&
         prompt
@@ -1461,7 +1483,11 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 editorRef?.focus()
               }}
             >
-              <div class="relative max-h-[180px] overflow-y-auto no-scrollbar" ref={(el) => (scrollRef = el)}>
+              <div
+                data-slot="prompt-scroll"
+                class="relative max-h-[180px] overflow-y-auto no-scrollbar"
+                ref={(el) => (scrollRef = el)}
+              >
                 <div
                   data-component="prompt-input"
                   ref={(el) => {
@@ -1614,6 +1640,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
               }}
             >
               <div
+                data-slot="prompt-scroll"
                 class="relative max-h-[240px] overflow-y-auto no-scrollbar"
                 ref={(el) => (scrollRef = el)}
                 style={{ "scroll-padding-bottom": space }}

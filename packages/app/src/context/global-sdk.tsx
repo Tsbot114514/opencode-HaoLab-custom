@@ -2,7 +2,9 @@ import type { Event } from "@opencode-ai/sdk/v2/client"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { makeEventListener } from "@solid-primitives/event-listener"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createEffect, onCleanup, onMount, untrack } from "solid-js"
+import { createStore } from "solid-js/store"
+import { abortable, createMobileReadTransport } from "@/utils/mobile-request"
 import { createSdkForServer } from "@/utils/server"
 import { useLanguage } from "./language"
 import { usePlatform } from "./platform"
@@ -17,7 +19,17 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     const language = useLanguage()
     const server = useServer()
     const platform = usePlatform()
+    const mobile = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
     const abort = new AbortController()
+    const [recovery, setRecovery] = createStore({ epoch: 0, reachable: server.connection.state() === "connected" })
+    const available = () => !mobile || (recovery.reachable && server.connection.active() && server.connection.state() !== "offline")
+    const reads = mobile ? createMobileReadTransport(platform.fetch ?? globalThis.fetch, available) : undefined
+    let connection = untrack(() => ({ revision: server.connection.revision(), blocked: !server.connection.active() || server.connection.state() === "offline" }))
+    const invalidateReads = () => {
+      if (!reads) return
+      reads.invalidate()
+      setRecovery("epoch", (epoch) => epoch + 1)
+    }
 
     const eventFetch = (() => {
       if (!platform.fetch || !server.current) return
@@ -35,7 +47,10 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
 
     const eventSdk = createSdkForServer({
       signal: abort.signal,
-      fetch: eventFetch,
+      fetch: mobile ? Object.assign((input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        return abortable(request.signal, () => (eventFetch ?? globalThis.fetch)(request))
+      }, { preconnect: eventFetch?.preconnect ?? globalThis.fetch.preconnect }) : eventFetch,
       server: currentServer.http,
     })
     const emitter = createGlobalEmitter<{
@@ -106,7 +121,16 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     let attempt: AbortController | undefined
     let run: Promise<void> | undefined
     let started = false
-    const HEARTBEAT_TIMEOUT_MS = 15_000
+    // Mobile permits three missed ten-second protocol heartbeats, including comment frames.
+    const HEARTBEAT_TIMEOUT_MS = mobile ? 30_000 : 15_000
+    let streamRevision = 0
+    let failures = 0
+    let wake: (() => void) | undefined
+    const pause = (ms: number) => mobile ? new Promise<void>((resolve) => {
+      const done = () => { clearTimeout(timer); wake = undefined; resolve() }
+      const timer = setTimeout(done, ms)
+      wake = done
+    }) : wait(ms)
     let lastEventAt = Date.now()
     let heartbeat: ReturnType<typeof setTimeout> | undefined
     const resetHeartbeat = () => {
@@ -128,15 +152,33 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
       run = (async () => {
         // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
         while (!abort.signal.aborted && started) {
+          if (!available()) {
+            await pause(30_000)
+            continue
+          }
           attempt = new AbortController()
+          const controller = attempt
+          const revision = streamRevision
+          const connectedAt = Date.now()
           lastEventAt = Date.now()
           const onAbort = () => {
-            attempt?.abort()
+            controller.abort()
           }
           abort.signal.addEventListener("abort", onAbort)
+          // Bound header acquisition too; the generated stream starts fetching on iteration.
+          if (mobile) resetHeartbeat()
           try {
             const events = await eventSdk.global.event({
               signal: attempt.signal,
+              sseDefaultRetryDelay: mobile ? 1000 : undefined,
+              sseMaxRetryAttempts: mobile ? 0 : undefined,
+              onSseEvent: mobile ? (frame) => {
+                if (controller.signal.aborted) return
+                resetHeartbeat()
+                const handshake = frame.data !== null && typeof frame.data === "object" && "payload" in frame.data &&
+                  (frame.data.payload as { type?: string } | undefined)?.type === "server.connected"
+                if (!handshake && Date.now() - connectedAt >= 10_000) failures = 0
+              } : undefined,
               onSseError: (error) => {
                 if (aborted(error)) return
                 if (streamErrorLogged) return
@@ -151,6 +193,7 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
             let yielded = Date.now()
             resetHeartbeat()
             for await (const event of events.stream) {
+              if (attempt.signal.aborted) break
               resetHeartbeat()
               streamErrorLogged = false
               const directory = event.directory ?? "global"
@@ -196,7 +239,9 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
           }
 
           if (abort.signal.aborted || !started) return
-          await wait(RECONNECT_DELAY_MS)
+          if (mobile && revision !== streamRevision) continue
+          const delay = mobile ? Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000) * (0.75 + Math.random() * 0.25) : RECONNECT_DELAY_MS
+          await pause(delay)
         }
       })().finally(() => {
         run = undefined
@@ -209,11 +254,46 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
       started = false
       attempt?.abort()
       clearHeartbeat()
+      wake?.()
     }
+
+    const reconnect = () => {
+      streamRevision++
+      failures = 0
+      attempt?.abort()
+      wake?.()
+      if (!started) return start()
+      return run
+    }
+    createEffect(() => {
+      if (!mobile) return
+      const revision = server.connection.revision()
+      const state = server.connection.state()
+      const blocked = !server.connection.active() || state === "offline"
+      const changed = revision !== connection.revision || (blocked && !connection.blocked)
+      const resumed = connection.blocked && !blocked
+      const reachable = untrack(() => recovery.reachable)
+      connection = { revision, blocked }
+      if (changed || blocked) setRecovery("reachable", false)
+      if (!blocked && state === "connected") setRecovery("reachable", true)
+      if (changed) {
+        invalidateReads()
+        streamRevision++
+        failures = 0
+        attempt?.abort()
+        wake?.()
+        // Events buffered before a genuine recovery boundary are obsolete.
+        queue.length = 0
+        coalesced.clear()
+        staleDeltas.clear()
+      }
+      if (resumed || (!reachable && !blocked && state === "connected")) wake?.()
+    })
 
     onMount(() => {
       makeEventListener(document, "visibilitychange", () => {
         if (document.visibilityState !== "visible") return
+        if (mobile) return
         if (!started) return
         if (Date.now() - lastEventAt < HEARTBEAT_TIMEOUT_MS) return
         attempt?.abort()
@@ -223,12 +303,13 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     onCleanup(() => {
       stop()
       abort.abort()
+      reads?.invalidate()
       flush()
     })
 
     const sdk = createSdkForServer({
       server: server.current.http,
-      fetch: platform.fetch,
+      fetch: reads?.fetch ?? platform.fetch,
       throwOnError: true,
     })
 
@@ -238,17 +319,24 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     return {
       url: currentServer.http.url,
       client: sdk,
+      recovery: {
+        epoch: () => recovery.epoch,
+        signal: () => reads?.signal(),
+        available,
+        invalidate: invalidateReads,
+      },
       event: {
         on: emitter.on.bind(emitter),
         listen: emitter.listen.bind(emitter),
         start,
+        reconnect,
       },
       createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
         const s = server.current
         if (!s) throw new Error(language.t("error.globalSDK.serverNotAvailable"))
         return createSdkForServer({
           server: s.http,
-          fetch: platform.fetch,
+          fetch: reads?.fetch ?? platform.fetch,
           ...opts,
         })
       },

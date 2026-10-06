@@ -4,6 +4,13 @@ export const normalizeWheelDelta = (input: { deltaY: number; deltaMode: number; 
   return input.deltaY
 }
 
+export function mobileNavigationSwipe(total: number, delta: number) {
+  const next = total * delta > 0 ? total + delta : delta
+  if (next >= 32) return { remaining: 0, direction: "expand" as const }
+  if (next <= -32) return { remaining: 0, direction: "collapse" as const }
+  return { remaining: next, direction: undefined }
+}
+
 export const shouldMarkBoundaryGesture = (input: {
   delta: number
   scrollTop: number

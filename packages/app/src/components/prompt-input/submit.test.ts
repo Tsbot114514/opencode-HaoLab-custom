@@ -25,7 +25,7 @@ let params: { id?: string } = {}
 let selected = "/repo/worktree-a"
 let variant: string | undefined
 
-const promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
+let promptValue: Prompt = [{ type: "text", content: "ls", start: 0, end: 2 }]
 
 const clientFor = (directory: string) => {
   createdClients.push(directory)
@@ -202,6 +202,7 @@ beforeAll(async () => {
 })
 
 beforeEach(() => {
+  promptValue = [{ type: "text", content: "ls", start: 0, end: 2 }]
   createdClients.length = 0
   createdSessions.length = 0
   enabledAutoAccept.length = 0
@@ -341,5 +342,34 @@ describe("prompt submit worktree selection", () => {
 
     expect(storedSessions["/repo/worktree-a"]).toEqual([{ id: "session-1", title: "New session 1" }])
     expect(optimisticSeeded).toEqual([true])
+  })
+
+  test("dismisses the mobile keyboard only after a valid prompt is submitted", async () => {
+    params = { id: "session-1" }
+    let dismisses = 0
+    const submit = createPromptSubmit({
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      dismissKeyboard: () => { dismisses += 1 },
+    })
+
+    promptValue = [{ type: "text", content: "", start: 0, end: 0 }]
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+    expect(dismisses).toBe(0)
+
+    promptValue = [{ type: "text", content: "hello", start: 0, end: 5 }]
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+    expect(dismisses).toBe(1)
   })
 })

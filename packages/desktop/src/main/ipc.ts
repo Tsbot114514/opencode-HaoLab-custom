@@ -32,7 +32,7 @@ type Deps = {
   getDefaultServerUrl: () => Promise<string | null> | string | null
   setDefaultServerUrl: (url: string | null) => Promise<void> | void
   remoteStatus: () => Promise<RemoteStatus>
-  remoteCacheKeyCurrent: (status: RemoteStatus) => string | undefined
+  remoteCacheKeyCurrent: () => string | undefined
   remoteEnable: () => Promise<RemoteStatus>
   remoteSetAuthKey: (authKey: string) => Promise<RemoteStatus>
   remoteDisable: () => Promise<RemoteStatus>
@@ -101,15 +101,27 @@ export function registerIpcHandlers(deps: Deps) {
     return next
   }
   const clients = new WeakSet<Electron.WebContents>()
+  ipcMain.handle("transcript-open", (event: IpcMainInvokeEvent, scope: string) => {
+    if (!allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteCacheKeyCurrent)) return
+    if (!clients.has(event.sender)) {
+      clients.add(event.sender)
+      event.sender.once("destroyed", () => transcripts.release(event.sender.id))
+    }
+    return transcripts.open(scope, event.sender.id)
+  })
+  ipcMain.handle("transcript-read-page", (event: IpcMainInvokeEvent, scope: string, owner: string, directory: string, sessionID: string, before?: string) => {
+    if (!allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteCacheKeyCurrent)) return
+    return transcripts.readPage(scope, event.sender.id, owner, directory, sessionID, before)
+  })
   ipcMain.handle("transcript-acquire", (event: IpcMainInvokeEvent, scope: string, owner: string, directory: string, sessionID: string) =>
-    ordered(scope, async () => {
-      if (!(await allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+    (() => {
+      if (!allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteCacheKeyCurrent)) return
       return transcripts.acquire(scope, event.sender.id, owner, directory, sessionID)
-    }),
+    })(),
   )
   ipcMain.handle("transcript-mutate", (event: IpcMainInvokeEvent, scope: string, owner: string, operations: unknown) =>
     ordered(scope, async () => {
-      if (!(await allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+      if (!allowDisplayCacheKey("opencode.transcripts.dat", scope, deps.remoteCacheKeyCurrent)) return
       transcripts.mutate(scope, event.sender.id, owner, operations)
     }),
   )
@@ -159,7 +171,7 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("store-get", async (event: IpcMainInvokeEvent, name: string, key: string) => {
     if (!validStoreName(name)) return null
     if (name === "opencode.transcripts.dat") return ordered(key, async () => {
-      if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return null
+      if (!allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent)) return null
       if (!clients.has(event.sender)) {
         clients.add(event.sender)
         const client = event.sender.id
@@ -167,7 +179,7 @@ export function registerIpcHandlers(deps: Deps) {
       }
       return transcripts.read(key, event.sender.id)
     })
-    if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return null
+    if (!allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent)) return null
     try {
       const store = getStore(name)
       const value = store.get(key)
@@ -180,17 +192,17 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("store-set", async (_event: IpcMainInvokeEvent, name: string, key: string, value: string) => {
     if (!validStoreName(name) || name === "opencode.transcripts.dat") return
     if (name === "opencode.sidebar-display.dat" && (typeof value !== "string" || Buffer.byteLength(value) > 16 * 1024 * 1024)) return
-    if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+    if (!allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent)) return
     getStore(name).set(key, value)
   })
   ipcMain.handle("store-delete", async (_event: IpcMainInvokeEvent, name: string, key: string) => {
     if (!validStoreName(name)) return
     if (name === "opencode.transcripts.dat") return ordered(key, async () => {
-      if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+      if (!allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent)) return
       transcripts.delete(key)
       getStore(name).delete(key)
     })
-    if (!(await allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent))) return
+    if (!allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent)) return
     getStore(name).delete(key)
   })
   ipcMain.handle("store-clear", (_event: IpcMainInvokeEvent, name: string) => {
@@ -201,14 +213,12 @@ export function registerIpcHandlers(deps: Deps) {
     if (!validStoreName(name)) return []
     const store = getStore(name)
     const keys = Object.keys(store.store)
-    const allowed = await Promise.all(keys.map((key) => allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent)))
-    return keys.filter((_key, index) => allowed[index])
+    return keys.filter((key) => allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent))
   })
   ipcMain.handle("store-length", async (_event: IpcMainInvokeEvent, name: string) => {
     if (!validStoreName(name)) return 0
     const store = getStore(name)
-    const allowed = await Promise.all(Object.keys(store.store).map((key) => allowDisplayCacheKey(name, key, deps.remoteStatus, deps.remoteCacheKeyCurrent)))
-    return allowed.filter(Boolean).length
+    return Object.keys(store.store).filter((key) => allowDisplayCacheKey(name, key, deps.remoteCacheKeyCurrent)).length
   })
 
   ipcMain.handle(

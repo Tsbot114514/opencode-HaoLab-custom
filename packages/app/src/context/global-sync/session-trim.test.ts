@@ -56,4 +56,49 @@ describe("trimSessions", () => {
       "root-2",
     ])
   })
+
+  test("mobile policy keeps exactly the root limit without dropping relevant children", () => {
+    const now = 1_000_000
+    const list = [
+      session({ id: "root-1", created: now - 100 }),
+      session({ id: "root-2", created: now - 200 }),
+      session({ id: "root-3", created: now - 300 }),
+      session({ id: "child-root", parentID: "root-1", created: now - 30_000_000 }),
+      session({ id: "child-permission", parentID: "root-3", created: now - 30_000_000 }),
+      session({ id: "child-recent", parentID: "root-3", created: now - 100 }),
+      session({ id: "child-old", parentID: "root-3", created: now - 30_000_000 }),
+    ]
+    const options = {
+      permission: { "child-permission": [{ id: "perm" } as PermissionRequest] },
+      now,
+      recentLimit: 0,
+    }
+
+    expect(trimSessions(list, { ...options, limit: 1 }).map((x) => x.id)).toEqual([
+      "child-permission",
+      "child-recent",
+      "child-root",
+      "root-1",
+    ])
+    expect(trimSessions(list, { ...options, limit: 2 }).filter((x) => !x.parentID).map((x) => x.id)).toEqual([
+      "root-1",
+      "root-2",
+    ])
+  })
+
+  test("mobile live updates retain only ten roots, then twenty after pagination", () => {
+    const now = Date.now()
+    const list = Array.from({ length: 25 }, (_, index) =>
+      session({ id: `root-${String(index).padStart(2, "0")}`, created: now - index * 1000 }),
+    )
+    const mobileWindow = window as Window & { __HAOLAB_MOBILE__?: boolean }
+    const previous = mobileWindow.__HAOLAB_MOBILE__
+    mobileWindow.__HAOLAB_MOBILE__ = true
+    try {
+      expect(trimSessions(list, { limit: 10, permission: {}, now }).filter((x) => !x.parentID)).toHaveLength(10)
+      expect(trimSessions(list, { limit: 20, permission: {}, now }).filter((x) => !x.parentID)).toHaveLength(20)
+    } finally {
+      mobileWindow.__HAOLAB_MOBILE__ = previous
+    }
+  })
 })

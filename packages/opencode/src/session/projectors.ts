@@ -6,6 +6,7 @@ import type { TxOrDb } from "@/storage/db"
 import { SyncEvent } from "@/sync"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
+import { SessionTranscript } from "./transcript"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
 import { WorkspaceTable } from "@/control-plane/workspace.sql"
 import { Log } from "@opencode-ai/core/util/log"
@@ -123,8 +124,19 @@ export default [
   }),
 
   SyncEvent.project(MessageV2.Event.Updated, (db, data) => {
+    delete data.transcript
+    const before = SessionTranscript.head(db)
     const time_created = data.info.time.created
     const { id, sessionID, ...rest } = data.info
+    const current = db
+      .select({ sessionID: MessageTable.session_id })
+      .from(MessageTable)
+      .where(eq(MessageTable.id, id))
+      .get()
+    if (data.sessionID !== sessionID || (current && current.sessionID !== sessionID)) {
+      log.warn("ignored foreign message update", { messageID: id, sessionID })
+      return
+    }
 
     try {
       db.insert(MessageTable)
@@ -136,6 +148,7 @@ export default [
         })
         .onConflictDoUpdate({ target: MessageTable.id, set: { data: rest } })
         .run()
+      data.transcript = SessionTranscript.stamp(db, { sessionID, messageID: id }, before)
     } catch (err) {
       if (!foreign(err)) throw err
       log.warn("ignored late message update", { messageID: id, sessionID })
@@ -143,6 +156,8 @@ export default [
   }),
 
   SyncEvent.project(MessageV2.Event.Removed, (db, data) => {
+    delete data.transcript
+    const before = SessionTranscript.head(db)
     for (const row of db
       .select()
       .from(PartTable)
@@ -154,25 +169,55 @@ export default [
     db.delete(MessageTable)
       .where(and(eq(MessageTable.id, data.messageID), eq(MessageTable.session_id, data.sessionID)))
       .run()
+    data.transcript = SessionTranscript.stamp(db, data, before)
   }),
 
   SyncEvent.project(MessageV2.Event.PartRemoved, (db, data) => {
+    delete data.transcript
+    const before = SessionTranscript.head(db)
     const row = db
       .select()
       .from(PartTable)
-      .where(and(eq(PartTable.id, data.partID), eq(PartTable.session_id, data.sessionID)))
+      .where(
+        and(
+          eq(PartTable.id, data.partID),
+          eq(PartTable.message_id, data.messageID),
+          eq(PartTable.session_id, data.sessionID),
+        ),
+      )
       .get()
     const previous = row && usage(row.data)
     if (previous) applyUsage(db, data.sessionID, previous, -1)
 
     db.delete(PartTable)
-      .where(and(eq(PartTable.id, data.partID), eq(PartTable.session_id, data.sessionID)))
+      .where(
+        and(
+          eq(PartTable.id, data.partID),
+          eq(PartTable.message_id, data.messageID),
+          eq(PartTable.session_id, data.sessionID),
+        ),
+      )
       .run()
+    data.transcript = SessionTranscript.stamp(db, data, before)
   }),
 
   SyncEvent.project(MessageV2.Event.PartUpdated, (db, data) => {
+    delete data.transcript
+    const before = SessionTranscript.head(db)
     const { id, messageID, sessionID, ...rest } = data.part
     const row = db.select().from(PartTable).where(eq(PartTable.id, id)).get()
+    if (
+      data.sessionID !== sessionID ||
+      (row && (row.session_id !== sessionID || row.message_id !== messageID)) ||
+      !db
+        .select({ id: MessageTable.id })
+        .from(MessageTable)
+        .where(and(eq(MessageTable.id, messageID), eq(MessageTable.session_id, sessionID)))
+        .get()
+    ) {
+      log.warn("ignored late or foreign part update", { partID: id, messageID, sessionID })
+      return
+    }
 
     try {
       db.insert(PartTable)
@@ -185,6 +230,7 @@ export default [
         })
         .onConflictDoUpdate({ target: PartTable.id, set: { data: rest } })
         .run()
+      data.transcript = SessionTranscript.stamp(db, { sessionID, messageID, partID: id }, before)
       const previous = row && usage(row.data)
       const next = usage(data.part)
       if (previous) applyUsage(db, row.session_id, previous, -1)

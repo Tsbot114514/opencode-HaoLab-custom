@@ -72,6 +72,24 @@ describe("session sidebar reconciliation", () => {
     expect(store.sessionTotal).toBe(0)
   })
 
+  test("keeps a load-more affordance when cached mobile roots fill the server window", () => {
+    const [store, setStore] = createStore({
+      session: Array.from({ length: 10 }, (_, index) => ({
+        id: `ses_${index}`, title: `Session ${index}`, directory: "/work", time: { created: index, updated: index },
+      })),
+      sessionTotal: 10, limit: 10, permission: {}, question: {}, todo: {}, session_status: {}, session_diff: {},
+      message: {}, part: {}, part_text_accum_delta: {},
+    } as unknown as State)
+
+    applySessionReconciliation({
+      store, setStore,
+      changes: { upserts: [], removed: [], limited: true },
+      clearTodo: () => undefined,
+    })
+
+    expect(store.sessionTotal).toBe(11)
+    expect(store.session).toHaveLength(10)
+  })
 })
 
 describe("sidebar cursor feed", () => {
@@ -84,6 +102,25 @@ describe("sidebar cursor feed", () => {
     sessionTotal: 1, limit: 10, permission: {}, question: {}, todo: {}, session_status: {}, session_diff: {},
     message: { ses_child: [{ id: "msg_child", sessionID: "ses_child" }] }, part: {}, part_text_accum_delta: {},
   } as unknown as State)
+
+  test("propagates an aborted SDK request instead of treating it as an unavailable legacy route", async () => {
+    const controller = new AbortController()
+    const error = new DOMException("Session load timed out", "TimeoutError")
+    const requests: Request[] = []
+    const client = createOpencodeClient({ baseUrl: "http://sessions.test", signal: controller.signal,
+      fetch: Object.assign((input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input)
+        requests.push(request)
+        return new Promise<Response>((_, reject) => {
+          request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true })
+          controller.abort(error)
+        })
+      }, { preconnect: fetch.preconnect }) })
+
+    await expect(loadSidebarFeed({ sdk: client, directory: "/work" })).rejects.toBe(error)
+    expect(requests).toHaveLength(1)
+    expect(requests[0].signal.aborted).toBe(true)
+  })
 
   test("loads only the newest page of 500 roots and preserves children", async () => {
     const urls: URL[] = []
@@ -237,6 +274,31 @@ describe("sidebar cursor feed", () => {
       const client = createOpencodeClient({ baseUrl: "http://sessions.test", fetch: Object.assign(async () => response.clone(), { preconnect: fetch.preconnect }) })
       expect(await loadSidebarFeed({ sdk: client, directory: "/work" })).toBeUndefined()
     }
+  })
+})
+
+describe("mobile session list endpoint", () => {
+  test("requests directory-scoped roots through the experimental SDK route", async () => {
+    const urls: URL[] = []
+    const client = createOpencodeClient({
+      baseUrl: "http://sessions.test",
+      fetch: Object.assign(
+        async (request: RequestInfo | URL) => {
+          urls.push(new URL(request instanceof Request ? request.url : String(request)))
+          return Response.json([])
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    })
+
+    const result = await client.experimental.session.list({ directory: "/project/mobile", roots: true, limit: 10 })
+
+    expect(result.data).toEqual([])
+    expect(urls).toHaveLength(1)
+    expect(urls[0].pathname).toBe("/experimental/session")
+    expect(urls[0].searchParams.get("directory")).toBe("/project/mobile")
+    expect(urls[0].searchParams.get("roots")).toBe("true")
+    expect(urls[0].searchParams.get("limit")).toBe("10")
   })
 })
 

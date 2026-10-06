@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createHash } from "node:crypto"
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
+import { BlockList, isIP } from "node:net"
 import { app, session } from "electron"
 import type { RemoteStatus, ServerReadyData } from "../preload/types"
 import { getStore } from "./store"
@@ -33,7 +34,8 @@ export class RemoteHelper {
   private buffer = ""
   private queue: Promise<unknown> = Promise.resolve()
   private sidecar?: ServerReadyData
-  private disconnecting = false
+  private pairingRevoked = false
+  private pairingGeneration = 0
 
   setSidecar(data: ServerReadyData) {
     if (this.sidecar?.url === data.url && this.sidecar.password === data.password) return
@@ -50,8 +52,23 @@ export class RemoteHelper {
     return this.withCacheKey(await this.run("status"))
   }
 
-  currentCacheKey(status: RemoteStatus) {
-    return this.withCacheKey({ ...status, cacheKey: undefined }).cacheKey
+  currentCacheKey(connectionHost?: string) {
+    if (this.pairingRevoked) return
+    try {
+      const share = readFileSync(this.pairingPath(), "utf8").trim()
+      const host = pairingHost(share)
+      if (!host) return
+      if (connectionHost !== undefined && connectionHost !== host) return
+      return createHash("sha256")
+        .update("opencode.desktop.remote-display-cache.v1\0")
+        .update(share)
+        .update("\0")
+        .update(host)
+        .digest("hex")
+    } catch {
+      // Missing or corrupt local pairing must fail closed, without contacting the helper.
+      return
+    }
   }
 
   async enable() {
@@ -83,27 +100,36 @@ export class RemoteHelper {
 
   connect(share: string) {
     if (!share.trim()) return Promise.reject(new Error("Share is required"))
+    if (!pairingHost(share.trim())) return Promise.reject(new Error("Invalid share"))
+    const generation = ++this.pairingGeneration
+    this.revokePairing()
     return this.run("connect", { share: share.trim() }).then(async (initial) => {
+      if (generation !== this.pairingGeneration) return { ...initial, cacheKey: undefined }
       writeFileSync(this.pairingPath(), share.trim(), { mode: 0o600 })
       if (process.platform !== "win32") chmodSync(this.pairingPath(), 0o600)
-      return this.withCacheKey(await this.waitForAuth(initial))
+      this.pairingRevoked = false
+      const status = await this.waitForAuth(initial)
+      if (generation !== this.pairingGeneration) return { ...status, cacheKey: undefined }
+      return this.withCacheKey(status)
     })
   }
 
   disconnect() {
-    this.disconnecting = true
-    return this.run("disconnect").then((status) => {
-      rmSync(this.pairingPath(), { force: true })
-      for (const name of ["opencode.sidebar-display.dat", "opencode.transcripts.dat"]) {
-        const store = getStore(name)
-        for (const key of Object.keys(store.store)) {
-          if (key.startsWith("tunnel.v1.")) store.delete(key)
-        }
+    ++this.pairingGeneration
+    this.revokePairing()
+    return this.run("disconnect").then((status) => ({ ...status, cacheKey: undefined }))
+  }
+
+  private revokePairing() {
+    this.pairingRevoked = true
+    rmSync(this.pairingPath(), { force: true })
+    getStore().delete(LEGACY_PAIRING)
+    for (const name of ["opencode.sidebar-display.dat", "opencode.transcripts.dat"]) {
+      const store = getStore(name)
+      for (const key of Object.keys(store.store)) {
+        if (key.startsWith("tunnel.v1.")) store.delete(key)
       }
-      return status
-    }).finally(() => {
-      this.disconnecting = false
-    })
+    }
   }
 
   stop() {
@@ -135,7 +161,7 @@ export class RemoteHelper {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
     const store = getStore()
     const legacyPairing = store.get(LEGACY_PAIRING)
-    if (typeof legacyPairing === "string" && legacyPairing && !existsSync(this.pairingPath())) {
+    if (!this.pairingRevoked && typeof legacyPairing === "string" && legacyPairing && !existsSync(this.pairingPath())) {
       writeFileSync(this.pairingPath(), legacyPairing, { mode: 0o600 })
     }
     if (existsSync(this.pairingPath()) && process.platform !== "win32") chmodSync(this.pairingPath(), 0o600)
@@ -210,7 +236,7 @@ export class RemoteHelper {
       await this.send("enable")
       this.watchProjects()
     }
-    if (existsSync(this.pairingPath())) {
+    if (!this.pairingRevoked && existsSync(this.pairingPath())) {
       const pairing = readFileSync(this.pairingPath(), "utf8").trim()
       if (pairing) await this.send("connect", { share: pairing })
     }
@@ -221,18 +247,7 @@ export class RemoteHelper {
   }
 
   private withCacheKey(status: RemoteStatus): RemoteStatus {
-    if (this.disconnecting || !status.connection || !status.online || !existsSync(this.pairingPath())) return status
-    const share = readFileSync(this.pairingPath(), "utf8").trim()
-    if (!share) return status
-    return {
-      ...status,
-      cacheKey: createHash("sha256")
-        .update("opencode.desktop.remote-display-cache.v1\0")
-        .update(share)
-        .update("\0")
-        .update(status.connection.host)
-        .digest("hex"),
-    }
+    return { ...status, cacheKey: this.currentCacheKey(status.connection?.host) }
   }
 
   private authKeyPath() {
@@ -293,5 +308,30 @@ export class RemoteHelper {
         reject(new Error("Failed to write to remote helper"))
       })
     })
+  }
+}
+
+// Keep the saved invitation validation aligned with remote-helper/main.go:parseShare.
+export function pairingHost(raw: string): string | undefined {
+  try {
+    const share = JSON.parse(raw)
+    if (!share || typeof share !== "object" || Array.isArray(share)) return
+    if (Object.keys(share).some((key) => !["version", "host", "port", "token", "authKey"].includes(key))) return
+    if (![1, 2].includes(share.version) || share.port !== 41642 || typeof share.host !== "string") return
+    if (typeof share.token !== "string" || !/^[a-fA-F0-9]{64}$/.test(share.token)) return
+    if (share.version === 1 && share.authKey !== undefined && share.authKey !== "") return
+    if (share.version === 2 && (typeof share.authKey !== "string" || !/^tskey-auth-\S+$/.test(share.authKey) || share.authKey.length > 512)) return
+    const family = isIP(share.host)
+    if (family) {
+      if (share.host.includes("%")) return
+      const tailnet = new BlockList()
+      if (family === 4) tailnet.addSubnet("100.64.0.0", 10, "ipv4")
+      if (family === 6) tailnet.addSubnet("fd7a:115c:a1e0::", 48, "ipv6")
+      return tailnet.check(share.host, family === 4 ? "ipv4" : "ipv6") ? share.host : undefined
+    }
+    if (!share.host.endsWith(".ts.net") || !share.host.split(".").every((label: string) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) return
+    return share.host
+  } catch {
+    return
   }
 }

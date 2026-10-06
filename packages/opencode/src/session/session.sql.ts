@@ -10,7 +10,9 @@ import type { SessionID, MessageID, PartID } from "./schema"
 import type { WorkspaceID } from "../control-plane/schema"
 import { Timestamps } from "../storage/schema.sql"
 
-type PartData = Omit<MessageV2.Part, "id" | "sessionID" | "messageID">
+type PartData<T extends MessageV2.Part = MessageV2.Part> = T extends unknown
+  ? Omit<T, "id" | "sessionID" | "messageID">
+  : never
 type InfoData<T extends MessageV2.Info = MessageV2.Info> = T extends unknown ? Omit<T, "id" | "sessionID"> : never
 type SessionMessageData = Omit<(typeof SessionMessage.Message)["Encoded"], "type" | "id">
 
@@ -95,28 +97,41 @@ export const SessionSidebarStateTable = sqliteTable("session_sidebar_state", {
   floor: integer().notNull(),
 })
 
-export const SessionSidebarCountTable = sqliteTable("session_sidebar_count", {
-  project_id: text().$type<ProjectID>().notNull(),
-  directory: text().notNull(),
-  total: integer().notNull(),
-}, (table) => [
-  primaryKey({ columns: [table.project_id, table.directory] }),
-  check("session_sidebar_count_nonnegative", sql`${table.total} >= 0`),
-])
+export const SessionSidebarCountTable = sqliteTable(
+  "session_sidebar_count",
+  {
+    project_id: text().$type<ProjectID>().notNull(),
+    directory: text().notNull(),
+    total: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.project_id, table.directory] }),
+    check("session_sidebar_count_nonnegative", sql`${table.total} >= 0`),
+  ],
+)
 
-export const SessionSidebarBaseTable = sqliteTable("session_sidebar_base", {
-  session_id: text().$type<SessionID>().primaryKey(),
-  project_id: text().$type<ProjectID>().notNull(),
-  directory: text().notNull(),
-  title: text().notNull(),
-  slug: text().notNull(),
-  version: text().notNull(),
-  time_created: integer().notNull(),
-  time_updated: integer().notNull(),
-}, (table) => [
-  index("session_sidebar_base_project_directory_id_idx").on(table.project_id, table.directory, table.session_id),
-  index("session_sidebar_base_project_directory_updated_id_idx").on(table.project_id, table.directory, table.time_updated, table.session_id),
-])
+export const SessionSidebarBaseTable = sqliteTable(
+  "session_sidebar_base",
+  {
+    session_id: text().$type<SessionID>().primaryKey(),
+    project_id: text().$type<ProjectID>().notNull(),
+    directory: text().notNull(),
+    title: text().notNull(),
+    slug: text().notNull(),
+    version: text().notNull(),
+    time_created: integer().notNull(),
+    time_updated: integer().notNull(),
+  },
+  (table) => [
+    index("session_sidebar_base_project_directory_id_idx").on(table.project_id, table.directory, table.session_id),
+    index("session_sidebar_base_project_directory_updated_id_idx").on(
+      table.project_id,
+      table.directory,
+      table.time_updated,
+      table.session_id,
+    ),
+  ],
+)
 
 export const MessageTable = sqliteTable(
   "message",
@@ -130,6 +145,46 @@ export const MessageTable = sqliteTable(
     data: text({ mode: "json" }).notNull().$type<InfoData>(),
   },
   (table) => [index("message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id)],
+)
+
+export const SessionTranscriptMetaTable = sqliteTable("session_transcript_meta", {
+  id: integer().primaryKey(),
+  epoch: text().notNull(),
+  seq: integer().notNull(),
+  floor: integer().notNull(),
+})
+
+// No foreign keys: deletion tombstones must outlive their source entities.
+export const SessionTranscriptStateTable = sqliteTable("session_transcript_state", {
+  session_id: text().$type<SessionID>().primaryKey(),
+  project_id: text().$type<ProjectID>().notNull(),
+  directory: text().notNull(),
+  workspace_id: text().$type<WorkspaceID>(),
+  generation: text().notNull(),
+  deleted: integer().notNull().default(0),
+})
+
+export const SessionTranscriptChangeTable = sqliteTable(
+  "session_transcript_change",
+  {
+    seq: integer().primaryKey({ autoIncrement: true }),
+    session_id: text().$type<SessionID>().notNull(),
+    generation: text().notNull(),
+    kind: text().$type<"session" | "message" | "part">().notNull(),
+    message_id: text().$type<MessageID>(),
+    part_id: text().$type<PartID>(),
+  },
+  (table) => [
+    index("session_transcript_change_session_generation_seq_idx").on(table.session_id, table.generation, table.seq),
+    index("session_transcript_change_entity_seq_idx").on(
+      table.session_id,
+      table.generation,
+      table.kind,
+      table.message_id,
+      table.part_id,
+      table.seq,
+    ),
+  ],
 )
 
 export const PartTable = sqliteTable(

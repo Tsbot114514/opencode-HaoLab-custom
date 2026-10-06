@@ -188,6 +188,18 @@
     opacity: 1;
   }
 
+  @media (hover: none) and (pointer: coarse) {
+    [data-slot="markdown-copy-button"] {
+      opacity: 1;
+      min-width: 44px;
+      min-height: 44px;
+    }
+
+    [data-component="markdown-code"] pre {
+      padding-top: 52px;
+    }
+  }
+
   [data-slot="markdown-copy-button"] [data-slot="check-icon"] {
     display: none;
   }

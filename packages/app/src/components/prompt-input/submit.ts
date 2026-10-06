@@ -190,6 +190,7 @@ type PromptSubmitInput = {
   onQueue?: (draft: FollowupDraft) => void
   onAbort?: () => void
   onSubmit?: () => void
+  dismissKeyboard?: () => void
 }
 
 type CommentItem = {
@@ -409,6 +410,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       prompt.reset()
       input.setMode("normal")
       input.setPopover(null)
+      input.dismissKeyboard?.()
     }
 
     const restoreInput = () => {

@@ -5,6 +5,7 @@ import { retry } from "@opencode-ai/core/util/retry"
 import {
   clearSessionPrefetch,
   clearSessionPrefetchDirectory,
+  clearSessionPrefetchInflight,
   getSessionPrefetch,
   getSessionPrefetchPromise,
   setSessionPrefetch,
@@ -15,7 +16,9 @@ import { SESSION_CACHE_LIMIT, dropSessionCaches, pickSessionCacheEvictions } fro
 import { diffs as list, message as clean } from "@/utils/diffs"
 import { compareMessages, findMessage } from "@/utils/message-order"
 import { projectSessionRevision } from "./global-sync/project-restore"
+import { sendMobileCache, type MobileTranscript, type MobileTranscriptMessage } from "./server"
 import { transcriptCursor, type TranscriptCache } from "./global-sync/transcript-cache"
+import { decodeTranscriptChanges, decodeTranscriptSnapshot } from "../utils/transcript-feed"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 
@@ -36,6 +39,27 @@ function runInflight(map: Map<string, Promise<void>>, key: string, task: () => P
 const keyFor = (directory: string, id: string) => `${directory}\n${id}`
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+
+export function projectMobileTranscript(directory: string, sessionID: string, items: { info: Message; parts: Part[] }[]): MobileTranscript {
+  const ids = new Set<string>()
+  const messages: MobileTranscriptMessage[] = []
+  for (const item of [...items].sort((a, b) => compareMessages(a.info, b.info)).slice(-20)) {
+    const info = item.info
+    if (info.sessionID !== sessionID || !info.id?.trim() || ids.has(info.id) ||
+      (info.role !== "user" && info.role !== "assistant") || !Number.isFinite(info.time.created) ||
+      (info.role === "assistant" && info.error)) continue
+    ids.add(info.id)
+    const text = item.parts.flatMap((part) => part.sessionID === sessionID && part.messageID === info.id &&
+      part.type === "text" && !part.synthetic &&
+      typeof part.text === "string" && part.text.trim() ? [part.text] : [])
+    if (!text.length || text.some((part) => part.length > 6000)) continue
+    const joined = text.join("\n")
+    if (joined.length > 6000) continue
+    messages.push({ id: info.id, role: info.role, created: info.time.created, text: joined,
+      ...(info.role === "assistant" && info.parentID ? { parentID: info.parentID } : {}) })
+  }
+  return { directory, sessionID, messages }
+}
 
 function merge(a: readonly Message[], b: readonly Message[]) {
   const map = new Map(a.map((item) => [item.id, item] as const))
@@ -171,6 +195,7 @@ export const createDirSyncContext = (
   globalSync: Pick<ReturnType<typeof useGlobalSync>, "child" | "todo"> & {
     data: Pick<ReturnType<typeof useGlobalSync>["data"], "project" | "session_todo">
     transcript?: TranscriptCache
+    recovery?: { epoch: () => number; signal: () => AbortSignal | undefined }
   } = useGlobalSync(),
 ) => {
   type Child = ReturnType<(typeof globalSync)["child"]>
@@ -182,22 +207,25 @@ export const createDirSyncContext = (
     return globalSync.child(directory)
   }
   const absolute = (path: string) => (current()[0].path.directory + "/" + path).replace("//", "/")
+  const mobile = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
   const initialMessagePageSize = 20
   const historyMessagePageSize = 20
   const inflight = new Map<string, Promise<void>>()
   const inflightDiff = new Map<string, Promise<void>>()
   const inflightTodo = new Map<string, Promise<void>>()
+  const feedDeferred = new Set<string>()
   const optimistic = new Map<string, Map<string, OptimisticItem>>()
   const maxDirs = 30
   const seen = new Map<string, Set<string>>()
   let revision = 0
-  const version = () => `${revision}:${projectSessionRevision(current()[0])}`
+  const version = () => `${revision}:${projectSessionRevision(current()[0])}:${globalSync.recovery?.epoch() ?? 0}`
   const [meta, setMeta] = createStore({
     limit: {} as Record<string, number>,
     cursor: {} as Record<string, string | undefined>,
     complete: {} as Record<string, boolean>,
     loading: {} as Record<string, boolean>,
     history: {} as Record<string, boolean>,
+    error: {} as Record<string, string | undefined>,
   })
 
   const getSession = (sessionID: string) => {
@@ -258,6 +286,7 @@ export const createDirSyncContext = (
     if (sessionIDs.length === 0) return
     for (const sessionID of sessionIDs) {
       clearOptimistic(directory, sessionID)
+      feedDeferred.delete(keyFor(directory, sessionID))
       globalSync.transcript?.deactivate(directory, sessionID)
     }
     setMeta(
@@ -269,6 +298,7 @@ export const createDirSyncContext = (
           delete draft.complete[key]
            delete draft.loading[key]
            delete draft.history[key]
+           delete draft.error[key]
         }
       }),
     )
@@ -298,8 +328,9 @@ export const createDirSyncContext = (
   }
 
   const fetchMessages = async (input: { client: typeof client; sessionID: string; limit: number; before?: string }) => {
+    const signal = mobile ? globalSync.recovery?.signal() : undefined
     const messages = await retry(() =>
-      input.client.session.messages({ sessionID: input.sessionID, limit: input.limit, before: input.before }),
+      input.client.session.messages({ sessionID: input.sessionID, limit: input.limit, before: input.before }, signal ? { signal } : undefined),
     )
     const items = (messages.data ?? []).filter((x) => !!x?.info?.id)
     const session = items.map((x) => clean(x.info)).sort(compareMessages)
@@ -310,6 +341,9 @@ export const createDirSyncContext = (
       part,
       cursor,
       complete: !cursor,
+      transcript: !input.before && mobile && (!globalSync.transcript?.enabled || globalSync.transcript.persistenceError())
+        ? projectMobileTranscript(directory, input.sessionID, items)
+        : undefined,
     }
   }
 
@@ -325,55 +359,52 @@ export const createDirSyncContext = (
     mode?: "replace" | "prepend" | "refresh"
     local?: boolean
     attempt?: number
+    authority?: Promise<boolean>
+    preservePagination?: boolean
+    waitValidation?: boolean
   }): Promise<void> => {
     const key = keyFor(input.directory, input.sessionID)
     const captured = version()
+    const [store] = globalSync.child(input.directory, { bootstrap: false })
+    const before = input.before ? store.message[input.sessionID]?.find((message) => transcriptCursor(message) === input.before) : undefined
+    if (input.local) await globalSync.transcript?.ensureSelected(input.directory, input.sessionID, input.before)
     const local = input.local
       ? globalSync.transcript?.read(input.directory, input.sessionID, input.limit, input.before)
       : undefined
-    if (meta.loading[key] && !local) return
 
     if (!local) setMeta("loading", key, true)
     const eventRevision = globalSync.transcript?.revision(input.directory, input.sessionID)
-    const fresh = !local && !input.before ? await globalSync.transcript?.beginFetch(input.directory, input.sessionID) : undefined
+    const sessionRevision = globalSync.transcript?.sessionRevision(input.directory, input.sessionID)
+    const tailRevision = globalSync.transcript?.tailRevision(input.directory, input.sessionID)
+    const rangeRevision = globalSync.transcript?.rangeRevision(input.directory, input.sessionID) ?? 0
+    const ownership = { revalidate: false }
+    const grant = !local ? globalSync.transcript?.beginFetch(input.directory, input.sessionID, () => { ownership.revalidate = true }) : undefined
+    if (captured !== version()) return
     const read = async () => {
-      if (local) return { ...local, local: true }
+      if (local) return { ...local, local: true, transcript: undefined }
       const page = await fetchMessages(input)
-      if (input.mode !== "refresh") return { ...page, local: false }
-      const [store] = globalSync.child(input.directory, { bootstrap: false })
-      const boundary = globalSync.transcript?.validationBoundary(
-        input.directory,
-        input.sessionID,
-        getSession(input.sessionID)?.time.updated,
-      )
-      // A new connection must compare retained disk ranges; within a validated connection,
-      // only the loaded range needs rechecking. Always bridge through any newly loaded history.
-      while (
-        page.cursor && page.session[0] &&
-        [boundary, store.message[input.sessionID]?.[0]].some(
-          (oldest) => oldest && compareMessages(page.session[0], oldest) > 0,
-        )
-      ) {
-        const older = await fetchMessages({ ...input, before: page.cursor })
-        if (older.cursor === page.cursor) throw new Error("Message cursor did not advance")
-        page.session = merge(older.session, page.session)
-        page.part = [...older.part, ...page.part]
-        page.cursor = older.cursor
-        page.complete = older.complete
-      }
+      await grant
+      // A delayed grant must never authorize a body fetched before a canonical change.
+      if (ownership.revalidate) return { ...await fetchMessages(input), local: false }
       return { ...page, local: false }
     }
-    await read()
-      .then((page) => {
+    const applied = await Promise.all([read(), input.authority ?? Promise.resolve(true), grant])
+      .then(([page, authorized, fresh]) => {
+        if (!authorized || globalSync.transcript?.deleted(input.directory, input.sessionID)) return
         if (captured !== version()) return
         if (!tracked(input.directory, input.sessionID)) return
         if (eventRevision !== globalSync.transcript?.revision(input.directory, input.sessionID)) return
+        if (sessionRevision !== globalSync.transcript?.sessionRevision(input.directory, input.sessionID)) return
+        if (tailRevision !== globalSync.transcript?.tailRevision(input.directory, input.sessionID)) return
+        if (before && globalSync.transcript?.changedPage(input.directory, input.sessionID, rangeRevision, page, before)) return
+        if (input.before && !before) return
+        if (page.transcript) sendMobileCache({ type: "transcript", ...page.transcript })
         if (!page.local) {
           const updated = getSession(input.sessionID)?.time.updated
           globalSync.transcript?.write(input.directory, input.sessionID, page, {
             before: input.before,
             updated,
-            validated: !input.before,
+            range: { before },
             fresh,
           })
         }
@@ -400,16 +431,20 @@ export const createDirSyncContext = (
           clearOptimistic(input.directory, input.sessionID, messageID)
         }
         const cached = input.mode === "prepend"
-          ? (store.message[input.sessionID] ?? [])
-          : input.mode === "refresh" && meta.history[key] && page.session[0] && !page.complete
+           ? (store.message[input.sessionID] ?? []).filter((message) => page.local ||
+              !!before && compareMessages(message, before) >= 0 ||
+              !page.complete && !!page.session[0] && compareMessages(message, page.session[0]) < 0)
+            : input.mode === "refresh" && meta.history[key] && page.session[0] && !page.complete
             ? (store.message[input.sessionID] ?? []).filter((message) => compareMessages(message, page.session[0]) < 0)
             : []
         const message = cached.length ? merge(cached, next.session) : next.session
-        const preserved = input.mode === "refresh" && cached.length > 0
+        const preserved = input.mode === "refresh" && cached.length > 0 &&
+          (!globalSync.transcript?.enabled || !page.cursor || globalSync.transcript.available(input.directory, input.sessionID, page.cursor)) ||
+          mobile && input.mode === "prepend" && input.preservePagination
         const cursor = preserved ? meta.cursor[key] : next.cursor
         const complete = preserved ? meta.complete[key] : next.complete
         batch(() => {
-          if (input.mode === "refresh") input.setStore(produce((draft) => {
+          if (input.mode === "refresh" || input.mode === "prepend" && !page.local) input.setStore(produce((draft) => {
             for (const previous of draft.message[input.sessionID] ?? []) {
               if (message.some((item) => item.id === previous.id)) continue
               for (const part of draft.part[previous.id] ?? []) delete draft.part_text_accum_delta[part.id]
@@ -433,6 +468,7 @@ export const createDirSyncContext = (
             complete,
           })
         })
+        return true
       })
       .finally(() => {
         if (captured !== version()) return
@@ -447,13 +483,144 @@ export const createDirSyncContext = (
           }),
         )
       })
-    if (!local && captured === version() && tracked(input.directory, input.sessionID) &&
-      eventRevision !== globalSync.transcript?.revision(input.directory, input.sessionID) && (input.attempt ?? 0) < 2) {
+    if (local && captured === version() && tracked(input.directory, input.sessionID) &&
+      !globalSync.transcript?.deleted(input.directory, input.sessionID) &&
+      !globalSync.transcript?.validatedPage(input.directory, input.sessionID, local, before)) {
+      // Offline history is immediately usable; only this requested interval is checked online.
+      const validation = runInflight(inflight, `${key}\nvalidate\n${input.before ?? ""}`, () => loadMessages({ ...input, local: false })).catch(() => undefined)
+      if (mobile || input.waitValidation) await validation
+    }
+    if (!applied && !local && captured === version() && tracked(input.directory, input.sessionID) &&
+      !globalSync.transcript?.deleted(input.directory, input.sessionID) &&
+      (eventRevision !== globalSync.transcript?.revision(input.directory, input.sessionID) ||
+        mobile && (sessionRevision !== globalSync.transcript?.sessionRevision(input.directory, input.sessionID) ||
+          tailRevision !== globalSync.transcript?.tailRevision(input.directory, input.sessionID) ||
+          rangeRevision !== globalSync.transcript?.rangeRevision(input.directory, input.sessionID))) && (input.attempt ?? 0) < 2) {
       await loadMessages({ ...input, attempt: (input.attempt ?? 0) + 1 })
     }
   }
 
+  const syncFeed = async (sessionID: string, setStore: Setter, captured: string) => {
+    const cache = globalSync.transcript
+    if (!mobile || !cache?.enabled || cache.feedCapability() === false) return false
+    const key = keyFor(directory, sessionID)
+    feedDeferred.delete(key)
+    setMeta("error", key, undefined)
+    setMeta("loading", key, true)
+    try {
+      for (let page = 0; page < 256; page++) {
+        const token = cache.beginFeed(directory, sessionID)
+        const result = token.cursor
+          ? await client.session.transcriptChanges({ sessionID, directory, cursor: token.cursor, limit: "100" },
+              { throwOnError: false, signal: globalSync.recovery?.signal() })
+          : await client.session.transcriptSnapshot({ sessionID, directory, limit: "20" },
+              { throwOnError: false, signal: globalSync.recovery?.signal() })
+        if (captured !== version() || !tracked(directory, sessionID)) return true
+        if (!result.response) throw result.error ?? new Error("Transcript feed unavailable")
+        const supported = result.response.headers.get("x-opencode-transcript-feed") === "1"
+        if (!supported && result.response.status === 404) {
+          cache.setFeedCapability(false)
+          cache.resetFeed(directory, sessionID)
+          return false
+        }
+        if (!supported) throw new Error("Unmarked transcript feed response")
+        cache.setFeedCapability(true)
+        if (result.response.status === 404) {
+          const error = result.error as { name?: unknown; data?: { message?: unknown } } | undefined
+          if (error?.name !== "NotFoundError" || typeof error.data?.message !== "string") throw new Error("Invalid transcript deletion response")
+          cache.remove(directory, sessionID)
+          evict(directory, setStore, [sessionID])
+          return true
+        }
+        if (token.cursor && (result.response.status === 410 || result.response.status === 400)) {
+          if (result.response.status === 410) {
+            const error = result.error as { _tag?: unknown; reason?: unknown } | undefined
+            if (error?._tag !== "TranscriptCursorExpiredError" || !["retention", "session-reset", "database-reset"].includes(String(error.reason)))
+              throw new Error("Invalid transcript expiration response")
+          }
+          cache.resetFeed(directory, sessionID)
+          continue
+        }
+        if (!result.response.ok) throw new Error(`Transcript feed request failed (${result.response.status})`)
+        const decoded = token.cursor
+          ? decodeTranscriptChanges(result.data, directory, sessionID)
+          : decodeTranscriptSnapshot(result.data, directory, sessionID)
+        if (token.cursor && cache.feedEntry(directory, sessionID)?.syncGeneration !== decoded.generation) {
+          cache.resetFeed(directory, sessionID)
+          continue
+        }
+        const [store] = globalSync.child(directory, { bootstrap: false })
+        const overlay = { session: [...(store.message[sessionID] ?? [])],
+          part: (store.message[sessionID] ?? []).map((info) => ({ id: info.id, part: store.part[info.id] ?? [] })),
+          complete: meta.complete[key] ?? true, cursor: meta.cursor[key] }
+        const applied = cache.applyFeed(directory, sessionID, token, decoded, overlay)
+        if (!applied) {
+          if (!cache.deleted(directory, sessionID) && !cache.feedEntry(directory, sessionID)?.syncCursor) feedDeferred.add(key)
+          return true
+        }
+        const entry = applied.entry
+        if (applied.metadataSafe && entry.feed?.session.time.archived) {
+          cache.remove(directory, sessionID)
+          evict(directory, setStore, [sessionID])
+          return true
+        }
+        const oldest = meta.history[key] ? store.message[sessionID]?.[0] : undefined
+        const rendered = oldest ? entry.session.filter((message) => compareMessages(message, oldest) >= 0) :
+          entry.session.slice(-Math.max(initialMessagePageSize, meta.limit[key] ?? 0))
+        const ids = new Set(rendered.map((message) => message.id))
+        const next = mergeOptimisticPage({ session: rendered, part: entry.part.filter((item) => ids.has(item.id)),
+          complete: entry.complete && rendered.length === entry.session.length,
+          cursor: rendered.length < entry.session.length && rendered[0] ? transcriptCursor(rendered[0]) : entry.cursor }, getOptimistic(directory, sessionID))
+        for (const id of next.confirmed) clearOptimistic(directory, sessionID, id)
+        batch(() => {
+          setStore(produce((draft) => {
+            for (const previous of draft.message[sessionID] ?? []) {
+              if (next.session.some((message) => message.id === previous.id)) continue
+              for (const part of draft.part[previous.id] ?? []) delete draft.part_text_accum_delta[part.id]
+              delete draft.part[previous.id]
+            }
+          }))
+          setStore("message", sessionID, reconcile(next.session, { key: "id" }))
+          for (const item of next.part) {
+            for (const part of item.part) setStore("part_text_accum_delta", part.id, undefined!)
+            setStore("part", item.id, reconcile(item.part.filter((part) => !SKIP_PARTS.has(part.type)), { key: "id" }))
+          }
+          const info = applied.metadataSafe ? entry.feed?.session : undefined
+          if (info) setStore("session", produce((draft) => {
+            const match = Binary.search(draft, sessionID, (session) => session.id)
+            if (match.found) draft[match.index] = info
+            if (!match.found) draft.splice(match.index, 0, info)
+          }))
+          if (applied.statusSafe) setStore("session_status", sessionID, decoded.status)
+          setMeta("limit", key, next.session.length)
+          setMeta("cursor", key, next.cursor)
+          setMeta("complete", key, next.complete)
+          setSessionPrefetch({ directory, sessionID, limit: next.session.length, cursor: next.cursor, complete: next.complete })
+        })
+        // Dirty entities stay live and the base cursor stays unchanged. Idle/next handshake retries once, not a busy loop.
+        if (!applied.checkpointed) { feedDeferred.add(key); return true }
+        if (!("more" in decoded) || !decoded.more) return true
+        if (decoded.cursor === token.cursor) throw new Error("Transcript feed cursor did not advance")
+      }
+      throw new Error("Transcript feed page limit reached; retry to continue")
+    } catch (error) {
+      if (captured === version()) setMeta("error", key, error instanceof Error ? error.message : "Transcript synchronization failed")
+      throw error
+    } finally {
+      if (captured === version()) setMeta("loading", key, false)
+    }
+  }
+
   return {
+    recover() {
+      // Release obsolete readers without dropping loaded ranges, pagination or optimistic edits.
+      revision++
+      inflight.clear()
+      inflightDiff.clear()
+      inflightTodo.clear()
+      setMeta("loading", reconcile({}))
+      clearSessionPrefetchInflight(directory)
+    },
     invalidate() {
       // Existing readers may finish after the replacement, even after a new read starts.
       revision++
@@ -487,6 +654,7 @@ export const createDirSyncContext = (
     },
     session: {
       get: getSession,
+      error: (sessionID: string) => meta.error[keyFor(directory, sessionID)],
       deactivate() { for (const id of seen.get(directory) ?? []) globalSync.transcript?.deactivate(directory, id) },
       refresh() { return Promise.allSettled([...(seen.get(directory) ?? [])].map((id) => this.sync(id, { force: true }))) },
       optimistic: {
@@ -529,6 +697,7 @@ export const createDirSyncContext = (
       },
       async sync(sessionID: string, opts?: { force?: boolean }) {
         const captured = version()
+        const signal = mobile ? globalSync.recovery?.signal() : undefined
         const [store, setStore] = globalSync.child(directory)
         const key = keyFor(directory, sessionID)
 
@@ -546,6 +715,7 @@ export const createDirSyncContext = (
         }
 
         await globalSync.transcript?.ready
+        await globalSync.transcript?.ensureSelected(directory, sessionID)
         if (captured !== version()) return
         const local = meta.limit[key] === undefined && globalSync.transcript?.read(directory, sessionID, initialMessagePageSize)
         if (local) {
@@ -578,10 +748,12 @@ export const createDirSyncContext = (
           const cached = store.message[sessionID] !== undefined && meta.limit[key] !== undefined
           if (cached && hasSession && !opts?.force && !local) return
 
-          const limit = globalSync.transcript?.enabled ? initialMessagePageSize : (meta.limit[key] ?? initialMessagePageSize)
+          if (await syncFeed(sessionID, setStore, captured)) return
+
+          const limit = mobile || globalSync.transcript?.enabled ? initialMessagePageSize : (meta.limit[key] ?? initialMessagePageSize)
           const readSession = async (attempt = 0): Promise<boolean> => {
             const eventRevision = globalSync.transcript?.sessionRevision(directory, sessionID)
-            const session = await retry(() => client.session.get({ sessionID }, { throwOnError: false }))
+            const session = await retry(() => client.session.get({ sessionID }, { throwOnError: false, ...(signal ? { signal } : {}) }))
             if (captured !== version() || !tracked(directory, sessionID)) return false
             if (eventRevision !== globalSync.transcript?.sessionRevision(directory, sessionID)) {
               if (globalSync.transcript?.deleted(directory, sessionID)) {
@@ -590,13 +762,19 @@ export const createDirSyncContext = (
               }
               return attempt < 1 ? readSession(attempt + 1) : false
             }
+            if (!session.response) throw session.error ?? new Error("Failed to refresh session")
             if (session.response.status === 404) {
               globalSync.transcript?.remove(directory, sessionID)
               evict(directory, setStore, [sessionID])
             }
             if (!session.response.ok) throw session.error ?? new Error("Failed to refresh session")
-            const data = session.data
-            if (!data) return false
+             const data = session.data
+             if (!data) return false
+             if (data.time.archived) {
+               globalSync.transcript?.remove(directory, sessionID)
+               evict(directory, setStore, [sessionID])
+               return false
+             }
             setStore("session", produce((draft) => {
               const match = Binary.search(draft, sessionID, (s) => s.id)
               if (match.found) {
@@ -612,20 +790,23 @@ export const createDirSyncContext = (
               ? Promise.resolve(true)
               : readSession()
 
-          const messagesReq = sessionReq.then((loaded) =>
-            !loaded || captured !== version() || !tracked(directory, sessionID) || (cached && !opts?.force && !local)
-              ? Promise.resolve()
-              : loadMessages({
-                  directory,
-                  client,
-                  setStore,
-                  sessionID,
-                  limit,
-                  mode: cached && (local || opts?.force) ? "refresh" : undefined,
-                }),
-          )
+           const messagesReq = loadMessages({
+            directory,
+            client,
+            setStore,
+            sessionID,
+            limit,
+            mode: cached && (local || opts?.force) ? "refresh" : undefined,
+            authority: sessionReq,
+           })
 
           await Promise.all([sessionReq, messagesReq])
+        }).then(async () => {
+          // An idle event may arrive while the preceding request still owns the in-flight slot.
+          // Settle that final race once; an active stream never starts a retry loop.
+          if (captured !== version() || !feedDeferred.has(key) || store.session_status[sessionID]?.type !== "idle") return
+          feedDeferred.delete(key)
+          await runInflight(inflight, key, async () => { await syncFeed(sessionID, setStore, captured) })
         })
         if (!opts?.force && globalSync.transcript?.enabled && store.message[sessionID] !== undefined && meta.limit[key] !== undefined) {
           void request.catch(() => undefined)
@@ -635,13 +816,14 @@ export const createDirSyncContext = (
       },
       async diff(sessionID: string, opts?: { force?: boolean }) {
         const captured = version()
+        const signal = mobile ? globalSync.recovery?.signal() : undefined
         const [store, setStore] = globalSync.child(directory)
         touch(directory, setStore, sessionID)
         if (store.session_diff[sessionID] !== undefined && !opts?.force) return
 
         const key = keyFor(directory, sessionID)
         return runInflight(inflightDiff, key, () =>
-          retry(() => client.session.diff({ sessionID })).then((diff) => {
+          retry(() => client.session.diff({ sessionID }, signal ? { signal } : undefined)).then((diff) => {
             if (captured !== version()) return
             if (!tracked(directory, sessionID)) return
             setStore("session_diff", sessionID, reconcile(list(diff.data), { key: "file" }))
@@ -650,6 +832,7 @@ export const createDirSyncContext = (
       },
       async todo(sessionID: string, opts?: { force?: boolean }) {
         const captured = version()
+        const signal = mobile ? globalSync.recovery?.signal() : undefined
         const [store, setStore] = globalSync.child(directory)
         touch(directory, setStore, sessionID)
         const existing = store.todo[sessionID]
@@ -667,7 +850,7 @@ export const createDirSyncContext = (
 
         const key = keyFor(directory, sessionID)
         return runInflight(inflightTodo, key, () =>
-          retry(() => client.session.todo({ sessionID })).then((todo) => {
+          retry(() => client.session.todo({ sessionID }, signal ? { signal } : undefined)).then((todo) => {
             if (captured !== version()) return
             if (!tracked(directory, sessionID)) return
             const list = todo.data ?? []
@@ -677,6 +860,17 @@ export const createDirSyncContext = (
         )
       },
       history: {
+        provisional(sessionID: string, before?: string, count = historyMessagePageSize) {
+          const page = globalSync.transcript?.read(directory, sessionID, count, before, true)
+          const boundary = before ? current()[0].message[sessionID]?.find((message) => transcriptCursor(message) === before) : undefined
+          return !!globalSync.transcript?.enabled && (!page || !globalSync.transcript.validatedPage(directory, sessionID, page, boundary))
+        },
+        async validate(sessionID: string, before: string, count = historyMessagePageSize) {
+          const [, setStore] = globalSync.child(directory)
+          touch(directory, setStore, sessionID)
+          await runInflight(inflight, `${keyFor(directory, sessionID)}\n${before}`, () =>
+             loadMessages({ directory, client, setStore, sessionID, limit: count, before, mode: "prepend", local: true, preservePagination: true, waitValidation: true }))
+        },
         more(sessionID: string) {
           const store = current()[0]
           const key = keyFor(directory, sessionID)
@@ -698,7 +892,7 @@ export const createDirSyncContext = (
           const before = meta.cursor[key]
           if (!before) return
 
-          await loadMessages({
+          await runInflight(inflight, `${key}\n${before}`, () => loadMessages({
             directory,
             client,
             setStore,
@@ -707,7 +901,7 @@ export const createDirSyncContext = (
             before,
             mode: "prepend",
             local: true,
-          })
+          }))
         },
       },
       evict(sessionID: string, _directory = directory) {

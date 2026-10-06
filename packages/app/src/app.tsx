@@ -13,13 +13,10 @@ import { MetaProvider } from "@solidjs/meta"
 import { type BaseRouterProps, Navigate, Route, Router, useLocation, useNavigate } from "@solidjs/router"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
-import { Effect } from "effect"
 import {
   type Component,
   createEffect,
   createMemo,
-  createResource,
-  createSignal,
   ErrorBoundary,
   For,
   type JSX,
@@ -27,7 +24,6 @@ import {
   onCleanup,
   type ParentProps,
   Show,
-  Suspense,
 } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { CommandProvider } from "@/context/command"
@@ -35,8 +31,9 @@ import { CommentsProvider } from "@/context/comments"
 import { FileProvider } from "@/context/file"
 import { GlobalSDKProvider, useGlobalSDK } from "@/context/global-sdk"
 import { GlobalSyncProvider, useGlobalSync } from "@/context/global-sync"
-import { captureQueries, restoreQueries, serverDisplayCache, type DisplayCache } from "@/context/global-sync/server-cache"
-import { desktopCacheKey, desktopCacheStorage, loadDesktopCache, watchDesktopCache } from "@/context/global-sync/desktop-cache"
+import { captureQueries, restoreQueries, type DisplayCache } from "@/context/global-sync/server-cache"
+import { desktopCacheKey, desktopCacheStorage, watchDesktopCache } from "@/context/global-sync/desktop-cache"
+import { ConnectionGate, ServerCache } from "@/context/connection-gate"
 import { HighlightsProvider } from "@/context/highlights"
 import { LanguageProvider, type Locale, useLanguage } from "@/context/language"
 import { LayoutProvider } from "@/context/layout"
@@ -52,7 +49,6 @@ import { TerminalProvider } from "@/context/terminal"
 import DirectoryLayout from "@/pages/directory-layout"
 import Layout from "@/pages/layout"
 import { ErrorPage } from "./pages/error"
-import { useCheckServerHealth } from "./utils/server-health"
 
 const HomeRoute = lazy(() => import("@/pages/home"))
 const ManagerRoutePage = lazy(() => import("@/pages/manager"))
@@ -279,82 +275,13 @@ export function AppBaseProviders(props: ParentProps<{ locale?: Locale }>) {
   )
 }
 
-function ConnectionGate(props: ParentProps<{ disableHealthCheck?: boolean }>) {
-  const server = useServer()
-  const checkServerHealth = useCheckServerHealth()
-
-  const [checkMode, setCheckMode] = createSignal<"blocking" | "background">("blocking")
-
-  // performs repeated health check with a grace period for
-  // non-http connections, otherwise fails instantly
-  const [startupHealthCheck, healthCheckActions] = createResource(() =>
-    props.disableHealthCheck
-      ? true
-      : Effect.gen(function* () {
-          if (!server.current) return true
-          const { http, type } = server.current
-
-          while (true) {
-            const res = yield* Effect.promise(() => checkServerHealth(http))
-            if (res.healthy) return true
-            if (checkMode() === "background" || type === "http") return false
-          }
-        }).pipe(
-          Effect.timeoutOrElse({ duration: "10 seconds", orElse: () => Effect.succeed(false) }),
-          Effect.ensuring(Effect.sync(() => setCheckMode("background"))),
-          Effect.runPromise,
-        ),
-  )
-
-  return (
-    <Suspense
-      fallback={
-        <div class="h-dvh w-screen flex flex-col items-center justify-center bg-background-base">
-          <BrandedSplash class="w-20 h-20 object-contain opacity-80 animate-pulse" />
-        </div>
-      }
-    >
-      {/*<Show
-        when={checkMode() === "blocking" ? !startupHealthCheck.loading : startupHealthCheck.state !== "pending"}
-        fallback={
-          <div class="h-dvh w-screen flex flex-col items-center justify-center bg-background-base">
-            <BrandedSplash class="w-20 h-20 object-contain opacity-80 animate-pulse" />
-          </div>
-        }
-      >*/}
-      {checkMode() === "blocking" ? startupHealthCheck() : startupHealthCheck.latest}
-      <Show
-        when={startupHealthCheck()}
-        fallback={
-          <ConnectionError
-            onRetry={() => {
-              if (checkMode() === "background") void healthCheckActions.refetch()
-            }}
-            onServerSelected={(key) => {
-              setCheckMode("blocking")
-              server.setActive(key)
-              void healthCheckActions.refetch()
-            }}
-          />
-        }
-      >
-        {props.children}
-      </Show>
-      {/*</Show>*/}
-    </Suspense>
-  )
-}
-
-function ConnectionError(props: { onRetry?: () => void; onServerSelected?: (key: ServerConnection.Key) => void }) {
+function ConnectionError() {
   const language = useLanguage()
   const server = useServer()
   const others = () => server.list.filter((s) => ServerConnection.key(s) !== server.key)
   const name = createMemo(() => server.name || server.key)
   const serverToken = "\u0000server\u0000"
   const unreachable = createMemo(() => language.t("app.server.unreachable", { server: serverToken }).split(serverToken))
-
-  const timer = setInterval(() => props.onRetry?.(), 1000)
-  onCleanup(() => clearInterval(timer))
 
   return (
     <div class="h-dvh w-screen flex flex-col items-center justify-center bg-background-base gap-6 p-6">
@@ -378,7 +305,7 @@ function ConnectionError(props: { onRetry?: () => void; onServerSelected?: (key:
                   <button
                     type="button"
                     class="flex items-center gap-3 w-full px-3 py-2 rounded-md hover:bg-surface-raised-base-hover transition-colors text-left"
-                    onClick={() => props.onServerSelected?.(key)}
+                    onClick={() => server.setActive(key)}
                   >
                     <span class="text-14-regular text-text-strong truncate">{serverName(conn)}</span>
                   </button>
@@ -389,23 +316,6 @@ function ConnectionError(props: { onRetry?: () => void; onServerSelected?: (key:
         </div>
       </Show>
     </div>
-  )
-}
-
-function ServerKey(props: { children: (cache: DisplayCache) => JSX.Element }) {
-  const server = useServer()
-  const platform = usePlatform()
-  const [cache] = createResource(() => [server.key, server.current] as const, async ([key, connection]) => {
-    const snapshot = serverDisplayCache(key, connection)
-    if (!snapshot) return
-    const diskKey = platform.platform === "desktop" ? desktopCacheKey(connection) : undefined
-    if (diskKey) await loadDesktopCache(desktopCacheStorage(platform.storage), snapshot, diskKey)
-    return snapshot
-  })
-  return (
-    <Show when={!cache.loading && cache() === serverDisplayCache(server.key, server.current) ? cache() : undefined} keyed>
-      {(displayCache) => <QueryProvider displayCache={displayCache}>{props.children(displayCache)}</QueryProvider>}
-    </Show>
   )
 }
 
@@ -437,31 +347,42 @@ export function AppInterface(props: {
       disableHealthCheck={props.disableHealthCheck}
       servers={props.servers}
     >
-      <ConnectionGate disableHealthCheck={props.disableHealthCheck}>
-        <ServerKey>
-          {(displayCache) => (
-            <GlobalSDKProvider>
-              <GlobalSyncProvider displayCache={displayCache}>
-                <DesktopCacheWriter cache={displayCache} />
-                <Dynamic
-                  component={props.router ?? Router}
-                  root={(routerProps) => <RouterRoot appChildren={props.children}>{routerProps.children}</RouterRoot>}
-                >
-                  <Route path="/" component={HomeRoute} />
-                  <Route path="/classic" component={HomeRoute} />
-                  <Route path="/classic-manager" component={ClassicManagerRoute} />
-                  <Route path="/manager" component={ManagerRoute} />
-                  <Route path="/experiment" component={ExperimentRoute} />
-                  <Route path="/:dir" component={DirectoryLayout}>
-                    <Route path="/" component={SessionIndexRoute} />
-                    <Route path="/session/:id?" component={SessionRoute} />
-                  </Route>
-                </Dynamic>
-              </GlobalSyncProvider>
-            </GlobalSDKProvider>
-          )}
-        </ServerKey>
-      </ConnectionGate>
+      <ServerCache>
+        {(displayCache) => (
+          <ConnectionGate
+            displayCache={displayCache}
+            disableHealthCheck={props.disableHealthCheck}
+            loading={
+              <div class="h-dvh w-screen flex items-center justify-center bg-background-base">
+                <BrandedSplash class="w-20 h-20 object-contain opacity-80 animate-pulse" />
+              </div>
+            }
+            error={() => <ConnectionError />}
+          >
+            <QueryProvider displayCache={displayCache}>
+              <GlobalSDKProvider>
+                <GlobalSyncProvider displayCache={displayCache}>
+                  <DesktopCacheWriter cache={displayCache} />
+                  <Dynamic
+                    component={props.router ?? Router}
+                    root={(routerProps) => <RouterRoot appChildren={props.children}>{routerProps.children}</RouterRoot>}
+                  >
+                    <Route path="/" component={HomeRoute} />
+                    <Route path="/classic" component={HomeRoute} />
+                    <Route path="/classic-manager" component={ClassicManagerRoute} />
+                    <Route path="/manager" component={ManagerRoute} />
+                    <Route path="/experiment" component={ExperimentRoute} />
+                    <Route path="/:dir" component={DirectoryLayout}>
+                      <Route path="/" component={SessionIndexRoute} />
+                      <Route path="/session/:id?" component={SessionRoute} />
+                    </Route>
+                  </Dynamic>
+                </GlobalSyncProvider>
+              </GlobalSDKProvider>
+            </QueryProvider>
+          </ConnectionGate>
+        )}
+      </ServerCache>
     </ServerProvider>
   )
 }

@@ -22,6 +22,7 @@ export async function loadSidebarFeed(input: { sdk: OpencodeClient; directory: s
       throw error
     })
     if (!result) return undefined
+    if (!result.response) throw result.error ?? new Error("Sidebar feed unavailable")
     if (unavailable(result)) return undefined
     if (result.response.status === 410) return "expired" as const
     if (!result.response.ok || !result.data) throw result.error ?? new Error("Invalid sidebar feed response")
@@ -70,6 +71,7 @@ export function applySidebarFeed(input: {
   store: Store<State>
   setStore: SetStoreFunction<State>
   feed: { kind: "snapshot"; items: Title[]; total: number } | { kind: "changes"; changes: Change[]; total: number }
+  recentLimit?: number
   clearTodo: (id: string) => void
 }) {
   const roots = new Map(input.feed.kind === "snapshot" ? [] : input.store.session.filter((s) => !s.parentID).map((s) => [s.id, s] as const))
@@ -81,7 +83,7 @@ export function applySidebarFeed(input: {
     }
   }
   const sessions = trimSessions([...roots.values(), ...input.store.session.filter((s) => !!s.parentID)], {
-    limit: input.store.limit, permission: input.store.permission,
+    limit: input.store.limit, permission: input.store.permission, recentLimit: input.recentLimit,
   })
   batch(() => {
     input.setStore("sessionTotal", input.feed.total)
@@ -94,6 +96,7 @@ export function applySessionReconciliation(input: {
   store: Store<State>
   setStore: SetStoreFunction<State>
   changes: { upserts: Session[]; removed: string[]; limited: boolean }
+  recentLimit?: number
   clearTodo: (id: string) => void
 }) {
   const known = new Set(input.store.session.filter((s) => !s.parentID).map((s) => s.id))
@@ -103,6 +106,7 @@ export function applySessionReconciliation(input: {
   const sessions = trimSessions([...roots, ...upserts.values(), ...input.store.session.filter((s) => !!s.parentID)], {
     limit: input.store.limit,
     permission: input.store.permission,
+    recentLimit: input.recentLimit,
   })
   const delta = [...upserts.keys()].filter((id) => !known.has(id)).length - [...removed].filter((id) => known.has(id)).length
   const total = input.changes.limited ? input.store.sessionTotal + delta : known.size + delta

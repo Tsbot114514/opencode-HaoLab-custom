@@ -32,3 +32,6 @@ logs/
 /backup/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# Independently versioned native iOS client.
+/packages/mobile-ios/

@@ -22,13 +22,15 @@ import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import { SyncEvent } from "../sync"
 import type { SQL } from "drizzle-orm"
-import { PartTable, SessionTable } from "./session.sql"
+import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import { ProjectTable } from "../project/project.sql"
 import { Storage } from "@/storage/storage"
 import * as Log from "@opencode-ai/core/util/log"
 import { MessageV2 } from "./message-v2"
+import { SessionTranscript } from "./transcript"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
+import { EffectBridge } from "@/effect/bridge"
 import { Snapshot } from "@/snapshot"
 import { ProjectID } from "../project/schema"
 import { WorkspaceID } from "../control-plane/schema"
@@ -965,7 +967,44 @@ export const layer: Layer.Layer<
       field: string
       delta: string
     }) {
-      yield* bus.publish(MessageV2.Event.PartDelta, input)
+      const bridge = yield* EffectBridge.make()
+      Database.transaction(
+        (db) => {
+          if (input.field !== "text") return
+          const row = db
+            .select()
+            .from(PartTable)
+            .where(
+              and(
+                eq(PartTable.id, input.partID),
+                eq(PartTable.message_id, input.messageID),
+                eq(PartTable.session_id, input.sessionID),
+              ),
+            )
+            .get()
+          if (!row || (row.data.type !== "text" && row.data.type !== "reasoning")) return
+          if (
+            !db
+              .select({ id: MessageTable.id })
+              .from(MessageTable)
+              .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
+              .get()
+          )
+            return
+          const before = SessionTranscript.head(db)
+          db.update(PartTable)
+            .set({ data: { ...row.data, text: row.data.text + input.delta } })
+            .where(eq(PartTable.id, row.id))
+            .run()
+          const payload = structuredClone({ ...input, transcript: SessionTranscript.stamp(db, input, before) })
+          // Share the outer transaction's publication FIFO with full upserts;
+          // rollback must discard this stamped delta too.
+          Database.effect(() => {
+            bridge.fork(bus.publish(MessageV2.Event.PartDelta, payload))
+          })
+        },
+        { behavior: "immediate" },
+      )
     })
 
     /** Finds the first message matching the predicate, searching newest-first. */

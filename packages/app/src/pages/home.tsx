@@ -1,5 +1,5 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
-import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useQuery } from "@tanstack/solid-query"
 import { Button } from "@opencode-ai/ui/button"
@@ -10,7 +10,8 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/components/button-v2.jsx"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/components/icon.jsx"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/components/icon-button-v2.jsx"
 import { getAvatarColors, useLayout, type LocalProject } from "@/context/layout"
-import { useNavigate } from "@solidjs/router"
+import { useNavigate, useParams } from "@solidjs/router"
+import { decodeDirectory } from "@/pages/directory-layout"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { Icon } from "@opencode-ai/ui/icon"
 import { usePlatform } from "@/context/platform"
@@ -19,7 +20,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { DialogSelectDirectory } from "@/components/dialog-select-directory"
 import { DialogSelectServer } from "@/components/dialog-select-server"
 import { DialogSelectModel } from "@/components/dialog-select-model"
-import { useServer } from "@/context/server"
+import { sendMobileCache, useServer } from "@/context/server"
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { useNotification } from "@/context/notification"
@@ -51,11 +52,19 @@ type HomeSessionGroup = {
 }
 
 export default function Home() {
-  if (USE_HOME_DESIGN) return <HomeDesign />
+  if (
+    USE_HOME_DESIGN ||
+    (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+  )
+    return <HomeDesign />
   return <LegacyHome />
 }
 
-function HomeDesign() {
+export function MobileProjectSessionSelector(props: { drawer?: boolean; onNavigate?: () => void }) {
+  return <HomeDesign drawer={props.drawer} onNavigate={props.onNavigate} />
+}
+
+function HomeDesign(props: { drawer?: boolean; onNavigate?: () => void } = {}) {
   const sync = useGlobalSync()
   const layout = useLayout()
   const platform = usePlatform()
@@ -63,11 +72,32 @@ function HomeDesign() {
   const navigate = useNavigate()
   const server = useServer()
   const language = useLanguage()
-  const [state, setState] = createStore({ search: "", project: undefined as string | undefined })
+  const params = useParams()
+  const mobile = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
+  const [state, setState] = createStore({
+    search: "",
+    project: undefined as string | undefined,
+    shown: 10,
+    loadingMore: false,
+    loadMoreError: false,
+  })
 
   const projects = createMemo(() => layout.projects.list())
   const selectedProject = createMemo(
-    () => projects().find((project) => project.worktree === state.project) ?? projects()[0],
+    () => projects().find((project) => (!mobile || props.drawer) && project.worktree === state.project) ??
+      projects().find((project) => props.drawer && (project.worktree === decodeDirectory(params.dir ?? "") || project.sandboxes?.includes(decodeDirectory(params.dir ?? "") ?? ""))) ??
+      projects().find((project) => mobile && project.worktree === server.projects.last()) ?? projects()[0],
+  )
+  createEffect(
+    on(
+      () => mobile && !props.drawer ? selectedProject()?.worktree : undefined,
+      (directory, previous) => {
+        if (!directory || directory === previous) return
+        // Only Home owns the fallback selection; a mounted drawer must not replace the active route.
+        if (server.projects.last() !== directory) server.projects.touch(directory)
+        sendMobileCache({ type: "selected", directory })
+      },
+    ),
   )
   const projectDirectories = createMemo(() => {
     const project = selectedProject()
@@ -75,10 +105,37 @@ function HomeDesign() {
     return [project.worktree, ...(project.sandboxes ?? [])]
   })
   const search = createMemo(() => state.search.trim())
+  const loadedRoots = createMemo(() =>
+    [
+      ...new Map(
+        projectDirectories()
+          .flatMap((directory) => sortedRootSessions(sync.child(directory, { bootstrap: false })[0], Date.now()))
+          .map((session) => [`${pathKey(session.directory)}:${session.id}`, session] as const),
+      ).values(),
+    ].sort((a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created)),
+  )
+  const hasMore = createMemo(
+    () =>
+      mobile &&
+      (loadedRoots().length > state.shown ||
+        projectDirectories().some((directory) => {
+          const store = sync.child(directory, { bootstrap: false })[0]
+          return store.sessionTotal > sortedRootSessions(store, Date.now()).length
+        })),
+  )
   const sessionLoad = useQuery(() => ({
-    queryKey: ["home", "sessions", ...projectDirectories()] as const,
+    queryKey: ["home", "sessions", ...projectDirectories(), ...(mobile ? [server.connection.revision()] : [])] as const,
+    enabled: !mobile || (server.healthy() === true && server.connection.active() && projectDirectories().length > 0 && (!props.drawer || layout.mobileSidebar.opened())),
+    retry: mobile ? 0 : undefined,
     queryFn: async () => {
-      await Promise.all(projectDirectories().map((directory) => sync.project.loadSessions(directory)))
+      if (mobile) {
+        for (const directory of projectDirectories()) {
+          if (!(await sync.project.loadSessions(directory, { force: true }))) throw new Error("Failed to load sessions")
+        }
+        return null
+      }
+      const results = await Promise.all(projectDirectories().map((directory) => sync.project.loadSessions(directory)))
+      if (results.some((success) => !success)) throw new Error("Failed to load sessions")
       return null
     },
   }))
@@ -87,14 +144,7 @@ function HomeDesign() {
     () => new Map(projects().flatMap((project) => (project.id ? [[project.id, project] as const] : []))),
   )
   const records = createMemo(() =>
-    [
-      ...new Map(
-        projectDirectories()
-          .flatMap((directory) => sortedRootSessions(sync.child(directory, { bootstrap: false })[0], Date.now()))
-          .map((session) => [`${pathKey(session.directory)}:${session.id}`, session] as const),
-      ).values(),
-    ]
-      .sort((a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created))
+    loadedRoots()
       .flatMap((session) => {
         const project = projectForSession(session, projects(), projectByID())
         if (!project) return []
@@ -109,19 +159,50 @@ function HomeDesign() {
         if (!value) return true
         return `${record.session.title} ${record.projectName}`.toLowerCase().includes(value)
       })
-      .slice(0, HOME_SESSION_LIMIT),
+      .slice(0, mobile ? (search() ? loadedRoots().length : state.shown) : HOME_SESSION_LIMIT),
   )
   const groups = createMemo(() => groupSessions(records(), language))
 
   function selectProject(directory: string) {
     if (!projects().some((project) => project.worktree === directory)) return
-    setState("project", directory)
+    setState({ project: directory, shown: 10, loadMoreError: false })
+    if (mobile) {
+      server.projects.touch(directory)
+      sendMobileCache({ type: "selected", directory })
+    }
+  }
+
+  async function loadMore() {
+    if (state.loadingMore || sessionLoad.isLoading || !hasMore()) return
+    const project = selectedProject()?.worktree
+    const directories = projectDirectories()
+    setState({ loadingMore: true, loadMoreError: false })
+    const next = state.shown + 10
+    if (loadedRoots().length > state.shown) {
+      setState({ shown: next, loadingMore: false })
+      return
+    }
+    if (mobile && server.healthy() !== true) {
+      setState("loadingMore", false)
+      return
+    }
+    const results = [] as boolean[]
+    for (const directory of directories) {
+      const [store, setStore] = sync.child(directory, { bootstrap: false })
+      if (store.limit < next) setStore("limit", next)
+      results.push(await sync.project.loadSessions(directory))
+    }
+    if (selectedProject()?.worktree === project) {
+      if (results.every(Boolean)) setState("shown", next)
+      if (results.some((success) => !success)) setState("loadMoreError", true)
+    }
+    setState("loadingMore", false)
   }
 
   function addProject(directory: string) {
     layout.projects.open(directory)
     server.projects.touch(directory)
-    setState("project", directory)
+    setState({ project: directory, shown: 10, loadMoreError: false })
   }
 
   function openNewSession() {
@@ -132,7 +213,9 @@ function HomeDesign() {
     }
     layout.projects.open(project.worktree)
     server.projects.touch(project.worktree)
-    navigate(`/${base64Encode(project.worktree)}/session`)
+    const directory = props.drawer ? decodeDirectory(params.dir ?? "") : undefined
+    navigate(`/${base64Encode(directory && (directory === project.worktree || project.sandboxes?.includes(directory)) ? directory : project.worktree)}/session`)
+    props.onNavigate?.()
   }
 
   function openSession(session: Session) {
@@ -140,13 +223,14 @@ function HomeDesign() {
     layout.projects.open(project?.worktree ?? session.directory)
     server.projects.touch(project?.worktree ?? session.directory)
     navigate(`/${base64Encode(session.directory)}/session/${session.id}`)
+    props.onNavigate?.()
   }
 
   async function chooseProject() {
     function resolve(result: string | string[] | null) {
       if (Array.isArray(result)) {
         result.forEach(addProject)
-        if (result[0]) setState("project", result[0])
+        if (result[0]) setState({ project: result[0], shown: 10, loadMoreError: false })
         return
       }
       if (result) addProject(result)
@@ -174,9 +258,12 @@ function HomeDesign() {
   }
 
   return (
-    <div class="mx-auto grid w-full h-full max-w-[1080px] gap-8 px-6 pb-16 lg:grid-cols-[280px_minmax(0,720px)]">
+    <div data-component="home-design" data-drawer={props.drawer ? "" : undefined} class="mx-auto grid w-full h-full max-w-[1080px] gap-8 px-6 pb-16 lg:grid-cols-[280px_minmax(0,720px)]">
       <HomeProjectColumn
         projects={projects()}
+        mobile={mobile}
+        status={server.projects.status()}
+        retry={server.projects.retry}
         selected={selectedProject()?.worktree}
         selectProject={selectProject}
         chooseProject={() => void chooseProject()}
@@ -189,37 +276,94 @@ function HomeDesign() {
         class="min-w-0 flex-1 flex flex-col overflow-y-hidden pt-12"
         aria-label={language.t("sidebar.project.recentSessions")}
       >
-        <HomeSessionSearch
-          value={state.search}
-          placeholder={language.t("home.sessions.search.placeholder")}
-          onInput={(value) => setState("search", value)}
-        />
-        <div class="mt-3 overflow-auto flex-1">
+        <div class={mobile ? "flex min-w-0 items-center gap-1" : ""}>
+          <HomeSessionSearch
+            value={state.search}
+            placeholder={language.t("home.sessions.search.placeholder")}
+            onInput={(value) => setState("search", value)}
+          />
+          <Show when={mobile}>
+            <button type="button" data-action="home-new-session" class="shrink-0 text-xs text-v2-text-text-muted" onClick={openNewSession}>
+              {language.t("command.session.new")}
+            </button>
+          </Show>
+        </div>
+        <div class="mt-3 min-h-0 overflow-auto flex-1">
           <div class="pt-3 flex flex-col gap-6">
-            <Show when={!sessionLoad.isLoading} fallback={<HomeSessionSkeleton label={language.t("common.loading")} />}>
+            <Show when={mobile}>
+              <div role="status" class="flex flex-wrap items-center gap-2 px-4 text-xs text-v2-text-text-muted">
+                <span>{server.healthy() === false
+                  ? language.locale().startsWith("zh") ? "离线，显示本地内容" : "Offline · Showing cached content"
+                  : sessionLoad.isError || state.loadMoreError || server.projects.status() === "error"
+                    ? language.t("common.requestFailed")
+                    : sessionLoad.isFetching || server.projects.status() === "loading" || server.connection.state() === "connecting" || server.healthy() !== true
+                      ? language.locale().startsWith("zh") ? "正在同步" : "Syncing..."
+                      : language.locale().startsWith("zh") ? "已同步" : "Synced"}</span>
+                <button type="button" aria-label={language.locale().startsWith("zh") ? "刷新项目与会话" : "Refresh projects and sessions"} onClick={() => void server.connection.refresh()}>
+                  {language.locale().startsWith("zh") ? "刷新" : "Refresh"}
+                </button>
+              </div>
+            </Show>
+            <Show
+              when={mobile || !sessionLoad.isLoading}
+              fallback={
+                server.projects.status() === "error" ? (
+                  <div class="flex items-center gap-3 px-4 text-v2-text-text-muted">
+                    <span>{language.t("common.requestFailed")}</span>
+                    <button type="button" class="underline" onClick={server.projects.retry}>Retry</button>
+                  </div>
+                ) : (
+                  <HomeSessionSkeleton label={language.t("common.loading")} />
+                )
+              }
+            >
               <Show
-                when={groups().length > 0}
+                when={mobile || !sessionLoad.isError}
                 fallback={
-                  <div class="flex min-w-0 flex-col gap-4">
-                    <HomeSessionGroupHeader title={language.t("home.sessions.empty")} onNewSession={openNewSession} />
+                  <div class="flex items-center gap-3 px-4 text-v2-text-text-muted">
+                    <span>{language.t("common.requestFailed")}</span>
+                    <button type="button" class="underline" onClick={() => void sessionLoad.refetch()}>
+                      Retry
+                    </button>
                   </div>
                 }
               >
-                <For each={groups()}>
-                  {(group, index) => (
-                    <div class="flex min-w-0 flex-col gap-4">
-                      <HomeSessionGroupHeader
-                        title={group.title}
-                        onNewSession={index() === 0 ? openNewSession : undefined}
-                      />
-                      <div class="flex min-w-0 flex-col gap-px">
-                        <For each={group.sessions}>
-                          {(record) => <HomeSessionRow record={record} openSession={openSession} />}
-                        </For>
+                <Show
+                  when={groups().length > 0}
+                  fallback={
+                    <Show when={!mobile || (!sessionLoad.isLoading && !sessionLoad.isError && server.projects.status() !== "loading")}>
+                      <div class="flex min-w-0 flex-col gap-4">
+                        <HomeSessionGroupHeader title={language.t("home.sessions.empty")} onNewSession={openNewSession} />
                       </div>
-                    </div>
-                  )}
-                </For>
+                    </Show>
+                  }
+                >
+                  <For each={groups()}>
+                    {(group, index) => (
+                      <div class="flex min-w-0 flex-col gap-4">
+                        <HomeSessionGroupHeader
+                          title={group.title}
+                          onNewSession={!mobile && index() === 0 ? openNewSession : undefined}
+                        />
+                        <div class="flex min-w-0 flex-col gap-px">
+                          <For each={group.sessions}>
+                            {(record) => <HomeSessionRow record={record} mobile={mobile} openSession={openSession} />}
+                          </For>
+                        </div>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+                <Show when={mobile && hasMore()}>
+                  <button
+                    type="button"
+                    class="mx-4 self-start text-v2-text-text-muted disabled:opacity-50"
+                    disabled={state.loadingMore}
+                    onClick={() => void loadMore()}
+                  >
+                    {state.loadingMore ? language.t("common.loading") : language.t("common.loadMore")}
+                  </button>
+                </Show>
               </Show>
             </Show>
           </div>
@@ -231,6 +375,9 @@ function HomeDesign() {
 
 function HomeProjectColumn(props: {
   projects: LocalProject[]
+  mobile: boolean
+  status: "loading" | "ready" | "error"
+  retry: () => void
   selected?: string
   selectProject: (directory: string) => void
   chooseProject: () => void
@@ -242,28 +389,49 @@ function HomeProjectColumn(props: {
     <aside class="flex min-w-0 flex-col lg:pt-[52px]" aria-label={props.language.t("home.projects")}>
       <div class="flex h-7 min-w-0 items-center justify-between pl-3">
         <div class={HOME_SECTION_LABEL}>{props.language.t("home.projects")}</div>
-        <IconButtonV2
-          data-action="home-add-project"
-          variant="ghost-muted"
-          size="large"
-          class="titlebar-icon [&_[data-slot=icon-svg]]:text-v2-icon-icon-muted"
-          icon={<IconV2 name="folder-add-left" />}
-          onClick={props.chooseProject}
-          aria-label={props.language.t("home.project.add")}
-        />
+        <Show when={!props.mobile}>
+          <IconButtonV2
+            data-action="home-add-project"
+            variant="ghost-muted"
+            size="large"
+            class="titlebar-icon [&_[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+            icon={<IconV2 name="folder-add-left" />}
+            onClick={props.chooseProject}
+            aria-label={props.language.t("home.project.add")}
+          />
+        </Show>
       </div>
-      <div class="mt-4 flex max-h-[min(572px,calc(100vh_-_300px))] min-w-0 flex-col gap-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div data-slot="home-project-list" class="mt-4 flex max-h-[min(572px,calc(100vh_-_300px))] min-w-0 flex-col gap-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <Show
           when={props.projects.length > 0}
-          fallback={
-            <button
-              type="button"
-              class={`${HOME_PROJECT_NAV_ROW} text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted`}
-              onClick={props.chooseProject}
+          fallback={props.mobile ? <span class="px-3 text-v2-text-text-muted">{props.status === "ready" ? props.language.t("sidebar.empty.title") : ""}</span> :
+            <Show
+              when={props.status !== "error"}
+              fallback={
+                <button type="button" class={HOME_PROJECT_NAV_ROW} onClick={props.retry}>
+                  <span>{props.language.t("common.requestFailed")} · Retry</span>
+                </button>
+              }
             >
-              <IconV2 name="folder-add-left" size="small" />
-              <span>{props.language.t("home.project.add")}</span>
-            </button>
+              <Show
+                when={props.status !== "loading"}
+                fallback={<span class="px-3 text-v2-text-text-muted">{props.language.t("common.loading")}</span>}
+              >
+                <Show
+                  when={!props.mobile}
+                  fallback={<span class="px-3 text-v2-text-text-muted">{props.language.t("sidebar.empty.title")}</span>}
+                >
+                  <button
+                    type="button"
+                    class={`${HOME_PROJECT_NAV_ROW} text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted`}
+                    onClick={props.chooseProject}
+                  >
+                    <IconV2 name="folder-add-left" size="small" />
+                    <span>{props.language.t("home.project.add")}</span>
+                  </button>
+                </Show>
+              </Show>
+            </Show>
           }
         >
           <For each={props.projects}>
@@ -282,6 +450,11 @@ function HomeProjectColumn(props: {
               </button>
             )}
           </For>
+        </Show>
+        <Show when={!props.mobile && props.status === "error" && props.projects.length > 0}>
+          <button type="button" class={HOME_PROJECT_NAV_ROW} onClick={props.retry}>
+            <span>{props.language.t("common.requestFailed")} · Retry</span>
+          </button>
         </Show>
       </div>
       <div class="mt-4 flex min-w-0 flex-col gap-1">
@@ -358,12 +531,13 @@ function HomeSessionGroupHeader(props: { title: string; onNewSession?: () => voi
   )
 }
 
-function HomeSessionRow(props: { record: HomeSessionRecord; openSession: (session: Session) => void }) {
+function HomeSessionRow(props: { record: HomeSessionRecord; mobile: boolean; openSession: (session: Session) => void }) {
   const globalSync = useGlobalSync()
   const notification = useNotification()
   const permission = usePermission()
   const [sessionStore] = globalSync.child(props.record.session.directory, { bootstrap: false })
   const title = createMemo(() => sessionTitle(props.record.session.title) || props.record.session.id)
+  const updated = createMemo(() => DateTime.fromMillis(props.record.session.time.updated ?? props.record.session.time.created))
   const unseenCount = createMemo(() => notification.session.unseenCount(props.record.session.id))
   const hasError = createMemo(() => notification.session.unseenHasError(props.record.session.id))
   const hasPermissions = createMemo(
@@ -408,14 +582,23 @@ function HomeSessionRow(props: { record: HomeSessionRecord; openSession: (sessio
         </div>
       </Show>
       <span
+        data-slot="home-session-title"
         class={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-v2-text-text-base [font-weight:530] ${props.record.projectName ? "max-w-[min(70%,480px)] flex-[0_1_auto]" : "flex-[1_1_auto]"}`}
       >
         {title()}
       </span>
-      <Show when={props.record.projectName}>
-        <span class="min-w-0 flex-[1_1_auto] overflow-hidden text-ellipsis whitespace-nowrap text-v2-text-text-muted [font-weight:440]">
+      <Show when={!props.mobile && props.record.projectName}>
+        <span data-slot="home-session-project" class="min-w-0 flex-[1_1_auto] overflow-hidden text-ellipsis whitespace-nowrap text-v2-text-text-muted [font-weight:440]">
           {props.record.projectName}
         </span>
+      </Show>
+      <Show when={props.mobile}>
+        <time
+          class="shrink-0 text-xs text-v2-text-text-muted"
+          dateTime={updated().toISO() ?? undefined}
+        >
+          {updated().hasSame(DateTime.local(), "day") ? updated().toFormat("HH:mm") : updated().toFormat("M/d")}
+        </time>
       </Show>
     </button>
   )

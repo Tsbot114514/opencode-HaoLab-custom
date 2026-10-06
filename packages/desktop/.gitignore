@@ -25,6 +25,7 @@ dist-ssr
 out/
 remote-helper/bin/
 dist-remote-auth-fix/
+dist-mobile-projects/
 
 resources/opencode-cli*
 resources/icons

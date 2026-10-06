@@ -35,8 +35,16 @@ export function getSessionPrefetchPromise(directory: string, sessionID: string) 
   return inflight.get(key(directory, sessionID))
 }
 
-export function clearSessionPrefetchInflight() {
-  inflight.clear()
+export function clearSessionPrefetchInflight(directory?: string) {
+  if (!directory) {
+    inflight.clear()
+    return
+  }
+  for (const id of inflight.keys()) {
+    if (!id.startsWith(`${directory}\n`)) continue
+    rev.set(id, version(id) + 1)
+    inflight.delete(id)
+  }
 }
 
 export function isSessionPrefetchCurrent(directory: string, sessionID: string, value: number) {

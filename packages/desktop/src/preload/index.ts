@@ -39,6 +39,8 @@ const api: ElectronAPI = {
   storeKeys: (name) => ipcRenderer.invoke("store-keys", name),
   storeLength: (name) => ipcRenderer.invoke("store-length", name),
   transcriptMutate: (scope, owner, operations) => ipcRenderer.invoke("transcript-mutate", scope, owner, operations),
+  transcriptOpen: (scope) => ipcRenderer.invoke("transcript-open", scope),
+  transcriptReadPage: (scope, owner, directory, sessionID, before) => ipcRenderer.invoke("transcript-read-page", scope, owner, directory, sessionID, before),
   transcriptAcquire: (scope, owner, directory, sessionID) => ipcRenderer.invoke("transcript-acquire", scope, owner, directory, sessionID),
 
   getWindowCount: () => ipcRenderer.invoke("get-window-count"),

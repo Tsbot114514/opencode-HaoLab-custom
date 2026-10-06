@@ -292,7 +292,7 @@ function register(def: Definition) {
 
 function process<Def extends Definition>(
   def: Def,
-  event: Event<Def>,
+  input: Event<Def>,
   options: {
     bus: ProjectBus.Interface
     bridge: EffectBridge.Shape
@@ -310,6 +310,14 @@ function process<Def extends Definition>(
     if (!def.type.includes("next")) throw new Error(`Projector not found for event: ${def.type}`)
     return
   }
+
+  // Message projection attaches committed mutation metadata. Keep each queued
+  // payload independent of later writes and caller-owned mutable objects.
+  const event = ["message.updated", "message.removed", "message.part.updated", "message.part.removed"].includes(
+    def.type,
+  )
+    ? { ...input, data: structuredClone(input.data) }
+    : input
 
   Database.transaction((tx) => {
     projector(tx, event.data, event)

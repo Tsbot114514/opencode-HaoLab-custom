@@ -15,6 +15,7 @@ import {
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { useQuery } from "@tanstack/solid-query"
+import { downloadedUpdateVersion } from "./layout/update"
 import { useLayout, LocalProject } from "@/context/layout"
 import { useGlobalSync } from "@/context/global-sync"
 import { Persist, persisted } from "@/utils/persist"
@@ -89,10 +90,12 @@ import {
 } from "./layout/sidebar-workspace"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
+import { MobileProjectSessionSelector } from "./home"
 
 const USE_NEW_DESIGN = false
 
 export default function Layout(props: ParentProps) {
+  const mobileWebView = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
   const [store, setStore, , ready] = persisted(
     Persist.global("layout.page", ["layout.page.v1"]),
     createStore({
@@ -155,7 +158,7 @@ export default function Layout(props: ParentProps) {
   const currentDir = createMemo(() => route().dir)
 
   const [state, setState] = createStore({
-    autoselect: !initialDirectory && !USE_NEW_DESIGN,
+    autoselect: !mobileWebView && !initialDirectory && !USE_NEW_DESIGN,
     busyWorkspaces: {} as Record<string, boolean>,
     hoverProject: undefined as string | undefined,
     scrollSessionKey: undefined as string | undefined,
@@ -165,6 +168,18 @@ export default function Layout(props: ParentProps) {
     peek: undefined as string | undefined,
     peeked: false,
   })
+
+  createEffect(
+    on(
+      () => location.pathname,
+      (path, previous) => {
+        if (!mobileWebView || !previous || path === previous) return
+        layout.mobileSidebar.hide()
+        layout.mobileNavigation.collapse()
+      },
+      { defer: true },
+    ),
+  )
 
   const [update, setUpdate] = createStore({
     installing: false,
@@ -179,9 +194,7 @@ export default function Layout(props: ParentProps) {
   const updateVersion = () => {
     if (!settings.ready()) return
     if (!settings.updates.startup()) return
-    if (!updateQuery.data?.updateAvailable) return
-    if (!updateQuery.data.downloaded) return
-    return updateQuery.data.version ?? ""
+    return downloadedUpdateVersion(updateQuery)
   }
   const installUpdate = () => {
     if (!platform.updateAndRestart) return
@@ -558,23 +571,26 @@ export default function Layout(props: ParentProps) {
     return projects.find((p) => p.worktree === root)
   })
 
-  const [autoselecting] = createResource(async () => {
-    await ready.promise
-    await layout.ready.promise
-    if (!untrack(() => state.autoselect)) return
+  // Resources start eagerly. Autoselection must not register the cached shell with Suspense.
+  const [autoselecting] = createResource(() =>
+    (async () => {
+      await ready.promise
+      await layout.ready.promise
+      if (!untrack(() => state.autoselect)) return
 
-    const list = layout.projects.list()
-    const last = server.projects.last()
+      const list = layout.projects.list()
+      const last = server.projects.last()
 
-    if (list.length === 0) {
-      if (!last) return
-      await openProject(last, true)
-    } else {
+      if (list.length === 0) {
+        if (!last) return
+        await openProject(last, true)
+        return
+      }
       const next = list.find((project) => project.worktree === last) ?? list[0]
       if (!next) return
       await openProject(next.worktree, true)
-    }
-  })
+    })().catch(() => undefined),
+  )
 
   const workspaceName = (directory: string, projectId?: string, branch?: string) => {
     const key = pathKey(directory)
@@ -831,6 +847,7 @@ export default function Layout(props: ParentProps) {
   }
 
   const prefetchSession = (session: Session, priority: "high" | "low" = "low") => {
+    if (mobileWebView) return
     const directory = session.directory
     if (!directory) return
 
@@ -885,6 +902,7 @@ export default function Layout(props: ParentProps) {
   }
 
   createEffect(() => {
+    if (mobileWebView) return
     const sessions = currentSessions()
     if (sessions.length === 0) return
 
@@ -1312,7 +1330,10 @@ export default function Layout(props: ParentProps) {
     const openSession = async (target: { directory: string; id: string }) => {
       if (!canOpen(target.directory)) return false
       const [data] = globalSync.child(target.directory, { bootstrap: false })
-      if (data.session.some((item) => item.id === target.id)) {
+      if (
+        data.session.some((item) => item.id === target.id) || data.message[target.id]?.length ||
+        globalSync.transcript.read(target.directory, target.id, 1, undefined, true)?.session.length
+      ) {
         setStore("lastProjectSession", root, { directory: target.directory, id: target.id, at: Date.now() })
         navigateWithSidebarReset(`/${base64Encode(target.directory)}/session/${target.id}`)
         return true
@@ -1328,18 +1349,24 @@ export default function Layout(props: ParentProps) {
       return true
     }
 
+    const latest = latestRootSession(
+      dirs.map((item) => globalSync.child(item, { bootstrap: false })[0]),
+      Date.now(),
+    )
     const projectSession = store.lastProjectSession[root]
     if (projectSession?.id) {
+      await globalSync.transcript.ensureSelected(projectSession.directory, projectSession.id)
+      const [data] = globalSync.child(projectSession.directory, { bootstrap: false })
+      const known =
+        data.session.some((item) => item.id === projectSession.id) || data.message[projectSession.id]?.length ||
+        globalSync.transcript.read(projectSession.directory, projectSession.id, 1, undefined, true)?.session.length
+      if (!known && latest && (await openSession(latest))) return
       await refreshDirs(projectSession.directory)
       const opened = await openSession(projectSession)
       if (opened) return
       clearLastProjectSession(root)
     }
 
-    const latest = latestRootSession(
-      dirs.map((item) => globalSync.child(item, { bootstrap: false })[0]),
-      Date.now(),
-    )
     if (latest && (await openSession(latest))) {
       return
     }
@@ -2372,10 +2399,27 @@ export default function Layout(props: ParentProps) {
     />
   )
 
+  if (mobileWebView) {
+    return (
+      <div class="relative bg-background-base flex-1 min-h-0 min-w-0 flex flex-col">
+        <Titlebar update={titlebarUpdate} />
+        <Show when={layout.mobileSidebar.opened()}>
+          <div data-component="mobile-drawer-backdrop" onClick={layout.mobileSidebar.hide} />
+          <nav id="sidebar-nav-mobile" data-component="sidebar-nav-mobile" data-native-drawer aria-label={language.t("sidebar.nav.projectsAndSessions")} onKeyDown={(event) => {
+            if (event.key === "Escape") layout.mobileSidebar.hide()
+          }}>
+            <MobileProjectSessionSelector drawer onNavigate={layout.mobileSidebar.hide} />
+          </nav>
+        </Show>
+        <main class="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">{props.children}</main>
+        <Toast.Region />
+      </div>
+    )
+  }
+
   if (USE_NEW_DESIGN) {
     return (
       <div class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
-        {autoselecting() ?? ""}
         <Titlebar update={titlebarUpdate} />
         <main
           class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict bg-v2-background-bg-base"
@@ -2395,7 +2439,6 @@ export default function Layout(props: ParentProps) {
 
   return (
     <div class="relative bg-background-base flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
-      {autoselecting() ?? ""}
       <Titlebar update={titlebarUpdate} />
       <Show when={updateVersion() !== undefined}>
         <UpdateAvailableToast version={updateVersion() ?? ""} install={installUpdate} language={language} />
@@ -2456,6 +2499,7 @@ export default function Layout(props: ParentProps) {
 
             <div class="xl:hidden">
               <div
+                style={{ top: import.meta.env.VITE_OPENCODE_CHANNEL !== "prod" ? "44px" : "40px" }}
                 classList={{
                   "fixed inset-x-0 top-10 bottom-0 z-40 transition-opacity duration-200": true,
                   "opacity-100 pointer-events-auto": layout.mobileSidebar.opened(),
@@ -2466,8 +2510,11 @@ export default function Layout(props: ParentProps) {
                 }}
               />
               <nav
+                id="sidebar-nav-mobile"
                 aria-label={language.t("sidebar.nav.projectsAndSessions")}
                 data-component="sidebar-nav-mobile"
+                inert={!layout.mobileSidebar.opened()}
+                style={{ top: import.meta.env.VITE_OPENCODE_CHANNEL !== "prod" ? "44px" : "40px" }}
                 classList={{
                   "@container fixed top-10 bottom-0 left-0 z-50 w-full max-w-[400px] overflow-hidden border-r border-border-weaker-base bg-background-base transition-transform duration-200 ease-out": true,
                   "translate-x-0": layout.mobileSidebar.opened(),

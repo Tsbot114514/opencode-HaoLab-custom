@@ -126,6 +126,12 @@ export const Client = Object.assign(
       applyMigrations(db, entries)
     }
 
+    // A database-file rollback can also roll back an in-database epoch. Opening
+    // a database starts a new cursor incarnation, including ordinary restarts.
+    if (db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_transcript_meta'").length) {
+      db.run("UPDATE session_transcript_meta SET epoch = lower(hex(randomblob(16))) WHERE id = 1")
+    }
+
     client = db
     loaded = true
     return db

@@ -25,6 +25,7 @@ import { Effect, Schema, Types } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
 import { MessageError } from "./message-error"
+import { SessionTranscript } from "./transcript"
 import { AuthError, OutputLengthError } from "./message-error"
 export { AuthError, OutputLengthError } from "./message-error"
 
@@ -510,23 +511,27 @@ export type Info = User | Assistant
 const UpdatedEventSchema = Schema.Struct({
   sessionID: SessionID,
   info: Info,
+  transcript: Schema.optional(SessionTranscript.Stamp),
 })
 
 const RemovedEventSchema = Schema.Struct({
   sessionID: SessionID,
   messageID: MessageID,
+  transcript: Schema.optional(SessionTranscript.Stamp),
 })
 
 const PartUpdatedEventSchema = Schema.Struct({
   sessionID: SessionID,
   part: Part,
   time: NonNegativeInt,
+  transcript: Schema.optional(SessionTranscript.Stamp),
 })
 
 const PartRemovedEventSchema = Schema.Struct({
   sessionID: SessionID,
   messageID: MessageID,
   partID: PartID,
+  transcript: Schema.optional(SessionTranscript.Stamp),
 })
 
 export const Event = {
@@ -556,6 +561,7 @@ export const Event = {
       partID: PartID,
       field: Schema.String,
       delta: Schema.String,
+      transcript: Schema.optional(SessionTranscript.Stamp),
     }),
   ),
   PartRemoved: SyncEvent.define({

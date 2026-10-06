@@ -18,6 +18,7 @@
     "test": "bun run test:unit",
     "test:ci": "mkdir -p .artifacts/unit && bun test --preload ./happydom.ts ./src --reporter=junit --reporter-outfile=.artifacts/unit/junit.xml",
     "test:unit": "bun test --preload ./happydom.ts ./src",
+    "test:browser": "bun test --conditions=browser --preload ./happydom.ts --preload ./browser-test.ts ./src/context/connection-gate.test.ts ./src/pages/layout.browser.test.ts",
     "test:unit:watch": "bun test --watch --preload ./happydom.ts ./src",
     "test:e2e": "playwright test",
     "test:e2e:local": "playwright test",

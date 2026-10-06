@@ -7,6 +7,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
 import { SessionSidebarFeed } from "@/session/sidebar-feed"
+import { SessionTranscriptFeed } from "@/session/transcript-feed"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
@@ -20,7 +21,7 @@ import { NotFoundError } from "@/storage/storage"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpEffect, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { WorkspaceRouteContext } from "../middleware/workspace-routing"
@@ -37,12 +38,16 @@ import {
   SidebarSnapshotQuery,
   SidebarChangesQuery,
   SidebarCursorExpiredError,
+  TranscriptSnapshotQuery,
+  TranscriptChangesQuery,
+  TranscriptCursorExpiredError,
   RevertPayload,
   ShellPayload,
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
 import * as SessionError from "./session-errors"
+import { InvalidCursorError, notFound } from "../errors"
 
 const tryParseJson = (text: string) =>
   Effect.try({
@@ -94,7 +99,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const outside = limited
         ? yield* Effect.forEach(
             [...known.values()].filter((item) => !windowIDs.has(item.id)),
-            (item) => session.get(item.id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined))),
+            (item) =>
+              session.get(item.id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined))),
             { concurrency: 8 },
           )
         : []
@@ -116,40 +122,113 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             previous.archived !== undefined
           )
         }),
-        removed: ctx.payload.known
-          .filter((item) => !ids.has(item.id))
-          .map((item) => item.id),
+        removed: ctx.payload.known.filter((item) => !ids.has(item.id)).map((item) => item.id),
         limit: ctx.payload.limit,
         limited,
       }
     })
 
-    const sidebarSnapshot = Effect.fn("SessionHttpApi.sidebarSnapshot")(function* (ctx: { query: typeof SidebarSnapshotQuery.Type }) {
-      if ((ctx.query.afterUpdated === undefined) !== (ctx.query.afterID === undefined) ||
-          (ctx.query.afterID !== undefined && ctx.query.cursor === undefined)) return yield* new HttpApiError.BadRequest({})
+    const sidebarSnapshot = Effect.fn("SessionHttpApi.sidebarSnapshot")(function* (ctx: {
+      query: typeof SidebarSnapshotQuery.Type
+    }) {
+      if (
+        (ctx.query.afterUpdated === undefined) !== (ctx.query.afterID === undefined) ||
+        (ctx.query.afterID !== undefined && ctx.query.cursor === undefined)
+      )
+        return yield* new HttpApiError.BadRequest({})
       const route = yield* WorkspaceRouteContext
       const projectID = (yield* InstanceState.context).project.id
       const result = SessionSidebarFeed.snapshot(
-        { projectID, directory: ctx.query.directory ?? route.directory }, ctx.query,
+        { projectID, directory: ctx.query.directory ?? route.directory },
+        ctx.query,
       )
-      if (result === "expired") return yield* new SidebarCursorExpiredError({ message: "Sidebar cursor expired; request a new snapshot" })
+      if (result === "expired")
+        return yield* new SidebarCursorExpiredError({ message: "Sidebar cursor expired; request a new snapshot" })
       if (result === "invalid") return yield* new HttpApiError.BadRequest({})
       return result
     })
 
-    const sidebarChanges = Effect.fn("SessionHttpApi.sidebarChanges")(function* (ctx: { query: typeof SidebarChangesQuery.Type }) {
+    const sidebarChanges = Effect.fn("SessionHttpApi.sidebarChanges")(function* (ctx: {
+      query: typeof SidebarChangesQuery.Type
+    }) {
       const route = yield* WorkspaceRouteContext
       const projectID = (yield* InstanceState.context).project.id
       const result = SessionSidebarFeed.changes(
-        { projectID, directory: ctx.query.directory ?? route.directory }, ctx.query,
+        { projectID, directory: ctx.query.directory ?? route.directory },
+        ctx.query,
       )
-      if (result === "expired") return yield* new SidebarCursorExpiredError({ message: "Sidebar cursor expired; request a new snapshot" })
+      if (result === "expired")
+        return yield* new SidebarCursorExpiredError({ message: "Sidebar cursor expired; request a new snapshot" })
       if (result === "invalid") return yield* new HttpApiError.BadRequest({})
       return result
     })
 
     const status = Effect.fn("SessionHttpApi.status")(function* () {
       return Object.fromEntries(yield* statusSvc.list())
+    })
+
+    const transcriptSnapshot = Effect.fn("SessionHttpApi.transcriptSnapshot")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof TranscriptSnapshotQuery.Type
+    }) {
+      yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+        Effect.succeed(
+          HttpServerResponse.setHeader(
+            HttpServerResponse.setHeader(response, "x-opencode-transcript-feed", "1"),
+            "access-control-expose-headers",
+            "X-Opencode-Transcript-Feed",
+          ),
+        ),
+      )
+      const route = yield* WorkspaceRouteContext
+      const instance = yield* InstanceState.context
+      const result = SessionTranscriptFeed.snapshot(
+        {
+          projectID: instance.project.id,
+          directory: instance.directory,
+          workspaceID: route.workspaceID,
+          sessionID: ctx.params.sessionID,
+        },
+        { limit: ctx.query.limit ?? 20 },
+      )
+      if ("error" in result) return yield* notFound(`Session not found: ${ctx.params.sessionID}`)
+      return { ...result, status: yield* statusSvc.get(ctx.params.sessionID) }
+    })
+
+    const transcriptChanges = Effect.fn("SessionHttpApi.transcriptChanges")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof TranscriptChangesQuery.Type
+    }) {
+      yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+        Effect.succeed(
+          HttpServerResponse.setHeader(
+            HttpServerResponse.setHeader(response, "x-opencode-transcript-feed", "1"),
+            "access-control-expose-headers",
+            "X-Opencode-Transcript-Feed",
+          ),
+        ),
+      )
+      const route = yield* WorkspaceRouteContext
+      const instance = yield* InstanceState.context
+      const result = SessionTranscriptFeed.changes(
+        {
+          projectID: instance.project.id,
+          directory: instance.directory,
+          workspaceID: route.workspaceID,
+          sessionID: ctx.params.sessionID,
+        },
+        { cursor: ctx.query.cursor, limit: ctx.query.limit ?? 100 },
+      )
+      if ("error" in result) {
+        if (result.error === "not-found") return yield* notFound(`Session not found: ${ctx.params.sessionID}`)
+        if (result.error === "expired" && result.reason)
+          return yield* new TranscriptCursorExpiredError({
+            message: "Transcript cursor expired; request a new snapshot",
+            reason: result.reason,
+          })
+        return yield* new InvalidCursorError({ message: "Invalid transcript cursor" })
+      }
+      return { ...result, status: yield* statusSvc.get(ctx.params.sessionID) }
     })
 
     const requireSession = Effect.fn("SessionHttpApi.requireSession")(function* (sessionID: SessionID) {
@@ -476,6 +555,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("reconcile", reconcile)
       .handle("sidebarSnapshot", sidebarSnapshot)
       .handle("sidebarChanges", sidebarChanges)
+      .handle("transcriptSnapshot", transcriptSnapshot)
+      .handle("transcriptChanges", transcriptChanges)
       .handle("status", status)
       .handle("get", get)
       .handle("children", children)

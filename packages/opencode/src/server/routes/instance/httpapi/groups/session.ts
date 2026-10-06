@@ -4,6 +4,7 @@ import { ModelID, ProviderID } from "@/provider/schema"
 import { Session } from "@/session/session"
 import { ProjectID } from "@/project/schema"
 import { MessageV2 } from "@/session/message-v2"
+import { SessionTranscript } from "@/session/transcript"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
@@ -20,7 +21,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, SessionBusyError } from "../errors"
+import { ApiNotFoundError, InvalidCursorError, SessionBusyError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 
@@ -60,20 +61,39 @@ export const SidebarTitle = Schema.Struct({
   version: Schema.String,
   time: Schema.Struct({ created: Schema.Number, updated: Schema.Number }),
 })
-export class SidebarCursorExpiredError extends Schema.ErrorClass<SidebarCursorExpiredError>("SidebarCursorExpiredError")(
-  { message: Schema.String },
-  { httpApiStatus: 410 },
-) {}
+export class SidebarCursorExpiredError extends Schema.ErrorClass<SidebarCursorExpiredError>(
+  "SidebarCursorExpiredError",
+)({ message: Schema.String }, { httpApiStatus: 410 }) {}
 export const SidebarSnapshotQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
-  cursor: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER))),
-  afterUpdated: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER))),
+  cursor: Schema.optional(
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(0),
+      Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+    ),
+  ),
+  afterUpdated: Schema.optional(
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(0),
+      Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+    ),
+  ),
   afterID: Schema.optional(SessionID),
-  limit: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
+  limit: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(200),
+  ),
 })
 export const SidebarChangesQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
-  cursor: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  cursor: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+  ),
   limit: SidebarSnapshotQuery.fields.limit,
 })
 export const SidebarSnapshotResult = Schema.Struct({
@@ -85,11 +105,78 @@ export const SidebarSnapshotResult = Schema.Struct({
 export const SidebarChangesResult = Schema.Struct({
   cursor: Schema.Number,
   total: Schema.Number,
-  changes: Schema.Array(Schema.Union([
-    Schema.Struct({ seq: Schema.Number, type: Schema.Literal("upsert"), session: SidebarTitle }),
-    Schema.Struct({ seq: Schema.Number, type: Schema.Literal("remove"), id: SessionID }),
-  ])),
+  changes: Schema.Array(
+    Schema.Union([
+      Schema.Struct({ seq: Schema.Number, type: Schema.Literal("upsert"), session: SidebarTitle }),
+      Schema.Struct({ seq: Schema.Number, type: Schema.Literal("remove"), id: SessionID }),
+    ]),
+  ),
   more: Schema.Boolean,
+})
+export class TranscriptCursorExpiredError extends Schema.TaggedErrorClass<TranscriptCursorExpiredError>()(
+  "TranscriptCursorExpiredError",
+  {
+    message: Schema.String,
+    reason: Schema.Literals(["retention", "session-reset", "database-reset"]),
+  },
+  { httpApiStatus: 410 },
+) {}
+const TranscriptLimit = Schema.NumberFromString.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(200),
+)
+export const TranscriptSnapshotQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  limit: Schema.optional(
+    Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
+  ),
+})
+export const TranscriptChangesQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  cursor: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8192)),
+  limit: Schema.optional(TranscriptLimit),
+})
+export const TranscriptSnapshotResult = Schema.Struct({
+  session: Session.Info,
+  status: SessionStatus.Info,
+  items: Schema.Array(MessageV2.WithParts),
+  cursor: Schema.String,
+  generation: SessionTranscript.Generation,
+  version: Schema.Number,
+  next: Schema.NullOr(Schema.String),
+})
+export const TranscriptChangesResult = Schema.Struct({
+  cursor: Schema.String,
+  highwater: Schema.String,
+  generation: SessionTranscript.Generation,
+  more: Schema.Boolean,
+  changes: Schema.Array(
+    Schema.Union([
+      Schema.Struct({ seq: Schema.Number, type: Schema.Literal("message.upsert"), info: MessageV2.Info }),
+      Schema.Struct({
+        seq: Schema.Number,
+        type: Schema.Literal("part.upsert"),
+        info: MessageV2.Info,
+        part: MessageV2.Part,
+      }),
+      Schema.Struct({
+        seq: Schema.Number,
+        type: Schema.Literal("message.remove"),
+        sessionID: SessionID,
+        messageID: MessageID,
+      }),
+      Schema.Struct({
+        seq: Schema.Number,
+        type: Schema.Literal("part.remove"),
+        sessionID: SessionID,
+        messageID: MessageID,
+        partID: PartID,
+      }),
+    ]),
+  ),
+  session: Schema.optional(Session.Info),
+  status: SessionStatus.Info,
 })
 export const DiffQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
@@ -140,6 +227,8 @@ export const SessionPaths = {
   todo: `${root}/:sessionID/todo`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
+  transcriptSnapshot: `${root}/:sessionID/transcript/snapshot`,
+  transcriptChanges: `${root}/:sessionID/transcript/changes`,
   message: `${root}/:sessionID/message/:messageID`,
   create: root,
   remove: `${root}/:sessionID`,
@@ -192,12 +281,16 @@ export const SessionApi = HttpApi.make("session")
           query: SidebarSnapshotQuery,
           success: described(SidebarSnapshotResult, "Session sidebar snapshot page"),
           error: [HttpApiError.BadRequest, SidebarCursorExpiredError],
-        }).annotateMerge(OpenApi.annotations({ identifier: "session.sidebarSnapshot", summary: "Page session sidebar snapshot" })),
+        }).annotateMerge(
+          OpenApi.annotations({ identifier: "session.sidebarSnapshot", summary: "Page session sidebar snapshot" }),
+        ),
         HttpApiEndpoint.get("sidebarChanges", SessionPaths.sidebarChanges, {
           query: SidebarChangesQuery,
           success: described(SidebarChangesResult, "Session sidebar changes page"),
           error: [HttpApiError.BadRequest, SidebarCursorExpiredError],
-        }).annotateMerge(OpenApi.annotations({ identifier: "session.sidebarChanges", summary: "Page session sidebar changes" })),
+        }).annotateMerge(
+          OpenApi.annotations({ identifier: "session.sidebarChanges", summary: "Page session sidebar changes" }),
+        ),
         HttpApiEndpoint.get("status", SessionPaths.status, {
           query: WorkspaceRoutingQuery,
           success: described(StatusMap, "Get session status"),
@@ -266,6 +359,32 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.messages",
             summary: "Get session messages",
             description: "Retrieve all messages in a session, including user prompts and AI responses.",
+          }),
+        ),
+        HttpApiEndpoint.get("transcriptSnapshot", SessionPaths.transcriptSnapshot, {
+          params: { sessionID: SessionID },
+          query: TranscriptSnapshotQuery,
+          success: described(TranscriptSnapshotResult, "Atomic latest transcript snapshot and cursor"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.transcriptSnapshot",
+            summary: "Snapshot session transcript",
+            description:
+              "Read the latest 20 messages by default, session metadata and an opaque change cursor in one database transaction. generation identifies the database/session incarnation; version initializes entity watermarks. Deduplicate live events using properties.transcript.generation and seq; unstamped events are recovery hints, not checkpointable mutations. Status is sampled separately. next is a history cursor for session.messages. Database restarts invalidate change cursors. Responses include X-Opencode-Transcript-Feed: 1, including a session-not-found error, to distinguish unsupported routes.",
+          }),
+        ),
+        HttpApiEndpoint.get("transcriptChanges", SessionPaths.transcriptChanges, {
+          params: { sessionID: SessionID },
+          query: TranscriptChangesQuery,
+          success: described(TranscriptChangesResult, "Coalesced current transcript entity changes"),
+          error: [HttpApiError.BadRequest, InvalidCursorError, ApiNotFoundError, TranscriptCursorExpiredError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.transcriptChanges",
+            summary: "Page session transcript changes",
+            description:
+              "Page durable message and part mutations without scanning message history. Apply changes and cursor atomically. generation identifies the database/session incarnation and must match live properties.transcript.generation before applying a newer seq. Upserts replace only the named entity, never unchanged sibling parts. seq versions the current replacement group, possibly newer than the consumed raw prefix. highwater is informational; never skip to it or advance a cursor from live event sequences. Pages target 256 KiB and permit one oversized whole entity group for progress. 410 requires a fresh snapshot; a supported-route 404 requires clearing the cached transcript. Status is sampled separately.",
           }),
         ),
         HttpApiEndpoint.get("message", SessionPaths.message, {

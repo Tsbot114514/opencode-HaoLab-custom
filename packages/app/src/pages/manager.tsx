@@ -563,7 +563,9 @@ export default function ManagerPage() {
                   >
                     <Icon name={input.danger ? "trash" : "folder"} size="small" />
                   </div>
-                  <p class="min-w-0 whitespace-pre-wrap text-13-regular leading-6 text-v2-text-text-muted">{input.body}</p>
+                  <p class="min-w-0 whitespace-pre-wrap text-13-regular leading-6 text-v2-text-text-muted">
+                    {input.body}
+                  </p>
                 </div>
               </div>
               <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -601,7 +603,8 @@ export default function ManagerPage() {
     const [selectedDir, setSelectedDir] = createSignal("")
     const [running, setRunning] = createSignal(false)
     const [message, setMessage] = createSignal("")
-    const targetPath = () => (selectedDir() ? `${selectedDir()}\\haolabcode-data\\data\\opencode` : "选择文件夹后自动生成")
+    const targetPath = () =>
+      selectedDir() ? `${selectedDir()}\\haolabcode-data\\data\\opencode` : "选择文件夹后自动生成"
 
     const chooseDir = async () => {
       if (!platform.selectHaolabDataDirectory) {
@@ -670,7 +673,8 @@ export default function ManagerPage() {
             <div class="flex gap-2">
               <Icon name="warning" size="small" class="mt-0.5 shrink-0 text-icon-warning-base" />
               <p class="text-12-regular leading-5 text-v2-text-text-muted">
-                迁移会复制当前 OpenCode 数据目录。迁移期间请停止所有 agent 活动，不要继续会话。迁移完成后 HaoLab OpenCode 会自动重启，旧数据会保留。
+                迁移会复制当前 OpenCode 数据目录。迁移期间请停止所有 agent 活动，不要继续会话。迁移完成后 HaoLab
+                OpenCode 会自动重启，旧数据会保留。
               </p>
             </div>
           </div>
@@ -682,10 +686,22 @@ export default function ManagerPage() {
           </Show>
 
           <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button variant="ghost" size="small" class="sm:min-w-24" disabled={running()} onClick={() => dialog.close()}>
+            <Button
+              variant="ghost"
+              size="small"
+              class="sm:min-w-24"
+              disabled={running()}
+              onClick={() => dialog.close()}
+            >
               取消
             </Button>
-            <Button variant="primary" size="small" class="sm:min-w-28" disabled={running() || !selectedDir()} onClick={() => void run()}>
+            <Button
+              variant="primary"
+              size="small"
+              class="sm:min-w-28"
+              disabled={running() || !selectedDir()}
+              onClick={() => void run()}
+            >
               {running() ? "正在迁移..." : "开始迁移"}
             </Button>
           </div>
@@ -778,7 +794,10 @@ export default function ManagerPage() {
         }
 
         if (!result.updateAvailable) {
-          setUpdate({ message: `当前已是最新版本${platform.version ? `（${platform.version}）` : ""}。`, phase: "latest" })
+          setUpdate({
+            message: `当前已是最新版本${platform.version ? `（${platform.version}）` : ""}。`,
+            phase: "latest",
+          })
           return
         }
 
@@ -820,7 +839,11 @@ export default function ManagerPage() {
 
   const showUpdateNotes = () => {
     dialog.show(() => (
-      <Dialog title={update.releaseName || (update.version ? `版本 ${update.version}` : "版本更新内容")} size="large" fit>
+      <Dialog
+        title={update.releaseName || (update.version ? `版本 ${update.version}` : "版本更新内容")}
+        size="large"
+        fit
+      >
         <div class="max-h-[min(60vh,520px)] w-[min(calc(100vw-48px),720px)] overflow-y-auto px-1 pb-1">
           <Show when={update.releaseDate || update.version}>
             <div class="mb-3 text-12-regular text-v2-text-text-muted leading-5">
@@ -842,7 +865,9 @@ export default function ManagerPage() {
       setUpdate({
         available: true,
         checking: false,
-        message: progress.version ? `更新 ${progress.version} 已下载完成，重启后完成安装。` : "更新已下载完成，重启后完成安装。",
+        message: progress.version
+          ? `更新 ${progress.version} 已下载完成，重启后完成安装。`
+          : "更新已下载完成，重启后完成安装。",
         phase: "ready",
         progress: undefined,
         version: progress.version ?? update.version,
@@ -874,7 +899,9 @@ export default function ManagerPage() {
       headers: {
         "content-type": "application/json",
         ...(current.http.password
-          ? { authorization: `Basic ${authTokenFromCredentials({ username: current.http.username, password: current.http.password })}` }
+          ? {
+              authorization: `Basic ${authTokenFromCredentials({ username: current.http.username, password: current.http.password })}`,
+            }
           : {}),
       },
     })
@@ -937,9 +964,9 @@ export default function ManagerPage() {
   }
 
   const ensureSession = async () => {
-    const result = await sdk.client.session.get({ sessionID: managerSessionID }).catch(async () =>
-      sdk.client.session.create({ id: managerSessionID, title: managerTitle, agent: "build" }),
-    )
+    const result = await sdk.client.session
+      .get({ sessionID: managerSessionID })
+      .catch(async () => sdk.client.session.create({ id: managerSessionID, title: managerTitle, agent: "build" }))
     if (result.data) setSession(result.data)
     return true
   }
@@ -1027,7 +1054,9 @@ export default function ManagerPage() {
   })
 
   const allMessages = createMemo(() => messages().map((message) => message.info))
-  const userMessages = createMemo(() => allMessages().filter((message): message is UserMessage => message.role === "user"))
+  const userMessages = createMemo(() =>
+    allMessages().filter((message): message is UserMessage => message.role === "user"),
+  )
   const parts = createMemo(() => Object.fromEntries(messages().map((message) => [message.info.id, message.parts])))
   const retryStatus = createMemo(() => {
     const status = sessionStatus()
@@ -1092,7 +1121,9 @@ export default function ManagerPage() {
   const removePart = (messageID: string, partID: string) => {
     setMessages((current) =>
       current.map((message) =>
-        message.info.id === messageID ? { ...message, parts: message.parts.filter((part) => part.id !== partID) } : message,
+        message.info.id === messageID
+          ? { ...message, parts: message.parts.filter((part) => part.id !== partID) }
+          : message,
       ),
     )
   }
@@ -1132,11 +1163,17 @@ export default function ManagerPage() {
         if (event.properties.sessionID === managerSessionID) upsertPart(event.properties.part)
         return
       case "message.part.removed":
-        if (event.properties.sessionID === managerSessionID) removePart(event.properties.messageID, event.properties.partID)
+        if (event.properties.sessionID === managerSessionID)
+          removePart(event.properties.messageID, event.properties.partID)
         return
       case "message.part.delta":
         if (event.properties.sessionID === managerSessionID) {
-          appendPartDelta(event.properties.messageID, event.properties.partID, event.properties.field, event.properties.delta)
+          appendPartDelta(
+            event.properties.messageID,
+            event.properties.partID,
+            event.properties.field,
+            event.properties.delta,
+          )
         }
         return
     }
@@ -1212,14 +1249,23 @@ export default function ManagerPage() {
   }
 
   return (
-    <main class="h-dvh bg-v2-background-bg-base text-v2-text-text-base grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] overflow-hidden">
-      <section class="min-h-0 min-w-0 flex flex-col bg-v2-background-bg-base">
+    <main class="h-dvh bg-v2-background-bg-base text-v2-text-text-base flex flex-col overflow-y-auto lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:overflow-hidden">
+      <section class="h-[65dvh] shrink-0 min-w-0 flex flex-col bg-v2-background-bg-base lg:h-auto lg:min-h-0">
         <div class="flex-1 overflow-y-auto px-6 py-6">
-          <Show when={ready()} fallback={<div class="h-full grid place-items-center text-14-regular text-v2-text-text-muted">正在加载管理会话...</div>}>
+          <Show
+            when={ready()}
+            fallback={
+              <div class="h-full grid place-items-center text-14-regular text-v2-text-text-muted">
+                正在加载管理会话...
+              </div>
+            }
+          >
             <div class="mx-auto max-w-3xl min-h-full flex flex-col justify-end">
               <Show
                 when={userMessages().length > 0}
-                fallback={<div class="text-center text-14-regular text-v2-text-text-muted pb-12">开始和管理 agent 对话。</div>}
+                fallback={
+                  <div class="text-center text-14-regular text-v2-text-text-muted pb-12">开始和管理 agent 对话。</div>
+                }
               >
                 <DataProvider data={data()} directory="">
                   <div class="flex flex-col gap-12 items-start justify-start py-4">
@@ -1302,8 +1348,7 @@ export default function ManagerPage() {
                   aria-hidden="true"
                   class="pointer-events-none absolute inset-x-0 bottom-0 h-14"
                   style={{
-                    background:
-                      "linear-gradient(to top, var(--v2-background-bg-base) calc(100% - 20px), transparent)",
+                    background: "linear-gradient(to top, var(--v2-background-bg-base) calc(100% - 20px), transparent)",
                   }}
                 />
                 <div class="pointer-events-none absolute bottom-2 right-2 flex items-center gap-2">
@@ -1444,7 +1489,12 @@ export default function ManagerPage() {
               <Button variant="ghost" size="small" disabled={proxySaving()} onClick={() => void saveProxy()}>
                 保存
               </Button>
-              <Button variant={proxyEnabled() ? "secondary" : "primary"} size="small" disabled={proxySaving()} onClick={() => void toggleProxy()}>
+              <Button
+                variant={proxyEnabled() ? "secondary" : "primary"}
+                size="small"
+                disabled={proxySaving()}
+                onClick={() => void toggleProxy()}
+              >
                 {proxyEnabled() ? "关闭代理" : "开启代理"}
               </Button>
             </div>
@@ -1482,14 +1532,22 @@ export default function ManagerPage() {
               <div
                 classList={{
                   "size-8 rounded-xl grid place-items-center shrink-0": true,
-                  "bg-icon-success-base/10 text-icon-success-base": update.phase === "ready" || update.phase === "latest",
-                  "bg-icon-warning-base/10 text-icon-warning-base": update.phase === "downloading" || update.phase === "checking" || update.phase === "installing",
+                  "bg-icon-success-base/10 text-icon-success-base":
+                    update.phase === "ready" || update.phase === "latest",
+                  "bg-icon-warning-base/10 text-icon-warning-base":
+                    update.phase === "downloading" || update.phase === "checking" || update.phase === "installing",
                   "bg-danger-base/10 text-danger-base": update.phase === "error" || update.phase === "unsupported",
                   "bg-v2-background-bg-deep text-v2-text-text-muted": update.phase === "idle",
                 }}
               >
                 <Icon
-                  name={update.phase === "ready" || update.phase === "latest" ? "circle-check" : update.phase === "error" ? "warning" : "download"}
+                  name={
+                    update.phase === "ready" || update.phase === "latest"
+                      ? "circle-check"
+                      : update.phase === "error"
+                        ? "warning"
+                        : "download"
+                  }
                   size="small"
                 />
               </div>
@@ -1517,7 +1575,10 @@ export default function ManagerPage() {
                   <span>{Math.round(updateProgressPercent())}%</span>
                   <span class="truncate">
                     {formatBytes(update.progress?.transferred)} / {formatBytes(update.progress?.total)}
-                    <Show when={formatSpeed(update.progress?.bytesPerSecond)}> · {formatSpeed(update.progress?.bytesPerSecond)}</Show>
+                    <Show when={formatSpeed(update.progress?.bytesPerSecond)}>
+                      {" "}
+                      · {formatSpeed(update.progress?.bytesPerSecond)}
+                    </Show>
                   </span>
                 </div>
               </div>
@@ -1526,9 +1587,15 @@ export default function ManagerPage() {
               <p
                 classList={{
                   "mt-3 rounded-lg border px-3 py-2 text-12-regular leading-5": true,
-                  "border-danger-base/30 bg-danger-base/5 text-danger-base": update.phase === "error" || update.phase === "unsupported",
-                  "border-icon-success-base/30 bg-icon-success-base/5 text-v2-text-text-base": update.phase === "ready" || update.phase === "latest",
-                  "border-v2-border-border-base bg-v2-background-bg-deep text-v2-text-text-muted": update.phase !== "error" && update.phase !== "unsupported" && update.phase !== "ready" && update.phase !== "latest",
+                  "border-danger-base/30 bg-danger-base/5 text-danger-base":
+                    update.phase === "error" || update.phase === "unsupported",
+                  "border-icon-success-base/30 bg-icon-success-base/5 text-v2-text-text-base":
+                    update.phase === "ready" || update.phase === "latest",
+                  "border-v2-border-border-base bg-v2-background-bg-deep text-v2-text-text-muted":
+                    update.phase !== "error" &&
+                    update.phase !== "unsupported" &&
+                    update.phase !== "ready" &&
+                    update.phase !== "latest",
                 }}
               >
                 {update.message}
@@ -1538,12 +1605,22 @@ export default function ManagerPage() {
               <Show
                 when={update.available && platform.updateAndRestart}
                 fallback={
-                  <Button variant="secondary" size="small" disabled={update.checking || update.installing} onClick={() => void checkUpdate()}>
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    disabled={update.checking || update.installing}
+                    onClick={() => void checkUpdate()}
+                  >
                     {update.checking ? "正在准备..." : update.phase === "error" ? "重试" : "检查并下载更新"}
                   </Button>
                 }
               >
-                <Button variant="primary" size="small" disabled={update.installing} onClick={() => void installUpdate()}>
+                <Button
+                  variant="primary"
+                  size="small"
+                  disabled={update.installing}
+                  onClick={() => void installUpdate()}
+                >
                   {update.installing ? "正在安装..." : "重启并安装"}
                 </Button>
               </Show>
@@ -1561,19 +1638,18 @@ export default function ManagerPage() {
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">配置完毕</div>
-            <p class="text-12-regular text-v2-text-text-muted leading-5">代理和 Provider 配置完成后，进入正式页面继续使用。</p>
-            <Button
-              variant="primary"
-              size="large"
-              class="mt-3 w-full"
-              onClick={() => navigate("/classic-manager")}
-            >
+            <p class="text-12-regular text-v2-text-text-muted leading-5">
+              代理和 Provider 配置完成后，进入正式页面继续使用。
+            </p>
+            <Button variant="primary" size="large" class="mt-3 w-full" onClick={() => navigate("/classic-manager")}>
               进入正式页面
             </Button>
           </section>
           <section class="rounded-2xl border border-v2-border-border-base bg-v2-background-bg-base p-4 shadow-sm">
             <div class="text-12-medium text-v2-text-text-base mb-2">启动页面</div>
-            <p class="text-12-regular text-v2-text-text-muted leading-5">选择下次启动 HaoLab OpenCode 时默认进入的页面。</p>
+            <p class="text-12-regular text-v2-text-text-muted leading-5">
+              选择下次启动 HaoLab OpenCode 时默认进入的页面。
+            </p>
             <div class="mt-3 grid grid-cols-2 gap-2">
               <Button
                 variant={startupPage() === "manager" ? "primary" : "secondary"}
@@ -1603,7 +1679,9 @@ export default function ManagerPage() {
             </p>
             <Show
               when={haolabDataLocation()}
-              fallback={<p class="mt-3 text-12-regular text-v2-text-text-muted leading-5">当前环境不支持数据存储位置管理。</p>}
+              fallback={
+                <p class="mt-3 text-12-regular text-v2-text-text-muted leading-5">当前环境不支持数据存储位置管理。</p>
+              }
             >
               {(location) => (
                 <div class="mt-3 space-y-2 rounded-xl border border-v2-border-border-base bg-v2-background-bg-deep p-3">
@@ -1622,7 +1700,12 @@ export default function ManagerPage() {
               <Button
                 variant="primary"
                 size="small"
-                disabled={storage.migrating || storage.deleting || !platform.migrateHaolabData || !platform.selectHaolabDataDirectory}
+                disabled={
+                  storage.migrating ||
+                  storage.deleting ||
+                  !platform.migrateHaolabData ||
+                  !platform.selectHaolabDataDirectory
+                }
                 onClick={() => void migrateHaolabData()}
               >
                 {storage.migrating ? "正在迁移..." : "修改数据存储路径"}
@@ -1630,7 +1713,12 @@ export default function ManagerPage() {
               <Button
                 variant="secondary"
                 size="small"
-                disabled={storage.migrating || storage.deleting || !platform.deleteDefaultHaolabData || !haolabDataLocation()?.configured}
+                disabled={
+                  storage.migrating ||
+                  storage.deleting ||
+                  !platform.deleteDefaultHaolabData ||
+                  !haolabDataLocation()?.configured
+                }
                 onClick={() => void deleteDefaultHaolabData()}
               >
                 {storage.deleting ? "正在删除..." : "删除原文件"}

@@ -33,6 +33,7 @@ export function createChildStoreManager(input: {
     provider: NormalizedProviderListResponse
   }
 }) {
+  const mobile = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
   const children: Record<string, [Store<State>, SetStoreFunction<State>]> = {}
   const vcsCache = new Map<string, VcsCache>()
   const metaCache = new Map<string, MetaCache>()
@@ -177,7 +178,8 @@ export function createChildStoreManager(input: {
           const initialIcon = icon[0].value
           const restored = restoreDirectory(input.displayCache, key)
 
-          const [pathQuery, mcpQuery, lspQuery, providerQuery] = useQueries(() => ({
+          // Disabled-to-enabled transitions replace result proxies; keep reads on the reactive array.
+          const queries = useQueries(() => ({
             queries: [
               input.queryOptions.path(key),
               input.queryOptions.mcp(key),
@@ -191,19 +193,19 @@ export function createChildStoreManager(input: {
             projectMeta: initialMeta,
             icon: initialIcon,
             get provider_ready() {
-              return !providerQuery.isLoading
+              return !queries[3].isLoading
             },
             get provider() {
               const EMPTY = { all: new Map(), connected: [], default: {} }
-              if (providerQuery.isLoading) return EMPTY
-              if (providerQuery.data?.all.size === 0 && input.global.provider.all.size > 0) return input.global.provider
-              return providerQuery.data ?? EMPTY
+              if (queries[3].isLoading) return EMPTY
+              if (queries[3].data?.all.size === 0 && input.global.provider.all.size > 0) return input.global.provider
+              return queries[3].data ?? EMPTY
             },
             config: {},
             get path() {
-              if (pathQuery.isLoading || !pathQuery.data)
-                return { state: "", data: "", config: "", worktree: "", directory: "", home: "" }
-              return pathQuery.data
+              if (queries[0].isLoading || !queries[0].data)
+                return { state: "", data: "", config: "", worktree: "", directory: mobile ? directory : "", home: "" }
+              return queries[0].data
             },
             status: "complete" as const,
             agent: [],
@@ -220,19 +222,19 @@ export function createChildStoreManager(input: {
             permission: {},
             question: {},
             get mcp_ready() {
-              return !mcpQuery.isLoading
+              return !queries[1].isLoading
             },
             get mcp() {
-              return mcpQuery.isLoading ? {} : (mcpQuery.data ?? {})
+              return queries[1].isLoading ? {} : (queries[1].data ?? {})
             },
             get lsp_ready() {
-              return !lspQuery.isLoading
+              return !queries[2].isLoading
             },
             get lsp() {
-              return lspQuery.isLoading ? [] : (lspQuery.data ?? [])
+              return queries[2].isLoading ? [] : (queries[2].data ?? [])
             },
             vcs: vcsStore.value,
-            limit: 5,
+            limit: mobile ? 10 : 5,
             message: restored?.transcript ? { [restored.transcript.sessionID]: restored.transcript.messages } : {},
             part: restored?.transcript?.parts ?? {},
             part_text_accum_delta: {},

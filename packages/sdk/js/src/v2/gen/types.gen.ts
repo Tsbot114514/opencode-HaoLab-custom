@@ -1791,6 +1791,17 @@ export type SidebarCursorExpiredError = {
   message: string
 }
 
+export type InvalidCursorError = {
+  _tag: "InvalidCursorError"
+  message: string
+}
+
+export type TranscriptCursorExpiredError = {
+  _tag: "TranscriptCursorExpiredError"
+  message: string
+  reason: "retention" | "session-reset" | "database-reset"
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -1851,11 +1862,6 @@ export type V2SessionsResponse = {
     previous?: string
     next?: string
   }
-}
-
-export type InvalidCursorError = {
-  _tag: "InvalidCursorError"
-  message: string
 }
 
 export type UnauthorizedError = {
@@ -1973,6 +1979,10 @@ export type SyncEventMessageUpdated = {
   data: {
     sessionID: string
     info: Message
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -1985,6 +1995,10 @@ export type SyncEventMessageRemoved = {
   data: {
     sessionID: string
     messageID: string
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -1998,6 +2012,10 @@ export type SyncEventMessagePartUpdated = {
     sessionID: string
     part: Part
     time: number
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -2011,6 +2029,10 @@ export type SyncEventMessagePartRemoved = {
     sessionID: string
     messageID: string
     partID: string
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -2563,6 +2585,10 @@ export type EventMessagePartDelta = {
     partID: string
     field: string
     delta: string
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -2806,6 +2832,10 @@ export type EventMessageUpdated = {
   properties: {
     sessionID: string
     info: Message
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -2815,6 +2845,10 @@ export type EventMessageRemoved = {
   properties: {
     sessionID: string
     messageID: string
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -2825,6 +2859,10 @@ export type EventMessagePartUpdated = {
     sessionID: string
     part: Part
     time: number
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -2835,6 +2873,10 @@ export type EventMessagePartRemoved = {
     sessionID: string
     messageID: string
     partID: string
+    transcript?: {
+      generation: string
+      seq: number
+    }
   }
 }
 
@@ -6974,6 +7016,127 @@ export type SessionPromptResponses = {
 }
 
 export type SessionPromptResponse = SessionPromptResponses[keyof SessionPromptResponses]
+
+export type SessionTranscriptSnapshotData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    limit?: string
+  }
+  url: "/session/{sessionID}/transcript/snapshot"
+}
+
+export type SessionTranscriptSnapshotErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionTranscriptSnapshotError = SessionTranscriptSnapshotErrors[keyof SessionTranscriptSnapshotErrors]
+
+export type SessionTranscriptSnapshotResponses = {
+  /**
+   * Atomic latest transcript snapshot and cursor
+   */
+  200: {
+    session: Session
+    status: SessionStatus
+    items: Array<{
+      info: Message
+      parts: Array<Part>
+    }>
+    cursor: string
+    generation: string
+    version: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    next: string
+  }
+}
+
+export type SessionTranscriptSnapshotResponse =
+  SessionTranscriptSnapshotResponses[keyof SessionTranscriptSnapshotResponses]
+
+export type SessionTranscriptChangesData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query: {
+    directory?: string
+    workspace?: string
+    cursor: string
+    limit?: string
+  }
+  url: "/session/{sessionID}/transcript/changes"
+}
+
+export type SessionTranscriptChangesErrors = {
+  /**
+   * BadRequest | InvalidCursorError | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidCursorError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+  /**
+   * TranscriptCursorExpiredError
+   */
+  410: TranscriptCursorExpiredError
+}
+
+export type SessionTranscriptChangesError = SessionTranscriptChangesErrors[keyof SessionTranscriptChangesErrors]
+
+export type SessionTranscriptChangesResponses = {
+  /**
+   * Coalesced current transcript entity changes
+   */
+  200: {
+    cursor: string
+    highwater: string
+    generation: string
+    more: boolean
+    changes: Array<
+      | {
+          seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          type: "message.upsert"
+          info: Message
+        }
+      | {
+          seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          type: "part.upsert"
+          info: Message
+          part: Part
+        }
+      | {
+          seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          type: "message.remove"
+          sessionID: string
+          messageID: string
+        }
+      | {
+          seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          type: "part.remove"
+          sessionID: string
+          messageID: string
+          partID: string
+        }
+    >
+    session?: Session
+    status: SessionStatus
+  }
+}
+
+export type SessionTranscriptChangesResponse =
+  SessionTranscriptChangesResponses[keyof SessionTranscriptChangesResponses]
 
 export type SessionDeleteMessageData = {
   body?: never

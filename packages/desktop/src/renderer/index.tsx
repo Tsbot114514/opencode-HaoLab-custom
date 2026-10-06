@@ -131,7 +131,7 @@ const createPlatform = (
     const createStorage = (name: string) => {
       const api: AsyncStorage = {
         getItem: (key: string) => window.api.storeGet(name, key),
-        ...(name === "opencode.transcripts.dat" ? { transcriptMutate: window.api.transcriptMutate, transcriptAcquire: window.api.transcriptAcquire } : {}),
+        ...(name === "opencode.transcripts.dat" ? { transcriptMutate: window.api.transcriptMutate, transcriptAcquire: window.api.transcriptAcquire, transcriptOpen: window.api.transcriptOpen, transcriptReadPage: window.api.transcriptReadPage } : {}),
         setItem: (key: string, value: string) => window.api.storeSet(name, key, value),
         removeItem: (key: string) => window.api.storeDelete(name, key),
         clear: () => window.api.storeClear(name),

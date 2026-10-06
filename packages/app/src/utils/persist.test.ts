@@ -1,8 +1,12 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { createRoot } from "solid-js"
+import { createStore } from "solid-js/store"
+import { isServer } from "solid-js/web"
 
 type PersistTestingType = typeof import("./persist").PersistTesting
 type PersistType = typeof import("./persist").Persist
 type RemovePersistedType = typeof import("./persist").removePersisted
+type PersistedType = typeof import("./persist").persisted
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>()
@@ -49,6 +53,7 @@ const storage = new MemoryStorage()
 let persistTesting: PersistTestingType
 let Persist: PersistType
 let removePersisted: RemovePersistedType
+let persisted: PersistedType
 
 beforeAll(async () => {
   mock.module("@/context/platform", () => ({
@@ -59,6 +64,7 @@ beforeAll(async () => {
   persistTesting = mod.PersistTesting
   Persist = mod.Persist
   removePersisted = mod.removePersisted
+  persisted = mod.persisted
 })
 
 beforeEach(() => {
@@ -163,5 +169,73 @@ describe("persist localStorage resilience", () => {
 
     expect(storage.getItem(`${target.storage}:${target.key}`)).toBeNull()
     expect(storage.getItem(`${target.legacyStorageNames![0]}:${target.key}`)).toBeNull()
+  })
+})
+
+describe("debounced draft persistence", () => {
+  const browserTest = isServer ? test.skip : test
+
+  browserTest("updates memory immediately, writes only the latest draft, and rehydrates", async () => {
+    const target = Persist.session("/debounce", "session", "prompt")
+    const key = `${target.storage}:${target.key}`
+    const dispose = createRoot((dispose) => {
+      const [state, set] = persisted(target, createStore({ prompt: "" }), { debounce: 30 })
+      set("prompt", "first")
+      set("prompt", "latest")
+      expect(state.prompt).toBe("latest")
+      expect(storage.getItem(key)).toBeNull()
+      expect(storage.events.filter((event) => event === `set:${key}`)).toHaveLength(0)
+      return dispose
+    })
+
+    await Bun.sleep(60)
+    expect(JSON.parse(storage.getItem(key)!)).toEqual({ prompt: "latest" })
+    expect(storage.events.filter((event) => event === `set:${key}`)).toHaveLength(1)
+    dispose()
+
+    createRoot((dispose) => {
+      const [state] = persisted(target, createStore({ prompt: "" }), { debounce: 30 })
+      expect(state.prompt).toBe("latest")
+      dispose()
+    })
+  })
+
+  browserTest("flushes on pagehide, explicit flush, and session disposal", () => {
+    const target = Persist.session("/flush", "session", "prompt")
+    const key = `${target.storage}:${target.key}`
+    const draft = createRoot((dispose) => {
+      const [state, set, , , flush] = persisted(target, createStore({ prompt: "" }), { debounce: 300 })
+      return { state, set, flush, dispose }
+    })
+
+    draft.set("prompt", "pagehide")
+    window.dispatchEvent(new Event("pagehide"))
+    expect(JSON.parse(storage.getItem(key)!)).toEqual({ prompt: "pagehide" })
+
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState")
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" })
+    draft.set("prompt", "hidden")
+    document.dispatchEvent(new Event("visibilitychange"))
+    expect(JSON.parse(storage.getItem(key)!)).toEqual({ prompt: "hidden" })
+    if (visibility) Object.defineProperty(document, "visibilityState", visibility)
+    else Reflect.deleteProperty(document, "visibilityState")
+
+    draft.set("prompt", "blur or reset")
+    draft.flush()
+    expect(JSON.parse(storage.getItem(key)!)).toEqual({ prompt: "blur or reset" })
+
+    draft.set("prompt", "disposal")
+    draft.dispose()
+    expect(JSON.parse(storage.getItem(key)!)).toEqual({ prompt: "disposal" })
+  })
+
+  browserTest("non-debounced storage still writes synchronously", () => {
+    const target = Persist.session("/immediate", "session", "prompt")
+    createRoot((dispose) => {
+      const [, set] = persisted(target, createStore({ prompt: "" }))
+      set("prompt", "now")
+      expect(JSON.parse(storage.getItem(`${target.storage}:${target.key}`)!)).toEqual({ prompt: "now" })
+      dispose()
+    })
   })
 })

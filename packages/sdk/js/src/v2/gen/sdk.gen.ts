@@ -228,6 +228,10 @@ import type {
   SessionSummarizeResponses,
   SessionTodoErrors,
   SessionTodoResponses,
+  SessionTranscriptChangesErrors,
+  SessionTranscriptChangesResponses,
+  SessionTranscriptSnapshotErrors,
+  SessionTranscriptSnapshotResponses,
   SessionUnrevertErrors,
   SessionUnrevertResponses,
   SessionUnshareErrors,
@@ -3953,6 +3957,84 @@ export class Session2 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Snapshot session transcript
+   *
+   * Read the latest 20 messages by default, session metadata and an opaque change cursor in one database transaction. generation identifies the database/session incarnation; version initializes entity watermarks. Deduplicate live events using properties.transcript.generation and seq; unstamped events are recovery hints, not checkpointable mutations. Status is sampled separately. next is a history cursor for session.messages. Database restarts invalidate change cursors. Responses include X-Opencode-Transcript-Feed: 1, including a session-not-found error, to distinguish unsupported routes.
+   */
+  public transcriptSnapshot<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      limit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionTranscriptSnapshotResponses,
+      SessionTranscriptSnapshotErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/transcript/snapshot",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Page session transcript changes
+   *
+   * Page durable message and part mutations without scanning message history. Apply changes and cursor atomically. generation identifies the database/session incarnation and must match live properties.transcript.generation before applying a newer seq. Upserts replace only the named entity, never unchanged sibling parts. seq versions the current replacement group, possibly newer than the consumed raw prefix. highwater is informational; never skip to it or advance a cursor from live event sequences. Pages target 256 KiB and permit one oversized whole entity group for progress. 410 requires a fresh snapshot; a supported-route 404 requires clearing the cached transcript. Status is sampled separately.
+   */
+  public transcriptChanges<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      cursor: string
+      limit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionTranscriptChangesResponses,
+      SessionTranscriptChangesErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/transcript/changes",
+      ...options,
+      ...params,
     })
   }
 

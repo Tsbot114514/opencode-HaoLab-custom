@@ -3,6 +3,10 @@ import type { Message, Part, PermissionRequest, Project, QuestionRequest, Sessio
 import { createStore } from "solid-js/store"
 import type { State } from "./types"
 import { applyDirectoryEvent, applyGlobalEvent, cleanupDroppedSessionCaches } from "./event-reducer"
+// The production accessor is private to the UI project, so load it without adding a cross-project source dependency.
+const { readPartText } = (await import(new URL("../../../../ui/src/components/message-part-text.ts", import.meta.url).href)) as {
+  readPartText: (accum: State["part_text_accum_delta"] | undefined, part: { id: string; text?: string }) => string
+}
 
 const rootSession = (input: { id: string; parentID?: string; archived?: number }) =>
   ({
@@ -134,6 +138,88 @@ describe("applyGlobalEvent", () => {
 })
 
 describe("applyDirectoryEvent", () => {
+  for (const type of ["text", "reasoning"] as const) {
+    test(`streamed ${type} renders its hydrated base, cumulative deltas and the replacement's new base`, () => {
+      const sessionID = "ses_1"
+      const messageID = "msg_1"
+      const part = { id: "prt_1", sessionID, messageID, type, text: "a", time: { start: 1 } }
+      const [store, setStore] = createStore(baseState({ part: { [messageID]: [part] } }))
+      const input = { store, setStore, directory: "/tmp", push() {}, loadLsp() {} }
+      for (const [delta, expected] of [
+        ["c", "ac"],
+        ["d", "acd"],
+      ]) {
+        applyDirectoryEvent({
+          ...input,
+          event: {
+            type: "message.part.delta",
+            properties: { sessionID, messageID, partID: part.id, field: "text", delta },
+          },
+        })
+        expect(store.part[messageID][0]).toMatchObject({ text: expected })
+        expect(store.part_text_accum_delta[part.id]).toBe(expected)
+        // This is the same accessor used by both production text and reasoning renderers.
+        expect(readPartText(store.part_text_accum_delta, store.part[messageID][0] as typeof part)).toBe(expected)
+      }
+      applyDirectoryEvent({
+        ...input,
+        event: { type: "message.part.updated", properties: { part: { ...part, text: "abc" } } },
+      })
+      expect(store.part_text_accum_delta[part.id]).toBeUndefined()
+      expect(readPartText(store.part_text_accum_delta, store.part[messageID][0] as typeof part)).toBe("abc")
+      applyDirectoryEvent({
+        ...input,
+        event: {
+          type: "message.part.delta",
+          properties: { sessionID, messageID, partID: part.id, field: "text", delta: "d" },
+        },
+      })
+      expect(store.part[messageID][0]).toMatchObject({ text: "abcd" })
+      expect(readPartText(store.part_text_accum_delta, store.part[messageID][0] as typeof part)).toBe("abcd")
+    })
+  }
+
+  test("an initially empty stream accumulates once and deltas after a full replacement retain the new base", () => {
+    const sessionID = "ses_1"
+    const messageID = "msg_1"
+    const part = { id: "prt_1", sessionID, messageID, type: "text" as const, text: "" }
+    const [store, setStore] = createStore(baseState())
+    const input = { store, setStore, directory: "/tmp", push() {}, loadLsp() {} }
+    applyDirectoryEvent({
+      ...input,
+      event: {
+        type: "message.part.delta",
+        properties: { sessionID, messageID, partID: part.id, field: "text", delta: "before-part" },
+      },
+    })
+    expect(store.part_text_accum_delta[part.id]).toBeUndefined()
+    applyDirectoryEvent({ ...input, event: { type: "message.part.updated", properties: { part } } })
+    for (const delta of ["a", "b"])
+      applyDirectoryEvent({
+        ...input,
+        event: {
+          type: "message.part.delta",
+          properties: { sessionID, messageID, partID: part.id, field: "text", delta },
+        },
+      })
+    expect(store.part[messageID][0]).toMatchObject({ text: "ab" })
+    expect(readPartText(store.part_text_accum_delta, store.part[messageID][0] as typeof part)).toBe("ab")
+    applyDirectoryEvent({
+      ...input,
+      event: { type: "message.part.updated", properties: { part: { ...part, text: "abc" } } },
+    })
+    for (const delta of ["d", "e"])
+      applyDirectoryEvent({
+        ...input,
+        event: {
+          type: "message.part.delta",
+          properties: { sessionID, messageID, partID: part.id, field: "text", delta },
+        },
+      })
+    expect(store.part[messageID][0]).toMatchObject({ text: "abcde" })
+    expect(readPartText(store.part_text_accum_delta, store.part[messageID][0] as typeof part)).toBe("abcde")
+  })
+
   test("inserts root sessions in sorted order and updates sessionTotal", () => {
     const [store, setStore] = createStore(
       baseState({

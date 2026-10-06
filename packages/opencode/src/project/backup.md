@@ -179,6 +179,12 @@ directory-isolated. Referenced project rows are included as validation evidence 
 restored sessions use the locally resolved project. Global permission grants, credentials, live DBs,
 event journals, sharing secrets and snapshots are not exported.
 
+Transcript change journals and cursor epochs/generations are destination-local
+and are also excluded. Applying a selected complete session graph initializes a
+fresh destination transcript generation, even if message IDs or timestamps are
+unchanged. Existing transcript cursors for replaced sessions return 410 and clients
+recover with a current latest-message snapshot, not a history rescan.
+
 Hidden/ignored workspace files, including project-local `.env` secrets, are included.
 Treat packages and safety ZIPs as sensitive; encryption is not provided. Excluded
 directories at every depth: `.git`, `node_modules`, `.cache`, `.next`, `.turbo`,

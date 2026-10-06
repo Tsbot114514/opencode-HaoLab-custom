@@ -270,7 +270,7 @@ const main = Effect.gen(function* () {
     getDefaultServerUrl: () => getDefaultServerUrl(),
     setDefaultServerUrl: (url) => setDefaultServerUrl(url),
     remoteStatus: () => withRemote(() => remote.status()),
-    remoteCacheKeyCurrent: (status) => remote.currentCacheKey(status),
+    remoteCacheKeyCurrent: () => remote.currentCacheKey(),
     remoteEnable: () => withRemote(() => remote.enable()),
     remoteSetAuthKey: (authKey) => withRemote(() => remote.setAuthKey(authKey)),
     remoteDisable: () => withRemote(() => remote.disable()),

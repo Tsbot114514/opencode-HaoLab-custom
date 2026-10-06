@@ -9,6 +9,9 @@ import { ProjectBackup } from "@/project/backup"
 import { Project } from "@/project/project"
 import { Database, sql } from "@/storage/db"
 import { SessionAssembleTemplate } from "@/session/assemble-template"
+import { SessionTranscriptFeed } from "@/session/transcript-feed"
+import { SessionID } from "@/session/schema"
+import { ProjectID } from "@/project/schema"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -96,6 +99,54 @@ function scenario(run: (fixture: Awaited<ReturnType<typeof prepare>>, root: stri
 }
 
 describe("confirmed project migration", () => {
+  it.live("resets destination transcript generations only for restored session graphs", () =>
+    scenario(async (f) => {
+      const restored = await f.seed(f.source, "incoming")
+      const valid = JSON.stringify({
+        role: "user",
+        agent: "build",
+        time: { created: 100 },
+        model: { providerID: "test", modelID: "test" },
+      })
+      Database.use((db) => db.run(sql`UPDATE message SET data=${valid} WHERE id=${`msg_${restored}`}`))
+      await ProjectBackup.backup({ directory: f.source, path: f.archive })
+      Database.use((db) => db.run(sql`UPDATE session SET time_updated=50 WHERE id=${restored}`))
+      const preserved = await f.seed(f.source, "local-only")
+      Database.use((db) => db.run(sql`UPDATE message SET data=${valid} WHERE id=${`msg_${preserved}`}`))
+      const project = Database.use((db) =>
+        db.get<{ project_id: string }>(sql`SELECT project_id FROM session WHERE id=${restored}`),
+      )
+      if (!project) throw new Error("Missing test project")
+      const scope = (id: string) => ({
+        projectID: ProjectID.make(project.project_id),
+        sessionID: SessionID.make(id),
+        directory: f.source,
+      })
+      const before = SessionTranscriptFeed.snapshot(scope(restored), { limit: 20 })
+      const kept = SessionTranscriptFeed.snapshot(scope(preserved), { limit: 20 })
+      if ("error" in before || "error" in kept) throw new Error("Missing test snapshot")
+      expect((await f.apply(f.archive, f.source)).sessions).toBe(1)
+      expect(SessionTranscriptFeed.changes(scope(restored), { cursor: before.cursor, limit: 20 })).toMatchObject({
+        error: "expired",
+        reason: "session-reset",
+      })
+      expect(SessionTranscriptFeed.changes(scope(preserved), { cursor: kept.cursor, limit: 20 })).toMatchObject({
+        changes: [],
+        more: false,
+      })
+      const merged = SessionTranscriptFeed.snapshot(scope(restored), { limit: 20 })
+      if ("error" in merged) throw new Error("Missing restored snapshot")
+      expect((await f.apply(f.archive, f.source, true)).sessions).toBe(1)
+      expect(SessionTranscriptFeed.changes(scope(restored), { cursor: merged.cursor, limit: 20 })).toMatchObject({
+        error: "expired",
+        reason: "session-reset",
+      })
+      expect(SessionTranscriptFeed.changes(scope(preserved), { cursor: kept.cursor, limit: 20 })).toMatchObject({
+        error: "not-found",
+      })
+    }),
+  )
+
   it.live("incrementally imports absent and newer sessions while preserving local newer and local-only state", () =>
     scenario(async (f) => {
       const newerLocal = await f.seed(f.source, "incoming older")

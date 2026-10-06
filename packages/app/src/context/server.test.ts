@@ -1,7 +1,98 @@
 import { describe, expect, test } from "bun:test"
-import { canRestoreTunnelSidebar, resolveServerList, ServerConnection, sidebarProjects } from "./server"
+import { canRestoreTunnelSidebar, mobileCache, resolveServerList, sendMobileCache, ServerConnection, sidebarProjects, validateMobileTranscript } from "./server"
+
+describe("mobileCache", () => {
+  test("validates projects, selection and summaries without trusting extra session data", () => {
+    const previous = globalThis.window
+    try {
+      globalThis.window = {
+        __HAOLAB_MOBILE__: true,
+        __HAOLAB_CACHE__: {
+          version: 1,
+          projects: ["/one"],
+          selected: "/missing",
+          sessions: {
+            "/one": [{ id: "id", directory: "/one", projectID: "project", slug: "slug", title: "Title", version: "1", time: { created: 1, updated: 2, archived: 3 }, permission: ["unsafe"] }],
+            "/bad": [{ id: "id", directory: "/other" }],
+          },
+        },
+      } as unknown as Window & typeof globalThis
+      expect(mobileCache()).toEqual({
+        projects: ["/one"],
+        selected: undefined,
+        transcript: undefined,
+        sessions: { "/one": [{ id: "id", directory: "/one", projectID: "project", slug: "slug", title: "Title", version: "1", time: { created: 1, updated: 2 } }] },
+      })
+      ;(window as Window & { __HAOLAB_CACHE__?: unknown }).__HAOLAB_CACHE__ = { version: 2, projects: ["/one"] }
+      expect(mobileCache()).toBeUndefined()
+      ;(window as Window & { __HAOLAB_CACHE__?: unknown }).__HAOLAB_CACHE__ = { version: 1, projects: [""], sessions: {} }
+      expect(mobileCache()).toBeUndefined()
+    } finally {
+      globalThis.window = previous
+    }
+  })
+
+  test("sends only mobile bridge messages", () => {
+    const previous = globalThis.window
+    const sent: unknown[] = []
+    try {
+      globalThis.window = { __HAOLAB_MOBILE__: true, webkit: { messageHandlers: { haolabCache: {
+        postMessage: (value: unknown) => sent.push(value),
+      } } } } as unknown as Window & typeof globalThis
+      sendMobileCache({ type: "selected", directory: "/one" })
+      expect(sent).toEqual([{ type: "selected", directory: "/one" }])
+      ;(window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ = false
+      sendMobileCache({ type: "projects", directories: [] })
+      expect(sent).toHaveLength(1)
+    } finally {
+      globalThis.window = previous
+    }
+  })
+})
+
+describe("mobile transcript validation", () => {
+  const message = { id: "m1", role: "assistant" as const, created: 42, parentID: "user-before-page", text: "Hello" }
+  const transcript = { directory: "/one", sessionID: "session", messages: [message] }
+
+  test("accepts a bounded transcript and strips extra fields", () => {
+    expect(validateMobileTranscript({ ...transcript, messages: [{ ...message, tokens: "secret" }], credential: "secret" }))
+      .toEqual(transcript)
+  })
+
+  test("rejects malformed messages, duplicates and oversized text", () => {
+    expect(validateMobileTranscript({ ...transcript, messages: [message, message] })).toBeUndefined()
+    expect(validateMobileTranscript({ ...transcript, messages: [{ ...message, text: "x".repeat(6001) }] })).toBeUndefined()
+    expect(validateMobileTranscript({ ...transcript, messages: [{ ...message, role: "system" }] })).toBeUndefined()
+    expect(validateMobileTranscript({ ...transcript, messages: [{ ...message, created: Infinity }] })).toBeUndefined()
+    expect(validateMobileTranscript({ ...transcript, messages: Array(21).fill(message) })).toBeUndefined()
+    expect(validateMobileTranscript({ ...transcript, directory: "" })).toBeUndefined()
+  })
+
+  test("ignores invalid injected transcript without discarding sidebar cache", () => {
+    const previous = globalThis.window
+    try {
+      globalThis.window = { __HAOLAB_MOBILE__: true, __HAOLAB_CACHE__: {
+        version: 1, projects: ["/one"], transcript: { ...transcript, messages: [{ ...message, text: "x".repeat(6001) }] },
+      } } as unknown as Window & typeof globalThis
+      expect(mobileCache()?.transcript).toBeUndefined()
+      expect(mobileCache()?.projects).toEqual(["/one"])
+    } finally {
+      globalThis.window = previous
+    }
+  })
+})
 
 describe("sidebarProjects", () => {
+  test("restores only the persisted hashed pairing identity across bridge restarts", () => {
+    const conn: ServerConnection.Tunnel = { type: "tunnel", host: "paired.test", cacheKey: "a".repeat(64),
+      http: { url: "http://127.0.0.1:41643", username: "client", password: "sample" } }
+    expect(canRestoreTunnelSidebar(conn, conn.cacheKey)).toBe(true)
+    expect(canRestoreTunnelSidebar({ ...conn, http: { ...conn.http, url: "http://127.0.0.1:49152" } }, conn.cacheKey)).toBe(true)
+    expect(canRestoreTunnelSidebar({ ...conn, cacheKey: "b".repeat(64) }, conn.cacheKey)).toBe(false)
+    expect(canRestoreTunnelSidebar({ ...conn, cacheKey: "sample" }, "sample")).toBe(false)
+    expect(canRestoreTunnelSidebar({ type: "sidecar", variant: "base", http: conn.http }, conn.cacheKey)).toBe(false)
+  })
+
   test("restores verified A paths on return but not after a bridge or credential change", () => {
     const conn: ServerConnection.Tunnel = {
       type: "tunnel",
@@ -37,6 +128,19 @@ describe("sidebarProjects", () => {
     expect(result?.[0]?.expanded).toBe(false)
   })
 
+  test("replaces an in-memory mobile snapshot without accepting malformed payloads", () => {
+    const first = sidebarProjects([], ["/host/one", "/host/two", "/host/one"])
+    expect(first).toEqual([
+      { worktree: "/host/one", expanded: true },
+      { worktree: "/host/two", expanded: true },
+    ])
+    expect(sidebarProjects(first!, ["/host/two", "/host/three"])).toEqual([
+      { worktree: "/host/two", expanded: true },
+      { worktree: "/host/three", expanded: true },
+    ])
+    expect(sidebarProjects(first!, ["/host/one", " "])).toBeUndefined()
+    expect(sidebarProjects(first!, { directories: ["/host/one"] })).toBeUndefined()
+  })
 })
 
 describe("resolveServerList", () => {

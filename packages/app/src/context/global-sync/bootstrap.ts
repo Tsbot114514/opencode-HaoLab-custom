@@ -83,18 +83,18 @@ function showErrors(input: {
   })
 }
 
-export const loadGlobalConfigQuery = (sdk: OpencodeClient) =>
+export const loadGlobalConfigQuery = (sdk: OpencodeClient, mobile = false) =>
   queryOptions({
     queryKey: ["config"],
-    queryFn: () => retry(() => sdk.global.config.get().then((x) => x.data!)),
+    queryFn: (context) => retry(() => sdk.global.config.get(mobile ? { signal: context.signal } : undefined).then((x) => x.data!)),
   })
 
-export const loadProjectsQuery = (sdk: OpencodeClient) =>
+export const loadProjectsQuery = (sdk: OpencodeClient, mobile = false) =>
   queryOptions({
     queryKey: ["project"],
-    queryFn: () =>
+    queryFn: (context) =>
       retry(() =>
-        sdk.project.list().then((x) => {
+        sdk.project.list(undefined, mobile ? { signal: context.signal } : undefined).then((x) => {
           return (x.data ?? [])
             .filter((p) => !!p?.id)
             .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
@@ -178,22 +178,22 @@ function warmSessions(input: {
   ).then(() => undefined)
 }
 
-export const loadProvidersQuery = (directory: string | null, sdk: OpencodeClient) =>
+export const loadProvidersQuery = (directory: string | null, sdk: OpencodeClient, mobile = false) =>
   queryOptions({
     queryKey: [directory, "providers"],
-    queryFn: () => retry(() => sdk.provider.list().then((x) => normalizeProviderList(x.data!))),
+    queryFn: (context) => retry(() => sdk.provider.list(undefined, mobile ? { signal: context.signal } : undefined).then((x) => normalizeProviderList(x.data!))),
   })
 
-export const loadAgentsQuery = (directory: string | null, sdk: OpencodeClient) =>
+export const loadAgentsQuery = (directory: string | null, sdk: OpencodeClient, mobile = false) =>
   queryOptions({
     queryKey: [directory, "agents"],
-    queryFn: () => retry(() => sdk.app.agents().then((x) => normalizeAgentList(x.data))),
+    queryFn: (context) => retry(() => sdk.app.agents(undefined, mobile ? { signal: context.signal } : undefined).then((x) => normalizeAgentList(x.data))),
   })
 
-export const loadPathQuery = (directory: string | null, sdk: OpencodeClient) =>
+export const loadPathQuery = (directory: string | null, sdk: OpencodeClient, mobile = false) =>
   queryOptions<Path>({
     queryKey: [directory, "path"],
-    queryFn: () => retry(() => sdk.path.get().then((x) => x.data!)),
+    queryFn: (context) => retry(() => sdk.path.get(undefined, mobile ? { signal: context.signal } : undefined).then((x) => x.data!)),
   })
 
 export async function bootstrapDirectory(input: {

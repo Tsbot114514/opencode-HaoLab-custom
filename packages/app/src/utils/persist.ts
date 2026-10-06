@@ -1,7 +1,7 @@
 import { Platform, usePlatform } from "@/context/platform"
 import { makePersisted, type AsyncStorage, type SyncStorage } from "@solid-primitives/storage"
 import { checksum } from "@opencode-ai/core/util/encode"
-import { createResource, type Accessor } from "solid-js"
+import { createResource, onCleanup, type Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
 import { pathKey } from "@/utils/path-key"
 
@@ -11,6 +11,7 @@ type PersistedWithReady<T> = [
   SetStoreFunction<T>,
   InitType,
   Accessor<boolean> & { promise: undefined | Promise<any> },
+  VoidFunction,
 ]
 
 type PersistTarget = {
@@ -503,6 +504,7 @@ export function removePersisted(
 export function persisted<T>(
   target: string | PersistTarget,
   store: [Store<T>, SetStoreFunction<T>],
+  options?: { debounce?: number },
 ): PersistedWithReady<T> {
   const platform = usePlatform()
   const config: PersistTarget = typeof target === "string" ? { key: target } : target
@@ -588,7 +590,45 @@ export function persisted<T>(
     return api
   })()
 
-  const [state, setState, init] = makePersisted(store, { name: config.key, storage })
+  const pending = { value: undefined as string | undefined, timer: undefined as ReturnType<typeof setTimeout> | undefined }
+  const flush = () => {
+    if (pending.timer !== undefined) clearTimeout(pending.timer)
+    pending.timer = undefined
+    if (pending.value === undefined) return
+    const value = pending.value
+    pending.value = undefined
+    storage.setItem(config.key, value)
+  }
+
+  const debounced = options?.debounce && !isDesktop ? ({
+    getItem: (key: string) => (storage as SyncStorage).getItem(key),
+    setItem: (_key: string, value: string) => {
+      pending.value = value
+      if (pending.timer !== undefined) clearTimeout(pending.timer)
+      pending.timer = setTimeout(flush, options.debounce)
+    },
+    removeItem: (key: string) => {
+      pending.value = undefined
+      if (pending.timer !== undefined) clearTimeout(pending.timer)
+      pending.timer = undefined
+      ;(storage as SyncStorage).removeItem(key)
+    },
+  } satisfies SyncStorage) : storage
+
+  if (debounced !== storage) {
+    const hidden = () => {
+      if (document.visibilityState === "hidden") flush()
+    }
+    window.addEventListener("pagehide", flush)
+    document.addEventListener("visibilitychange", hidden)
+    onCleanup(() => {
+      window.removeEventListener("pagehide", flush)
+      document.removeEventListener("visibilitychange", hidden)
+      flush()
+    })
+  }
+
+  const [state, setState, init] = makePersisted(store, { name: config.key, storage: debounced })
 
   const isAsync = init instanceof Promise
   const [ready] = createResource(
@@ -607,5 +647,6 @@ export function persisted<T>(
     Object.assign(() => (ready.loading ? false : ready.latest === true), {
       promise: init instanceof Promise ? init : undefined,
     }),
+    flush,
   ]
 }

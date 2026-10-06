@@ -1,5 +1,5 @@
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
-import { AssistantMessage, Part, SessionStatus, SnapshotFileDiff, UserMessage } from "@opencode-ai/sdk/v2"
+import { AssistantMessage, Message, Part, SessionStatus, SnapshotFileDiff, UserMessage } from "@opencode-ai/sdk/v2"
 import { groupParts, PartGroup, renderable } from "@opencode-ai/ui/message-part"
 import { Data, Equal } from "effect"
 
@@ -109,8 +109,26 @@ export namespace TimelineRow {
 }
 
 export namespace Timeline {
+  // A partial window may contain replies while their real user message is still outside the page.
+  export function turns(messages: Message[], users: UserMessage[], partial: boolean, revertMessageID?: string) {
+    if (!partial) return users
+    const visible = new Map(users.map((message) => [message.id, message]))
+    const loaded = new Set(messages.map((message) => message.id))
+    const parents = new Set<string>()
+    return messages.flatMap((message): (UserMessage | string)[] => {
+      if (message.role === "user") {
+        const user = visible.get(message.id)
+        return user ? [user] : []
+      }
+      if (loaded.has(message.parentID) || parents.has(message.parentID)) return []
+      if (revertMessageID && message.parentID >= revertMessageID) return []
+      parents.add(message.parentID)
+      return [message.parentID]
+    })
+  }
+
   export function constructMessageRows(
-    userMessage: UserMessage,
+    userMessage: UserMessage | string,
     getMessageParts: (messageID: string) => Part[],
     assistantMessages: AssistantMessage[],
     index: number,
@@ -119,9 +137,10 @@ export namespace Timeline {
     isActive: boolean,
   ) {
     const rows: TimelineRow.TimelineRow[] = []
+    const userMessageID = typeof userMessage === "string" ? userMessage : userMessage.id
 
     const previousUserMessage = index > 0
-    const userParts = getMessageParts(userMessage.id)
+    const userParts = typeof userMessage === "string" ? [] : getMessageParts(userMessage.id)
     const comments = userParts.flatMap((p) => MessageComment.fromPart(p) ?? [])
     const compaction = userParts.some((p) => p.type === "compaction")
     const interruptedMessageIndex = assistantMessages.findIndex((m) => m.error?.name === "MessageAbortedError")
@@ -156,23 +175,24 @@ export namespace Timeline {
     if (comments.length > 0)
       rows.push(
         new TimelineRow.CommentStrip({
-          userMessageID: userMessage.id,
+          userMessageID,
           previousUserMessage,
         }),
       )
 
-    rows.push(
-      new TimelineRow.UserMessage({
-        userMessageID: userMessage.id,
-        anchor: comments.length === 0,
-        previousUserMessage: comments.length === 0 && previousUserMessage,
-      }),
-    )
+    if (typeof userMessage !== "string")
+      rows.push(
+        new TimelineRow.UserMessage({
+          userMessageID,
+          anchor: comments.length === 0,
+          previousUserMessage: comments.length === 0 && previousUserMessage,
+        }),
+      )
 
     if (compaction) {
       rows.push(
         new TimelineRow.TurnDivider({
-          userMessageID: userMessage.id,
+          userMessageID,
           label: "compaction",
         }),
       )
@@ -183,7 +203,7 @@ export namespace Timeline {
       if (item.type === "interrupted") {
         rows.push(
           new TimelineRow.TurnDivider({
-            userMessageID: userMessage.id,
+            userMessageID,
             label: "interrupted",
           }),
         )
@@ -192,7 +212,7 @@ export namespace Timeline {
 
       rows.push(
         new TimelineRow.AssistantPart({
-          userMessageID: userMessage.id,
+          userMessageID,
           group: item.group,
           previousAssistantPart: assistantGroupIndex > 0,
           lastAssistantPart: assistantGroupIndex === assistantGroupCount - 1,
@@ -209,15 +229,15 @@ export namespace Timeline {
 
       rows.push(
         new TimelineRow.Thinking({
-          userMessageID: userMessage.id,
+          userMessageID,
           reasoningHeading: heading,
         }),
       )
     }
 
-    if (isActive && status === "retry") rows.push(new TimelineRow.Retry({ userMessageID: userMessage.id }))
+    if (isActive && status === "retry") rows.push(new TimelineRow.Retry({ userMessageID }))
 
-    const diffs = (userMessage.summary?.diffs ?? [])
+    const diffs = (typeof userMessage === "string" ? [] : (userMessage.summary?.diffs ?? []))
       .reduceRight<SummaryDiff[]>((result, diff) => {
         if (!isSummaryDiff(diff)) return result
         if (result.some((item) => item.file === diff.file)) return result
@@ -228,7 +248,7 @@ export namespace Timeline {
     if (diffs.length > 0 && (status === "idle" || !isActive)) {
       rows.push(
         new TimelineRow.DiffSummary({
-          userMessageID: userMessage.id,
+          userMessageID,
           diffs,
         }),
       )
@@ -238,7 +258,7 @@ export namespace Timeline {
       const data = error.data?.message
       rows.push(
         new TimelineRow.Error({
-          userMessageID: userMessage.id,
+          userMessageID,
           text: unwrapErrorMessage(
             typeof data === "string" ? data : data === undefined || data === null ? "" : String(data),
           ),

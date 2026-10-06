@@ -6,10 +6,89 @@ import { Persist, persisted } from "@/utils/persist"
 import { useCheckServerHealth } from "@/utils/server-health"
 import { authTokenFromCredentials } from "@/utils/server"
 import { usePlatform } from "./platform"
+import type { Session } from "@opencode-ai/sdk/v2/client"
+import { readMobileConnection, requestMobileConnectionRefresh, validateMobileConnection } from "@/utils/mobile-connection"
 
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http | ServerConnection.Tunnel
+export type MobileSessionSummary = Pick<Session, "id" | "directory" | "projectID" | "slug" | "title" | "version"> & {
+  time: Pick<Session["time"], "created" | "updated">
+}
+export type MobileTranscriptMessage = {
+  id: string
+  role: "user" | "assistant"
+  created: number
+  parentID?: string
+  text: string
+}
+export type MobileTranscript = { directory: string; sessionID: string; messages: MobileTranscriptMessage[] }
 const HEALTH_POLL_INTERVAL_MS = 10_000
+
+export function validateMobileTranscript(value: unknown): MobileTranscript | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return
+  const transcript = value as Record<string, unknown>
+  if (typeof transcript.directory !== "string" || !transcript.directory.trim() ||
+    typeof transcript.sessionID !== "string" || !transcript.sessionID.trim() ||
+    !Array.isArray(transcript.messages) || transcript.messages.length > 20) return
+  const ids = new Set<string>()
+  const messages: MobileTranscriptMessage[] = []
+  for (const entry of transcript.messages) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return
+    const message = entry as Record<string, unknown>
+    if (typeof message.id !== "string" || !message.id.trim() || ids.has(message.id) ||
+      (message.role !== "user" && message.role !== "assistant") ||
+      typeof message.created !== "number" || !Number.isFinite(message.created) ||
+      typeof message.text !== "string" || !message.text.trim() || message.text.length > 6000 ||
+      (message.parentID !== undefined && (message.role !== "assistant" || typeof message.parentID !== "string" || !message.parentID.trim()))) return
+    ids.add(message.id)
+    messages.push({ id: message.id, role: message.role, created: message.created, text: message.text,
+      ...(message.parentID === undefined ? {} : { parentID: message.parentID as string }) })
+  }
+  return { directory: transcript.directory, sessionID: transcript.sessionID, messages }
+}
+
+export function mobileCache() {
+  if (typeof window === "undefined" || (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ !== true)
+    return
+  const value: unknown = (window as Window & { __HAOLAB_CACHE__?: unknown }).__HAOLAB_CACHE__
+  if (!value || typeof value !== "object") return
+  const cache = value as { version?: unknown; projects?: unknown; sessions?: unknown; selected?: unknown; transcript?: unknown }
+  if (cache.version !== 1 || !sidebarProjects([], cache.projects)) return
+  const sessions: Record<string, MobileSessionSummary[]> = {}
+  if (cache.sessions && typeof cache.sessions === "object" && !Array.isArray(cache.sessions)) {
+    for (const [directory, entries] of Object.entries(cache.sessions)) {
+      if (!Array.isArray(entries) || !entries.every((entry) => {
+        if (!entry || typeof entry !== "object") return false
+        const session = entry as Record<string, unknown>
+        const time = session.time as Record<string, unknown> | undefined
+        return session.directory === directory &&
+          [session.id, session.directory, session.projectID, session.slug, session.title, session.version].every(
+            (field) => typeof field === "string" && !!field.trim(),
+          ) && !!time && typeof time === "object" &&
+          typeof time.created === "number" && Number.isFinite(time.created) &&
+          typeof time.updated === "number" && Number.isFinite(time.updated)
+      })) continue
+      sessions[directory] = entries.map((entry: MobileSessionSummary) => ({
+        id: entry.id, directory: entry.directory, projectID: entry.projectID, slug: entry.slug,
+        title: entry.title, version: entry.version, time: { created: entry.time.created, updated: entry.time.updated },
+      }))
+    }
+  }
+  return {
+    projects: cache.projects as string[],
+    sessions,
+    selected: typeof cache.selected === "string" && (cache.projects as string[]).includes(cache.selected)
+      ? cache.selected : undefined,
+    transcript: validateMobileTranscript(cache.transcript),
+  }
+}
+
+export function sendMobileCache(message: { type: "projects"; directories: string[] } | { type: "sessions"; directory: string; sessions: MobileSessionSummary[] } | { type: "selected"; directory: string } | ({ type: "transcript" } & MobileTranscript)) {
+  if (typeof window === "undefined" || (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ !== true)
+    return
+  ;(window as Window & { webkit?: { messageHandlers?: { haolabCache?: { postMessage: (value: typeof message) => void } } } })
+    .webkit?.messageHandlers?.haolabCache?.postMessage(message)
+}
 
 export function sidebarProjects(current: StoredProject[], directories: unknown): StoredProject[] | undefined {
   if (!Array.isArray(directories) || directories.some((directory) => typeof directory !== "string" || !directory.trim())) return
@@ -20,7 +99,8 @@ export function sidebarProjects(current: StoredProject[], directories: unknown):
   return next
 }
 
-export function canRestoreTunnelSidebar(conn: ServerConnection.Any | undefined, verified?: ServerConnection.HttpBase) {
+export function canRestoreTunnelSidebar(conn: ServerConnection.Any | undefined, verified?: ServerConnection.HttpBase | string) {
+  if (typeof verified === "string") return conn?.type === "tunnel" && /^[a-f0-9]{64}$/.test(verified) && conn.cacheKey === verified
   return conn?.type === "tunnel" && !!verified && verified.url === conn.http.url &&
     verified.username === conn.http.username && verified.password === conn.http.password
 }
@@ -171,22 +251,54 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         list: [] as StoredServer[],
         projects: {} as Record<string, StoredProject[]>,
         lastProject: {} as Record<string, string>,
+        verified: {} as Record<string, string>,
       }),
     )
     const [remote, setRemote] = createStore({ loaded: {} as Record<string, ServerConnection.HttpBase | undefined> })
+    const mobile =
+      typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
+    const [native, setNative] = createStore({ connection: mobile ? readMobileConnection() : undefined })
+    if (mobile) {
+      const receive = (event: Event) => {
+        const next = validateMobileConnection((event as CustomEvent<unknown>).detail)
+        if (!next || (native.connection && next.revision < native.connection.revision)) return
+        setNative("connection", next)
+      }
+      window.addEventListener("haolab:connection", receive)
+      onCleanup(() => window.removeEventListener("haolab:connection", receive))
+    }
+    const cached = mobileCache()
+    const [mobileProjects, setMobileProjects] = createStore({
+      list: sidebarProjects([], cached?.projects) ?? ([] as StoredProject[]),
+      selected: cached?.selected,
+      status: "loading" as "loading" | "ready" | "error",
+      retry: 0,
+    })
 
     const url = (x: StoredServer) => (typeof x === "string" ? x : "type" in x ? x.http.url : x.url)
 
     const allServers = createMemo((): Array<ServerConnection.Any> => {
+      if (mobile) return (props.servers ?? []).filter((conn) => conn.type === "http" && conn.http.url === window.location.origin)
       return resolveServerList({ stored: store.list, props: props.servers })
     })
 
     const [state, setState] = createStore({
-      active: props.defaultServer,
+      active: mobile ? ServerConnection.Key.make(window.location.origin) : props.defaultServer,
       healthy: undefined as boolean | undefined,
     })
 
     const healthy = () => state.healthy
+    const connection = {
+      state: () => native.connection?.state ?? (healthy() === true ? "connected" : healthy() === false ? "offline" : "connecting"),
+      active: () => native.connection?.active ?? true,
+      revision: () => native.connection?.revision ?? 0,
+      refresh: () => {
+        if (mobile && requestMobileConnectionRefresh()) return
+        const conn = current()
+        if (conn) void check(conn).then((next) => setState("healthy", next))
+        if (mobile) setMobileProjects("retry", (value) => value + 1)
+      },
+    }
 
     function startHealthPolling(conn: ServerConnection.Any) {
       let alive = true
@@ -283,7 +395,11 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       const current_ = current()
       if (!current_) return
 
-      if (props.disableHealthCheck) {
+      if (mobile && native.connection) {
+        setState("healthy", native.connection.state === "connected" ? true : native.connection.state === "offline" ? false : undefined)
+        return
+      }
+      if (props.disableHealthCheck && !mobile) {
         setState("healthy", true)
         return
       }
@@ -291,20 +407,82 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       onCleanup(startHealthPolling(current_))
     })
 
-    const origin = createMemo(() => projectsKey(state.active))
     const current: Accessor<ServerConnection.Any | undefined> = createMemo(
       () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
     )
+    const origin = createMemo(() => {
+      const conn = current()
+      const key = conn ? ServerConnection.key(conn) : state.active
+      return conn?.type === "tunnel" && /^[a-f0-9]{64}$/.test(conn.cacheKey ?? "")
+        ? `${key}:${conn.cacheKey}` : projectsKey(key)
+    })
     const projectsList = createMemo(() => {
+      if (mobile) return mobileProjects.list
       const conn = current()
       if (conn?.type === "tunnel") {
-        if (!canRestoreTunnelSidebar(conn, remote.loaded[origin()])) return []
+        if (!canRestoreTunnelSidebar(conn, store.verified[origin()] ?? remote.loaded[origin()])) return []
       }
       return store.projects[origin()] ?? []
     })
     const isLocal = createMemo(() => {
+      if (mobile) return false
       const c = current()
       return (c?.type === "sidecar" && c.variant === "base") || (c?.type === "http" && isLocalHost(c.http.url))
+    })
+
+    createEffect(() => {
+      if (!mobile || !ready() || healthy() !== true || !connection.active()) return
+      connection.revision()
+      mobileProjects.retry
+      const conn = current()
+      if (conn?.type !== "http" || window.location.protocol !== "http:") return
+      if (window.location.hostname !== "127.0.0.1") return
+
+      const controller = new AbortController()
+      let busy = false
+      const load = async () => {
+        if (busy) return
+        busy = true
+        const request = new AbortController()
+        const cancel = () => request.abort()
+        controller.signal.addEventListener("abort", cancel)
+        try {
+          const data = await new Promise<unknown>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              cancel()
+              reject(new Error("Project snapshot timed out"))
+            }, 10_000)
+            void fetch("/__haolab/projects", { signal: request.signal }).then(async (response) => {
+              if (!response.ok) throw new Error("Project snapshot unavailable")
+              return response.json() as Promise<unknown>
+            }).then(resolve, reject).finally(() => clearTimeout(timeout))
+          })
+          if (
+            controller.signal.aborted || request.signal.aborted ||
+            !data ||
+            typeof data !== "object" ||
+            !Array.isArray((data as { directories?: unknown }).directories)
+          ) throw new Error("Invalid project snapshot")
+          const next = sidebarProjects(mobileProjects.list, (data as { directories: unknown[] }).directories)
+          if (!next) throw new Error("Invalid project snapshot")
+          if (next !== mobileProjects.list) {
+            setMobileProjects("list", next)
+            sendMobileCache({ type: "projects", directories: next.map((project) => project.worktree) })
+          }
+          setMobileProjects("status", "ready")
+        } catch {
+          if (!controller.signal.aborted) setMobileProjects("status", "error")
+        } finally {
+          controller.signal.removeEventListener("abort", cancel)
+          busy = false
+        }
+      }
+      void load()
+      const interval = setInterval(() => void load(), HEALTH_POLL_INTERVAL_MS)
+      onCleanup(() => {
+        clearInterval(interval)
+        controller.abort()
+      })
     })
 
     createEffect(() => {
@@ -322,7 +500,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       })()
       if (!bridge) return
 
-      const key = projectsKey(ServerConnection.key(conn))
+      const key = origin()
       const controller = new AbortController()
       let alive = true
       const load = async () => {
@@ -344,8 +522,11 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           const currentProjects = store.projects[key] ?? []
           const next = sidebarProjects(currentProjects, (data as { directories: unknown[] }).directories)
           if (!next) return
-          if (next !== currentProjects) setStore("projects", key, next)
-          setRemote("loaded", key, { url: conn.http.url, username: conn.http.username, password })
+          batch(() => {
+            if (next !== currentProjects) setStore("projects", key, next.slice(0, 30))
+            if (/^[a-f0-9]{64}$/.test(conn.cacheKey ?? "")) setStore("verified", key, conn.cacheKey!)
+            setRemote("loaded", key, { url: conn.http.url, username: conn.http.username, password })
+          })
         } catch {
           // Reconnecting can request A's sidebar again.
         }
@@ -360,6 +541,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     return {
       ready: isReady,
       healthy,
+      connection,
       isLocal,
       get key() {
         return state.active
@@ -379,7 +561,10 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       remove,
       projects: {
         list: projectsList,
+        status: () => mobile ? mobileProjects.status : "ready",
+        retry: () => setMobileProjects("retry", (value) => value + 1),
         open(directory: string) {
+          if (mobile) return
           const key = origin()
           if (!key) return
           const current = store.projects[key] ?? []
@@ -387,6 +572,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           setStore("projects", key, [{ worktree: directory, expanded: true }, ...current])
         },
         close(directory: string) {
+          if (mobile) return
           const key = origin()
           if (!key) return
           const current = store.projects[key] ?? []
@@ -397,6 +583,11 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           )
         },
         expand(directory: string) {
+          if (mobile) {
+            const index = mobileProjects.list.findIndex((x) => x.worktree === directory)
+            if (index !== -1) setMobileProjects("list", index, "expanded", true)
+            return
+          }
           const key = origin()
           if (!key) return
           const current = store.projects[key] ?? []
@@ -404,6 +595,11 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           if (index !== -1) setStore("projects", key, index, "expanded", true)
         },
         collapse(directory: string) {
+          if (mobile) {
+            const index = mobileProjects.list.findIndex((x) => x.worktree === directory)
+            if (index !== -1) setMobileProjects("list", index, "expanded", false)
+            return
+          }
           const key = origin()
           if (!key) return
           const current = store.projects[key] ?? []
@@ -411,6 +607,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           if (index !== -1) setStore("projects", key, index, "expanded", false)
         },
         move(directory: string, toIndex: number) {
+          if (mobile) return
           const key = origin()
           if (!key) return
           const current = store.projects[key] ?? []
@@ -422,11 +619,18 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
           setStore("projects", key, result)
         },
         last() {
+          if (mobile) return mobileProjects.list.some((project) => project.worktree === mobileProjects.selected)
+            ? mobileProjects.selected : undefined
           const key = origin()
           if (!key) return
+          if (current()?.type === "tunnel" && !canRestoreTunnelSidebar(current(), store.verified[key] ?? remote.loaded[key])) return
           return store.lastProject[key]
         },
         touch(directory: string) {
+          if (mobile) {
+            setMobileProjects("selected", directory)
+            return
+          }
           const key = origin()
           if (!key) return
           setStore("lastProject", key, directory)

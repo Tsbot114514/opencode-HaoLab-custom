@@ -25,6 +25,7 @@ import { displayName, getProjectAvatarSource, projectForSession } from "@/pages/
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { StatusPopover } from "./status-popover"
 import { SDKProvider } from "@/context/sdk"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 
 type TauriDesktopWindow = {
   startDragging?: () => Promise<void>
@@ -62,6 +63,8 @@ export type TitlebarUpdate = {
 }
 
 export function Titlebar(props: { update?: TitlebarUpdate }) {
+  if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+    return <MobileHeader />
   const layout = useLayout()
   const platform = usePlatform()
   const command = useCommand()
@@ -402,13 +405,26 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
 
             return (
               <div
-                class="h-full flex-1 flex flex-row items-center gap-1.5 pr-3 py-2"
+                class="h-full min-w-0 flex-1 flex flex-row items-center gap-1.5 pr-3 py-2"
                 classList={{
                   "pl-2": mac(),
                   "pl-4": !mac(),
                 }}
               >
-                <ChannelIndicator />
+                <Button
+                  variant="ghost"
+                  class="xl:hidden h-11 shrink-0 px-2"
+                  onClick={layout.mobileSidebar.toggle}
+                  aria-label={language.t("sidebar.nav.projectsAndSessions")}
+                  aria-expanded={layout.mobileSidebar.opened()}
+                  aria-controls="sidebar-nav-mobile"
+                >
+                  <Icon name="menu" size="small" />
+                  <span>{language.t("sidebar.nav.projectsAndSessions")}</span>
+                </Button>
+                <div class="hidden sm:contents">
+                  <ChannelIndicator />
+                </div>
                 <Show when={windows() || linux()}>
                   <WindowsAppMenu command={command} platform={platform} variant="v2" />
                 </Show>
@@ -637,6 +653,50 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
           </div>
         </Match>
       </Switch>
+    </header>
+  )
+}
+
+function MobileHeader() {
+  const layout = useLayout()
+  const language = useLanguage()
+  const dialog = useDialog()
+  const params = useParams()
+  const session = () => {
+    const current = layout.mobileHeader.session()
+    return current?.id === params.id ? current : undefined
+  }
+  const title = () => {
+    if (!params.dir) return language.t("sidebar.nav.projectsAndSessions")
+    if (layout.mobileNavigation.expanded() && session()?.title) return session()?.title
+    return language.t("session.tab.session")
+  }
+  const settings = () => {
+    layout.mobileNavigation.collapse()
+    void import("@/components/dialog-settings").then((module) => dialog.show(() => <module.DialogSettings />))
+  }
+  return (
+    <header data-component="mobile-header" data-expanded={layout.mobileNavigation.expanded()}>
+      <button type="button" aria-label={language.t("sidebar.nav.projectsAndSessions")} aria-controls="sidebar-nav-mobile" aria-expanded={layout.mobileSidebar.opened()} onClick={layout.mobileSidebar.toggle}>
+        <Icon name="menu" />
+      </button>
+      <Show when={params.dir && !layout.mobileNavigation.expanded()}>
+        <button type="button" aria-label={language.t("sidebar.project.recentSessions")} onClick={() => {
+          layout.mobileSidebar.show()
+          layout.mobileNavigation.collapse()
+        }}><Icon name="arrow-left" /></button>
+      </Show>
+      <span data-slot="mobile-header-title" title={title()}>{title()}</span>
+      <Show when={layout.mobileNavigation.expanded() && session()}>
+        {(current) => <button type="button" aria-label={current().currentTab === "changes" ? language.t("session.tab.session") : language.t("session.review.change.other")} aria-pressed={current().currentTab === "changes"} onClick={() => {
+          current().onTabChange(current().currentTab === "changes" ? "session" : "changes")
+          layout.mobileNavigation.collapse()
+        }}><Icon name="code" /></button>}
+      </Show>
+       <button type="button" aria-label={layout.mobileNavigation.expanded() || !session() ? language.t("sidebar.settings") : language.t("common.moreOptions")} aria-expanded={session() ? layout.mobileNavigation.expanded() : undefined} onClick={() => {
+        if (layout.mobileNavigation.expanded() || !session()) return settings()
+        layout.mobileNavigation.expand()
+       }}><Icon name={layout.mobileNavigation.expanded() || !session() ? "settings-gear" : "dot-grid"} /></button>
     </header>
   )
 }

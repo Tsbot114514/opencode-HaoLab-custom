@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { ConfigProvider, Layer } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { EventPaths } from "../../src/server/routes/instance/httpapi/groups/event"
+import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
+import { SessionID } from "../../src/session/schema"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { PtyID } from "../../src/pty/schema"
@@ -48,6 +50,27 @@ afterEach(async () => {
 })
 
 describe("HttpApi raw route authorization", () => {
+  test("requires configured auth before accessing transcript endpoints", async () => {
+    await using tmp = await tmpdir({ config: { formatter: false, lsp: false } })
+    const server = app({ password: "secret" })
+    const headers = { "x-opencode-directory": tmp.path }
+    const id = SessionID.descending()
+    for (const route of [
+      SessionPaths.transcriptSnapshot.replace(":sessionID", id),
+      SessionPaths.transcriptChanges.replace(":sessionID", id) + "?cursor=invalid",
+    ]) {
+      expect((await server.request(route, { headers })).status).toBe(401)
+      expect(
+        (await server.request(route, { headers: { ...headers, authorization: basic("opencode", "wrong") } })).status,
+      ).toBe(401)
+      const authed = await server.request(route, {
+        headers: { ...headers, authorization: basic("opencode", "secret") },
+      })
+      expect([400, 404]).toContain(authed.status)
+      expect(authed.headers.get("x-opencode-transcript-feed")).toBe("1")
+    }
+  })
+
   test("requires configured auth before opening the raw instance event stream", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
     const server = app({ password: "secret" })

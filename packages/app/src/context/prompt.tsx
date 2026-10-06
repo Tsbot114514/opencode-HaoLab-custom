@@ -163,8 +163,9 @@ type PromptCacheEntry = {
 
 function createPromptSession(dir: string, id: string | undefined) {
   const legacy = `${dir}/prompt${id ? "/" + id : ""}.v2`
+  const mobile = typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
 
-  const [store, setStore, _, ready] = persisted(
+  const [store, setStore, _, ready, flush] = persisted(
     Persist.scoped(dir, id, "prompt", [legacy]),
     createStore<{
       prompt: Prompt
@@ -179,6 +180,7 @@ function createPromptSession(dir: string, id: string | undefined) {
         items: [],
       },
     }),
+    mobile ? { debounce: 300 } : undefined,
   )
 
   const actions = createPromptActions(setStore)
@@ -220,7 +222,11 @@ function createPromptSession(dir: string, id: string | undefined) {
       },
     },
     set: actions.set,
-    reset: actions.reset,
+    reset() {
+      actions.reset()
+      flush()
+    },
+    flush,
   }
 }
 
@@ -292,6 +298,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
       },
       set: (prompt: Prompt, cursorPosition?: number, scope?: Scope) => pick(scope).set(prompt, cursorPosition),
       reset: (scope?: Scope) => pick(scope).reset(),
+      flush: (scope?: Scope) => pick(scope).flush(),
     }
   },
 })

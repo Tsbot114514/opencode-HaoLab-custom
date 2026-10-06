@@ -12,6 +12,7 @@ import { decode64 } from "@/utils/base64"
 import { same } from "@/utils/same"
 import { createScrollPersistence, type SessionScroll } from "./layout-scroll"
 import { createPathHelpers } from "./file/path"
+import { createMobileHeader } from "./mobile-header"
 
 const AVATAR_COLOR_KEYS = ["pink", "mint", "orange", "purple", "cyan", "lime"] as const
 const DEFAULT_SIDEBAR_WIDTH = 344
@@ -263,6 +264,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
       }),
     )
+    const [mobileNavigation, setMobileNavigation] = createStore({ expanded: false })
+    const mobileHeader = createMobileHeader()
 
     const MAX_SESSION_KEYS = 50
     const PENDING_MESSAGE_TTL_MS = 2 * 60 * 1000
@@ -386,6 +389,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     }
 
     function enrich(project: { worktree: string; expanded: boolean }): LocalProject {
+      if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+        return { ...globalSync.data.project.find((x) => x.worktree === project.worktree), ...project }
       const [childStore] = globalSync.child(project.worktree, { bootstrap: false })
       const projectID = childStore.project
       const metadata =
@@ -439,6 +444,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     }
 
     createEffect(() => {
+      if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+        return
       const projects = server.projects.list()
       const seen = new Set(projects.map((project) => project.worktree))
 
@@ -471,6 +478,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     })
 
     createEffect(() => {
+      if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+        return
       const projects = enriched()
       if (projects.length === 0) return
       if (!globalSync.ready) return
@@ -483,6 +492,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     })
 
     createEffect(() => {
+      if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+        return
       const projects = enriched()
       if (projects.length === 0) return
 
@@ -539,6 +550,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       loadingSessions = false
     }
     createEffect(() => {
+      if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+        return
       if (!server.ready()) return
       const directories = server.projects
         .list()
@@ -694,6 +707,16 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           setStore("mobileSidebar", "opened", (x) => !x)
         },
       },
+      mobileNavigation: {
+        expanded: () => mobileNavigation.expanded,
+        expand() {
+          setMobileNavigation("expanded", true)
+        },
+        collapse() {
+          setMobileNavigation("expanded", false)
+        },
+      },
+      mobileHeader,
       pendingMessage: {
         set(sessionKey: string, messageID: string) {
           const at = Date.now()

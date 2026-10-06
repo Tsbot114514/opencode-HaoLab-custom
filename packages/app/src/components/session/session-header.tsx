@@ -129,7 +129,12 @@ const showRequestError = (language: ReturnType<typeof useLanguage>, err: unknown
   })
 }
 
-export function SessionHeader() {
+export function SessionHeader(props: {
+  mobileTab?: "session" | "changes"
+  onMobileTabChange?: (tab: "session" | "changes") => void
+}) {
+  if (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true)
+    return null
   const layout = useLayout()
   const command = useCommand()
   const server = useServer()
@@ -435,7 +440,19 @@ export function SessionHeader() {
                 </div>
               </Show>
               <div class="flex items-center gap-1">
-                <Show when={status()}>
+                <Show when={props.mobileTab}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    class="titlebar-icon h-8 shrink-0 px-2 text-14-medium"
+                    aria-label={props.mobileTab === "changes" ? language.t("session.tab.session") : language.t("session.review.change.other")}
+                    aria-pressed={props.mobileTab === "changes"}
+                    onClick={() => props.onMobileTabChange?.(props.mobileTab === "changes" ? "session" : "changes")}
+                  >
+                    {props.mobileTab === "changes" ? language.t("session.tab.session") : language.t("session.review.change.other")}
+                  </Button>
+                </Show>
+                <Show when={status() && !props.mobileTab}>
                   <Tooltip placement="bottom" value={language.t("status.popover.trigger")}>
                     <StatusPopover />
                   </Tooltip>

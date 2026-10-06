@@ -1,5 +1,5 @@
 import type { DesktopMenuAction } from "@opencode-ai/app/desktop-menu"
-import type { TranscriptMutation } from "../../../app/src/context/global-sync/transcript-cache"
+import type { TranscriptMutation, TranscriptEntry } from "../../../app/src/context/global-sync/transcript-cache"
 
 export type InitStep = { phase: "server_waiting" } | { phase: "sqlite_waiting" } | { phase: "done" }
 
@@ -99,7 +99,9 @@ export type ElectronAPI = {
   storeKeys: (name: string) => Promise<string[]>
   storeLength: (name: string) => Promise<number>
   transcriptMutate: (scope: string, owner: string, operations: TranscriptMutation[]) => Promise<void>
-  transcriptAcquire: (scope: string, owner: string, directory: string, sessionID: string) => Promise<{ token: string; revalidate: boolean } | undefined>
+  transcriptOpen: (scope: string) => Promise<{ owner: string } | undefined>
+  transcriptReadPage: (scope: string, owner: string, directory: string, sessionID: string, before?: string) => Promise<TranscriptEntry | undefined>
+  transcriptAcquire: (scope: string, owner: string, directory: string, sessionID: string) => Promise<{ token: string; revalidate: boolean; epoch?: number } | undefined>
 
   getWindowCount: () => Promise<number>
   onSqliteMigrationProgress: (cb: (progress: SqliteMigrationProgress) => void) => () => void

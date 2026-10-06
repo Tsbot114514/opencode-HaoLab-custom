@@ -1,6 +1,249 @@
 @import "@opencode-ai/ui/styles/tailwind";
 @import "@opencode-ai/ui/v2/styles/tailwind.css";
 
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  [data-component="session-prompt-dock"]:not([data-placement="inline"]) {
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  [data-slot="prompt-scroll"] {
+    max-height: min(180px, 35dvh);
+  }
+
+  [data-component="prompt-input"],
+  [data-component="prompt-input"] + div {
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  [data-action="prompt-submit"],
+  [data-action="prompt-attach"] {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+html[data-haolab-mobile] {
+  overflow-x: hidden;
+}
+
+html[data-haolab-mobile] [data-component="mobile-header"] {
+  box-sizing: border-box;
+  padding-right: 130px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+  height: 48px;
+  background: var(--background-base);
+  border-bottom: 1px solid var(--border-weaker-base);
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="mobile-header"] button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 44px;
+  width: 44px;
+  min-height: 44px;
+}
+
+html[data-haolab-mobile] [data-slot="mobile-header-title"] {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+html[data-haolab-mobile] [data-component="mobile-drawer-backdrop"] {
+  position: fixed;
+  inset: 48px 0 0;
+  z-index: 40;
+  background: rgb(0 0 0 / 25%);
+}
+
+html[data-haolab-mobile] [data-native-drawer] {
+  position: fixed;
+  inset: 48px 0 0;
+  z-index: 50;
+  background: var(--background-base);
+  padding-top: 12px;
+}
+
+html[data-haolab-mobile] [data-component="user-message"] {
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+html[data-haolab-mobile] [data-component="user-message"] [data-slot="user-message-body"],
+html[data-haolab-mobile] [data-component="user-message"] [data-slot="user-message-attachments"] {
+  max-width: 90%;
+}
+
+html[data-haolab-mobile] [data-component="user-message"] [data-slot="user-message-text"] {
+  background: var(--surface-interactive-base);
+  border-color: transparent;
+  border-radius: 16px 16px 6px 16px;
+  padding: 10px 14px;
+  overflow-wrap: anywhere;
+}
+
+html[data-haolab-mobile] [data-component="text-part"] [data-slot="text-part-body"] [data-component="markdown"] {
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+html[data-haolab-mobile] [data-component="text-part"] [data-slot="text-part-body"] [data-component="markdown"] :is(h3, h4, h5, h6) {
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+html[data-haolab-mobile] [data-component="text-part"] [data-slot="text-part-body"] [data-component="markdown"] h1 {
+  font-size: 20px;
+}
+
+html[data-haolab-mobile] [data-component="text-part"] [data-slot="text-part-body"] [data-component="markdown"] h2 {
+  font-size: 18px;
+}
+
+html[data-haolab-mobile] [data-component="text-part"] [data-slot="text-part-body"] [data-component="markdown"] .shiki {
+  font-size: 15px;
+  line-height: 1.55;
+  border-radius: 12px;
+}
+
+html[data-haolab-mobile] [data-component="text-part"] [data-slot="text-part-body"] [data-component="markdown"] table {
+  font-size: 15px;
+}
+
+html[data-haolab-mobile] [data-component="prompt-input"],
+html[data-haolab-mobile] [data-component="prompt-input"] + div,
+html[data-haolab-mobile] [data-component="session-composer-text"],
+html[data-haolab-mobile] [data-component="session-new-design-text"] {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+html[data-haolab-mobile] [data-component="session-prompt-dock"]:has([data-component="prompt-input"]:focus) [data-dock-surface="tray"] {
+  display: none;
+}
+
+html[data-haolab-mobile] [data-component="sidebar-nav-mobile"] {
+  overflow-x: hidden;
+}
+
+html[data-haolab-mobile] [data-component="sidebar-nav-mobile"] [data-session-id] a,
+html[data-haolab-mobile] [data-component="sidebar-nav-mobile"] [data-action="workspace-toggle"] {
+  min-height: 48px;
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="sidebar-nav-mobile"] [data-session-id] a span {
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] {
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  grid-template-columns: 96px minmax(0, 1fr);
+  overflow-x: hidden;
+  gap: 8px;
+  padding: 0 8px max(12px, env(safe-area-inset-bottom, 0px));
+}
+
+html[data-haolab-mobile] [data-component="home-design"] aside {
+  min-height: 0;
+  overflow: hidden;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] [data-slot="home-project-list"] {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] section {
+  min-height: 0;
+  padding-top: 0;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] [data-component="home-project-row"] {
+  min-height: 48px;
+  height: auto;
+  gap: 4px;
+  padding-inline: 4px;
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] [data-component="home-session-row"] {
+  min-height: 48px;
+  height: auto;
+  padding-inline: 4px;
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] section > div > label {
+  width: auto;
+  margin-left: 0;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] section [data-action="home-new-session"] {
+  padding-inline: 4px;
+  min-height: 44px;
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] button {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] [role="status"] {
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] aside button {
+  padding-inline: 4px;
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] section > div:first-child {
+  flex-wrap: wrap;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] section > div:first-child label {
+  flex: 1 1 100%;
+  min-height: 44px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] section [data-component="home-session-row"] time {
+  font-size: 12px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] [data-slot="home-session-title"] {
+  flex: 1 1 auto;
+  max-width: none;
+  font-size: 16px;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] [data-slot="home-session-project"] {
+  flex: 0 1 32%;
+  font-size: 14px;
+  text-align: right;
+}
+
+html[data-haolab-mobile] [data-component="home-design"] input {
+  font-size: 16px;
+}
+
 @font-face {
   font-family: "JetBrainsMono Nerd Font Mono";
   src: url("/assets/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");

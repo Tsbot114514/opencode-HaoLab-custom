@@ -248,6 +248,18 @@
     opacity: 1;
     pointer-events: auto;
   }
+
+  @media (hover: none) and (pointer: coarse) {
+    [data-slot="text-part-copy-wrapper"] {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    [data-slot="text-part-copy-wrapper"] button {
+      min-width: 44px;
+      min-height: 44px;
+    }
+  }
 }
 
 [data-component="compaction-part"] {
@@ -376,6 +388,23 @@
   &:focus-within [data-slot="bash-copy"] {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    [data-slot="bash-copy"] {
+      position: relative;
+      top: auto;
+      right: auto;
+      display: flex;
+      justify-content: flex-end;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    [data-slot="bash-copy"] button {
+      min-width: 44px;
+      min-height: 44px;
+    }
   }
 
   [data-slot="bash-copy"] [data-component="icon-button"][data-variant="secondary"] {

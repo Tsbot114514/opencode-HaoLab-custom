@@ -2,7 +2,7 @@ import { createSimpleContext } from "@opencode-ai/ui/context"
 import type { AsyncStorage, SyncStorage } from "@solid-primitives/storage"
 import type { Accessor } from "solid-js"
 import type { DesktopMenuAction } from "../desktop-menu"
-import { ServerConnection } from "./server"
+import type { ServerConnection } from "./server"
 
 type PickerPaths = string | string[] | null
 type OpenDirectoryPickerOptions = { title?: string; multiple?: boolean }
@@ -102,6 +102,9 @@ export type Platform = {
 
   /** Storage mechanism, defaults to localStorage */
   storage?: (name?: string) => SyncStorage | AsyncStorage
+
+  /** Scoped native transcript cache, independent of drafts and settings storage. */
+  transcriptStorage?: { scope: string; storage: AsyncStorage }
 
   /** Check for a downloadable desktop update */
   checkUpdate?(): Promise<UpdateInfo>

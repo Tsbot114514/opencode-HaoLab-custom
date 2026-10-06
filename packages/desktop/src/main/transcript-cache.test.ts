@@ -7,6 +7,10 @@ import {
 } from "../../../app/src/context/global-sync/transcript-cache"
 import { createTranscriptAuthority } from "./transcript-cache"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
+import { createRoot } from "solid-js"
+import { createStore } from "solid-js/store"
+import { createDirSyncContext } from "../../../app/src/context/directory-sync"
+import type { State } from "../../../app/src/context/global-sync/types"
 
 const entry = (directory: string, text = "body"): TranscriptEntry => ({
   directory,
@@ -36,7 +40,11 @@ const setup = (budget?: number, limit?: number) => {
     budget,
     limit,
   )
-  const storage = (client: number) => ({
+  const storage = (client: number, paged = false) => ({
+    ...(paged ? {
+      transcriptOpen: async (scope: string) => authority.open(scope, client),
+      transcriptReadPage: async (scope: string, owner: string, directory: string, sessionID: string, before?: string) => authority.readPage(scope, client, owner, directory, sessionID, before),
+    } : {}),
     getItem: async (scope: string) => authority.read(scope, client),
     setItem: async () => {
       throw new Error("Renderer must not serialize the whole cache")
@@ -51,6 +59,218 @@ const setup = (budget?: number, limit?: number) => {
 }
 
 describe("main transcript authority", () => {
+  test("a held same-session touch cannot grant a pre-deletion parallel HTTP body after another wrapper deletes", async () => {
+    const source = setup()
+    source.data.set("sidecar.v1", JSON.stringify({ version: 1, entries: [entry("/work")] }))
+    const storage = source.storage(1, true)
+    const held = Promise.withResolvers<void>()
+    const epochs: (number | undefined)[] = []
+    let touching = false
+    const a = createTranscriptCache({ ...storage, transcriptAcquire: async (scope, owner, directory, sessionID) => {
+      const grant = await storage.transcriptAcquire(scope, owner, directory, sessionID)
+      epochs.push(grant?.epoch)
+      return grant
+    }, transcriptMutate: async (scope, owner, operations) => {
+      if (operations.some((operation) => operation.type === "touch")) {
+        touching = true
+        await held.promise
+      }
+      await storage.transcriptMutate(scope, owner, operations)
+    } }, "sidecar.v1")
+    await a.ensureSelected("/work", "s")
+    a.read("/work", "s")
+    const flushing = a.flush()
+    while (!touching) await Bun.sleep(0)
+    const b = createTranscriptCache(source.storage(2, true), "sidecar.v1")
+    await b.ready
+    const title = { id: "s", directory: "/work", projectID: "fixture", slug: "fixture", title: "Fixture", version: "1", time: { created: 0, updated: 1 } }
+    let messages = 0
+    let metadata = 0
+    const client = createOpencodeClient({ baseUrl: "http://race.test", throwOnError: true, fetch: Object.assign(async (input: RequestInfo | URL) => {
+      const request = input instanceof Request ? input : new Request(input)
+      if (new URL(request.url).pathname.endsWith("/message")) {
+        messages++
+        if (messages === 1) return Response.json([{ info: entry("/work").session[0], parts: entry("/work").part[0].part }])
+        return Response.json({ message: "deleted" }, { status: 404 })
+      }
+      metadata++
+      return Response.json(title)
+    }, { preconnect: fetch.preconnect }) })
+    const app = createRoot((dispose) => {
+      const [store, setStore] = createStore({ session: [title], message: {}, part: {}, part_text_accum_delta: {}, path: { directory: "/work" }, status: "complete" } as unknown as State)
+      const sync = createDirSyncContext(client, "/work", { child: () => [store, setStore], data: { project: [], session_todo: {} }, todo: { set() {} }, transcript: a })
+      return { sync, dispose }
+    })
+    const fetching = app.sync.session.sync("s", { force: true }).catch((error: unknown) => error)
+    while (!messages) await Bun.sleep(0)
+    expect(messages).toBe(1)
+    expect(metadata).toBe(1)
+    expect(epochs).toEqual([0])
+    b.remove("/work", "s")
+    await b.flush()
+    held.resolve()
+    await flushing
+    expect(await fetching).toBeDefined()
+    expect(messages).toBe(2)
+    expect(epochs).toEqual([0, 1])
+    await a.flush()
+    expect(JSON.parse(source.data.get("sidecar.v1")!).entries).toEqual([])
+    expect(a.validatedPage("/work", "s", entry("/work"))).toBe(false)
+    app.dispose()
+    a.dispose()
+    b.dispose()
+  })
+
+  test("a fresh tail followed by streaming deltas never promotes sparse historical parts over another wrapper's edit", async () => {
+    const source = setup()
+    const base = entry("/work")
+    const session = Array.from({ length: 80 }, (_, index) => ({ ...base.session[0], id: `m${index}`, time: { created: index } }))
+    source.data.set("sidecar.v1", JSON.stringify({ version: 1, entries: [{ ...base, session, part: session.map((message) => ({ id: message.id, part: [{ ...base.part[0].part[0], messageID: message.id }] })) }] }))
+    const operations: TranscriptMutation[] = []
+    const storage = source.storage(1, true)
+    const a = createTranscriptCache({ ...storage, transcriptMutate: async (scope, owner, batch) => {
+      operations.push(...batch)
+      await storage.transcriptMutate(scope, owner, batch)
+    } }, "sidecar.v1")
+    await a.ensureSelected("/work", "s")
+    await a.ensureSelected("/work", "s", transcriptCursor(session[20]))
+    const b = createTranscriptCache(source.storage(2, true), "sidecar.v1")
+    await b.ensureSelected("/work", "s", transcriptCursor(session[20]))
+    b.event("/work", { type: "message.part.updated", properties: { part: { ...base.part[0].part[0], messageID: "m10", text: "B historical edit" } } })
+    await b.flush()
+    const fresh = await a.beginFetch("/work", "s")
+    const tail = a.read("/work", "s", 20, undefined, true)!
+    a.write("/work", "s", tail, { fresh, range: {} })
+    a.event("/work", { type: "message.part.delta", properties: { sessionID: "s", messageID: "m79", partID: "p", field: "text", delta: "!" } })
+    a.event("/work", { type: "message.part.delta", properties: { sessionID: "s", messageID: "m79", partID: "p", field: "text", delta: "?" } })
+    await a.flush()
+    const saved: TranscriptEntry = JSON.parse(source.data.get("sidecar.v1")!).entries[0]
+    expect(saved.part.find((part) => part.id === "m10")?.part[0]).toMatchObject({ text: "B historical edit" })
+    expect(saved.part.find((part) => part.id === "m79")?.part[0]).toMatchObject({ text: "body!?" })
+    expect(saved.session).toHaveLength(80)
+    expect(operations.filter((operation) => operation.type === "write")).toHaveLength(1)
+    expect(operations.filter((operation) => operation.type === "event")).toHaveLength(2)
+    expect(operations.find((operation) => operation.type === "write" && operation.page)?.page?.session).toHaveLength(20)
+    a.dispose()
+    b.dispose()
+  })
+
+  test("unloaded message removal edits canonical disk history and rejects another wrapper's pre-removal grant", async () => {
+    const source = setup()
+    const base = entry("/work")
+    const session = Array.from({ length: 80 }, (_, index) => ({ ...base.session[0], id: `m${index}`, time: { created: index } }))
+    source.data.set("sidecar.v1", JSON.stringify({ version: 1, entries: [{ ...base, session, part: session.map((message) => ({ id: message.id, part: [{ ...base.part[0].part[0], messageID: message.id }] })) }] }))
+    const a = createTranscriptCache(source.storage(1, true), "sidecar.v1")
+    await a.ensureSelected("/work", "s")
+    const b = createTranscriptCache(source.storage(2, true), "sidecar.v1")
+    await b.ensureSelected("/work", "s", transcriptCursor(session[60]))
+    const history = b.read("/work", "s", 20, undefined, true)!
+    const fresh = await b.beginFetch("/work", "s")
+    a.event("/work", { type: "message.removed", properties: { sessionID: "s", messageID: "m40" } })
+    await a.flush()
+    b.write("/work", "s", history, { fresh, before: transcriptCursor(session[60]), range: { before: session[60] } })
+    await b.flush()
+    const saved: TranscriptEntry = JSON.parse(source.data.get("sidecar.v1")!).entries[0]
+    expect(saved.session).toHaveLength(79)
+    expect(saved.session.some((message) => message.id === "m40")).toBe(false)
+    expect(saved.part.some((part) => part.id === "m40")).toBe(false)
+    expect(saved.complete).toBe(true)
+    expect(a.read("/work", "s")?.complete).toBe(false)
+    const restarted = createTranscriptCache(source.storage(3, true), "sidecar.v1")
+    await restarted.ensureSelected("/work", "s", transcriptCursor(session[60]))
+    expect(restarted.read("/work", "s")?.session.some((message) => message.id === "m40")).toBe(false)
+    a.dispose()
+    b.dispose()
+    restarted.dispose()
+  })
+  test("selected pages retain full megabyte message content rather than imposing a body cap", () => {
+    const source = setup()
+    source.data.set("sidecar.v1", JSON.stringify({ version: 1, entries: [entry("/large", "x".repeat(1024 * 1024))] }))
+    const opened = source.authority.open("sidecar.v1", 1)
+    const page = source.authority.readPage("sidecar.v1", 1, opened.owner, "/large", "s")!
+    expect(page.part[0].part[0]).toMatchObject({ text: "x".repeat(1024 * 1024) })
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeGreaterThan(1024 * 1024)
+  })
+
+  test("a same-owner history commit retains the pending tail grant without crossing a later tombstone", () => {
+    const source = setup()
+    const base = entry("/work")
+    const session = Array.from({ length: 80 }, (_, index) => ({ ...base.session[0], id: `m${index}`, time: { created: index } }))
+    source.data.set("sidecar.v1", JSON.stringify({ version: 1, entries: [{ ...base, session, part: session.map((message) => ({ id: message.id, part: [{ ...base.part[0].part[0], messageID: message.id }] })) }] }))
+    const opened = source.authority.open("sidecar.v1", 1)
+    const tail = source.authority.readPage("sidecar.v1", 1, opened.owner, "/work", "s")!
+    const history = source.authority.readPage("sidecar.v1", 1, opened.owner, "/work", "s", tail.cursor)!
+    const tailGrant = source.authority.acquire("sidecar.v1", 1, opened.owner, "/work", "s")!
+    const historyGrant = source.authority.acquire("sidecar.v1", 1, opened.owner, "/work", "s")!
+    const page = ({ session, part, cursor, complete }: TranscriptEntry) => ({ session, part, cursor, complete })
+    source.authority.mutate("sidecar.v1", 1, opened.owner, [{ type: "write", entry: history, page: page(history), range: { before: tail.session[0] }, fresh: historyGrant.token }])
+    const edited = { ...tail, part: tail.part.map((part) => ({ ...part, part: part.part.map((item) => ({ ...item, text: "fresh tail" })) })) }
+    source.authority.mutate("sidecar.v1", 1, opened.owner, [{ type: "write", entry: edited, page: page(edited), range: {}, fresh: tailGrant.token }])
+    const saved = JSON.parse(source.data.get("sidecar.v1")!).entries[0]
+    expect(saved.session).toHaveLength(80)
+    expect(saved.part.at(-1).part[0].text).toBe("fresh tail")
+    const stale = source.authority.acquire("sidecar.v1", 1, opened.owner, "/work", "s")!
+    source.authority.mutate("sidecar.v1", 1, opened.owner, [{ type: "remove", directory: "/work", sessionID: "s" }])
+    source.authority.mutate("sidecar.v1", 1, opened.owner, [{ type: "write", entry: edited, page: page(edited), range: {}, fresh: stale.token }])
+    expect(JSON.parse(source.data.get("sidecar.v1")!).entries).toEqual([])
+  })
+  test("100 persisted sessions with 400 messages open with owner metadata and only the selected 20 bodies", async () => {
+    const source = setup()
+    const entries = Array.from({ length: 100 }, (_, index) => {
+      const base = entry(`/work/${index}`)
+      const session = Array.from({ length: 400 }, (_, index) => ({ ...base.session[0], id: `m${index}`, time: { created: index } }))
+      return { ...base, session, part: session.map((message) => ({ id: message.id, part: [{ ...base.part[0].part[0], id: `p${message.id}`, messageID: message.id }] })) }
+    })
+    const raw = JSON.stringify({ version: 1, entries })
+    expect(Buffer.byteLength(raw)).toBeLessThan(16 * 1024 * 1024)
+    source.data.set("sidecar.v1", raw)
+    const opened = source.authority.open("sidecar.v1", 1)
+    expect(Object.keys(opened)).toEqual(["owner"])
+    expect(Buffer.byteLength(JSON.stringify(opened))).toBeLessThan(100)
+    const page = source.authority.readPage("sidecar.v1", 1, opened.owner, "/work/50", "s")!
+    expect(page.session).toHaveLength(20)
+    expect(page.part).toHaveLength(20)
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(10000)
+    expect(source.authority.readPage("sidecar.v1", 2, opened.owner, "/work/50", "s")).toBeUndefined()
+    const cache = createTranscriptCache(source.storage(3, true), "sidecar.v1")
+    await cache.ready
+    expect(cache.directories()).toEqual([])
+    await cache.ensureSelected("/work/50", "s")
+    expect(cache.read("/work/50", "s", 1000)?.session).toHaveLength(20)
+    await cache.ensureSelected("/work/50", "s", page.cursor)
+    expect(cache.read("/work/50", "s", 1000)?.session).toHaveLength(40)
+    const fresh = await cache.beginFetch("/work/50", "s")
+    cache.write("/work/50", "s", { ...page, session: page.session.slice(1), part: page.part.slice(1), cursor: transcriptCursor(page.session[1]) }, { fresh, range: {} })
+    await cache.flush()
+    const saved: TranscriptEntry[] = JSON.parse(source.data.get("sidecar.v1")!).entries
+    expect(saved.find((item) => item.directory === "/work/50")?.session).toHaveLength(400)
+    // The omitted first message lies before the authoritative range, so remains provisional.
+    expect(saved.find((item) => item.directory === "/work/49")?.session).toHaveLength(400)
+    cache.dispose()
+  })
+
+  test("page-scoped live updates preserve unseen history and stale owners cannot revive tombstones", async () => {
+    const source = setup()
+    const base = entry("/work")
+    const session = Array.from({ length: 80 }, (_, index) => ({ ...base.session[0], id: `m${index}`, time: { created: index } }))
+    source.data.set("sidecar.v1", JSON.stringify({ version: 1, entries: [{ ...base, session, part: session.map((message) => ({ id: message.id, part: [{ ...base.part[0].part[0], messageID: message.id }] })) }] }))
+    const cache = createTranscriptCache(source.storage(1, true), "sidecar.v1")
+    await cache.ensureSelected("/work", "s")
+    await cache.ensureSelected("/work", "s", transcriptCursor(session[20]))
+    expect(cache.available("/work", "s", transcriptCursor(session[60]))).toBe(false)
+    cache.event("/work", { type: "message.part.delta", properties: { sessionID: "s", messageID: "m79", partID: "p", field: "text", delta: "!" } })
+    await cache.flush()
+    expect(JSON.parse(source.data.get("sidecar.v1")!).entries[0].session).toHaveLength(80)
+    const other = createTranscriptCache(source.storage(2, true), "sidecar.v1")
+    await other.ready
+    other.remove("/work", "s")
+    await other.flush()
+    cache.event("/work", { type: "message.part.delta", properties: { sessionID: "s", messageID: "m79", partID: "p", field: "text", delta: "stale" } })
+    await cache.flush()
+    expect(JSON.parse(source.data.get("sidecar.v1")!).entries).toEqual([])
+    cache.dispose()
+    other.dispose()
+  })
   for (const deleted of [false, true])
     test(`a queued fresh grant survives prepend coalescing${deleted ? " but not deletion during history fetch" : ""}`, async () => {
       const source = setup()

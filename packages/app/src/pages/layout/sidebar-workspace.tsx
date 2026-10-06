@@ -241,6 +241,8 @@ const WorkspaceSessionList = (props: {
   loading: Accessor<boolean>
   sessions: Accessor<Session[]>
   hasMore: Accessor<boolean>
+  loadingMore: Accessor<boolean>
+  loadMoreError: Accessor<boolean>
   loadMore: () => Promise<void>
   language: ReturnType<typeof useLanguage>
 }): JSX.Element => (
@@ -278,13 +280,17 @@ const WorkspaceSessionList = (props: {
           variant="ghost"
           class="flex w-full text-left justify-start text-14-regular text-text-weak pl-2 pr-10"
           size="large"
+          disabled={props.mobile && props.loadingMore()}
           onClick={(e: MouseEvent) => {
             void props.loadMore()
             ;(e.currentTarget as HTMLButtonElement).blur()
           }}
         >
-          {props.language.t("common.loadMore")}
+          {props.mobile && props.loadingMore() ? props.language.t("common.loading") : props.language.t("common.loadMore")}
         </Button>
+        <Show when={props.mobile && props.loadMoreError()}>
+          <span class="pl-2 text-14-regular text-text-weak">{props.language.t("common.requestFailed")}</span>
+        </Show>
       </div>
     </Show>
   </nav>
@@ -308,6 +314,7 @@ export const SortableWorkspace = (props: {
     open: false,
     pendingRename: false,
   })
+  const [pagination, setPagination] = createStore({ loading: false, error: false })
   const slug = createMemo(() => base64Encode(props.directory))
   const sessions = createMemo(() => sortedRootSessions(workspaceStore, props.sortNow()))
   const local = createMemo(() => props.directory === props.project.worktree)
@@ -327,8 +334,17 @@ export const SortableWorkspace = (props: {
   const touch = createMediaQuery("(hover: none)")
   const showNew = createMemo(() => !loading() && (touch() || count() === 0 || (active() && !params.id)))
   const loadMore = async () => {
-    setWorkspaceStore("limit", (limit) => (limit ?? 0) + 5)
-    await globalSync.project.loadSessions(props.directory)
+    if (!props.mobile) {
+      setWorkspaceStore("limit", (limit) => (limit ?? 0) + 5)
+      await globalSync.project.loadSessions(props.directory)
+      return
+    }
+    if (pagination.loading || fetching() > 0) return
+    const retry = pagination.error
+    setPagination({ loading: true, error: false })
+    if (!retry) setWorkspaceStore("limit", (limit) => (limit ?? 0) + 10)
+    const success = await globalSync.project.loadSessions(props.directory)
+    setPagination({ loading: false, error: !success })
   }
 
   const workspaceEditActive = createMemo(() => props.ctx.editorOpen(`workspace:${props.directory}`))
@@ -431,6 +447,8 @@ export const SortableWorkspace = (props: {
             loading={loading}
             sessions={sessions}
             hasMore={hasMore}
+            loadingMore={() => pagination.loading || fetching() > 0}
+            loadMoreError={() => pagination.error}
             loadMore={loadMore}
             language={language}
           />
@@ -457,11 +475,21 @@ export const LocalWorkspace = (props: {
   const sessions = createMemo(() => sortedRootSessions(workspace().store, props.sortNow()))
   const count = createMemo(() => sessions()?.length ?? 0)
   const fetching = useIsFetching(() => queryOptions.sessions(pathKey(props.project.worktree)))
+  const [pagination, setPagination] = createStore({ loading: false, error: false })
   const hasMore = createMemo(() => workspace().store.sessionTotal > count())
   const loading = () => fetching() > 0 && count() === 0
   const loadMore = async () => {
-    workspace().setStore("limit", (limit) => (limit ?? 0) + 5)
-    await globalSync.project.loadSessions(props.project.worktree)
+    if (!props.mobile) {
+      workspace().setStore("limit", (limit) => (limit ?? 0) + 5)
+      await globalSync.project.loadSessions(props.project.worktree)
+      return
+    }
+    if (pagination.loading || fetching() > 0) return
+    const retry = pagination.error
+    setPagination({ loading: true, error: false })
+    if (!retry) workspace().setStore("limit", (limit) => (limit ?? 0) + 10)
+    const success = await globalSync.project.loadSessions(props.project.worktree)
+    setPagination({ loading: false, error: !success })
   }
 
   return (
@@ -477,6 +505,8 @@ export const LocalWorkspace = (props: {
         loading={loading}
         sessions={sessions}
         hasMore={hasMore}
+        loadingMore={() => pagination.loading || fetching() > 0}
+        loadMoreError={() => pagination.error}
         loadMore={loadMore}
         language={language}
       />

@@ -32,7 +32,7 @@ export function takeRecentSessions(sessions: Session[], limit: number, cutoff: n
 
 export function trimSessions(
   input: Session[],
-  options: { limit: number; permission: Record<string, PermissionRequest[]>; now?: number },
+  options: { limit: number; permission: Record<string, PermissionRequest[]>; now?: number; recentLimit?: number },
 ) {
   const limit = Math.max(0, options.limit)
   const cutoff = (options.now ?? Date.now()) - SESSION_RECENT_WINDOW
@@ -44,7 +44,12 @@ export function trimSessions(
   roots.sort(compareSessionRecent)
   const children = all.filter((s) => !!s.parentID)
   const base = roots.slice(0, limit)
-  const recent = takeRecentSessions(roots.slice(limit), SESSION_RECENT_LIMIT, cutoff)
+  const recentLimit =
+    options.recentLimit ??
+    (typeof window !== "undefined" && (window as Window & { __HAOLAB_MOBILE__?: boolean }).__HAOLAB_MOBILE__ === true
+      ? 0
+      : SESSION_RECENT_LIMIT)
+  const recent = takeRecentSessions(roots.slice(limit), recentLimit, cutoff)
   const keepRoots = [...base, ...recent]
   const keepRootIds = new Set(keepRoots.map((s) => s.id))
   const keepChildren = children.filter((s) => {

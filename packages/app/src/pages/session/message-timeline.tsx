@@ -41,7 +41,7 @@ import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import { Popover as KobaltePopover } from "@kobalte/core/popover"
 import { normalize } from "@opencode-ai/ui/session-diff"
 import { useFileComponent } from "@opencode-ai/ui/context/file"
-import { shouldMarkBoundaryGesture, normalizeWheelDelta } from "@/pages/session/message-gesture"
+import { shouldMarkBoundaryGesture, normalizeWheelDelta, mobileNavigationSwipe } from "@/pages/session/message-gesture"
 import { SessionContextUsage } from "@/components/session-context-usage"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
@@ -49,6 +49,7 @@ import { useLanguage } from "@/context/language"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
+import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 import { useServer } from "@/context/server"
 import { useSettings } from "@/context/settings"
@@ -268,15 +269,24 @@ export function MessageTimeline(props: {
   centered: boolean
   setContentRef: (el: HTMLDivElement) => void
   historyShift: boolean
+  mobileHistory: boolean
+  mobileHeader: boolean
+  historyMore: boolean
+  historyLoading: boolean
+  onLoadHistory: () => Promise<void>
   userMessages: UserMessage[]
+  revertMessageID?: string
   anchor: (id: string) => string
   setRevealMessage?: (fn: (id: string) => void) => void
 }) {
   let touchGesture: number | undefined
+  let navigationGesture = 0
+  let navigationGestureAt = 0
 
   const navigate = useNavigate()
   const globalSDK = useGlobalSDK()
   const globalSync = useGlobalSync()
+  const layout = useLayout()
   const sdk = useSDK()
   const sync = useSync()
   const settings = useSettings()
@@ -307,6 +317,9 @@ export function MessageTimeline(props: {
     }
     return result
   })
+  const turnMessages = createMemo(() =>
+    Timeline.turns(sessionMessages(), props.userMessages, props.mobileHistory, props.revertMessageID),
+  )
   const pending = createMemo(() =>
     sessionMessages().findLast(
       (item): item is AssistantMessage => item.role === "assistant" && typeof item.time.completed !== "number",
@@ -341,10 +354,15 @@ export function MessageTimeline(props: {
       const messages = sessionMessages()
       const message = messages.find((item) => item.id === parentID)
       if (message && message.role === "user") return message.id
+      if (props.mobileHistory && turnMessages().includes(parentID)) return parentID
     }
 
     const status = sessionStatus()
     if (status.type !== "idle") {
+      if (props.mobileHistory) {
+        const turn = turnMessages().at(-1)
+        return typeof turn === "string" ? turn : turn?.id
+      }
       const messages = sessionMessages()
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === "user") return messages[i].id
@@ -390,21 +408,22 @@ export function MessageTimeline(props: {
     if (value) return value
     return language.t("command.session.new")
   })
-  const showHeader = createMemo(() => !!(titleValue() || parentID()))
+  const showHeader = createMemo(() => !props.mobileHeader && !props.mobileHistory && !!(titleValue() || parentID()))
 
   const messageRowMemos = createMemo(
     mapArray(
-      () => props.userMessages,
+      turnMessages,
       (userMessage, indexAccessor) => {
         return createMemo((previous: TimelineRow.TimelineRow[] | undefined) => {
+          const id = typeof userMessage === "string" ? userMessage : userMessage.id
           const rows = Timeline.constructMessageRows(
             userMessage,
             getMsgParts,
-            assistantMessagesByParent().get(userMessage.id) ?? emptyAssistantMessages,
+            assistantMessagesByParent().get(id) ?? emptyAssistantMessages,
             indexAccessor(),
             settings.general.showReasoningSummaries(),
             sessionStatus().type,
-            activeMessageID() === userMessage.id,
+            activeMessageID() === id,
           )
 
           return reuseTimelineRows(previous, rows)
@@ -440,7 +459,8 @@ export function MessageTimeline(props: {
     return [index]
   })
   const activeAssistantMessages = createMemo(() => {
-    const id = activeMessageID() ?? props.userMessages[props.userMessages.length - 1]?.id
+    const turn = turnMessages().at(-1)
+    const id = activeMessageID() ?? (typeof turn === "string" ? turn : turn?.id)
     if (!id) return emptyAssistantMessages
     return assistantMessagesByParent().get(id) ?? emptyAssistantMessages
   })
@@ -474,9 +494,7 @@ export function MessageTimeline(props: {
         if (!props.shouldAnchorBottom() && !measuredBottomAnchored) return
         const keys = timelineRowKeys()
         if (keys.length === 0) return
-        const index = lastContentRowIndex()
-        if (index < 0) return
-        virtualizer.scrollToIndex(index, { align: "end" })
+        scrollToLatest()
         scheduleMeasuredBottomAnchor()
       },
       { defer: true },
@@ -505,9 +523,7 @@ export function MessageTimeline(props: {
     if (keys.length === 0) return
     bottomAnchorSessionKey = key
     if (!props.shouldAnchorBottom()) return
-    const index = lastContentRowIndex()
-    if (index < 0) return
-    virtualizer.scrollToIndex(index, { align: "end" })
+    scrollToLatest()
   }
 
   createEffect(
@@ -569,6 +585,18 @@ export function MessageTimeline(props: {
 
   const isMeasuredBottom = (root: HTMLDivElement) => root.scrollHeight - root.clientHeight - root.scrollTop <= 4
 
+  function scrollToLatest() {
+    if (!virtualizer) return
+    const index = lastContentRowIndex()
+    if (index < 0) return
+    // Virtua retries imperative scrolling on resize, even after the user has scrolled away.
+    if (props.mobileHistory && listRoot) {
+      listRoot.scrollTop = listRoot.scrollHeight
+      return
+    }
+    virtualizer.scrollToIndex(index, { align: "end" })
+  }
+
   function anchorMeasuredBottom() {
     if (!listRoot) return false
     if (!measuredBottomAnchored) return false
@@ -605,7 +633,7 @@ export function MessageTimeline(props: {
         return
       }
 
-      bottomAnchorFrames = working() ? 12 : bottomAnchorFrames - 1
+      bottomAnchorFrames = working() && !props.mobileHistory ? 12 : bottomAnchorFrames - 1
       if (bottomAnchorFrames <= 0) return
       bottomAnchorFrame = requestAnimationFrame(tick)
     }
@@ -628,13 +656,13 @@ export function MessageTimeline(props: {
         return
       }
 
-      const index = lastContentRowIndex()
-      if (index >= 0) virtualizer.scrollToIndex(index, { align: "end" })
+      scrollToLatest()
     })
   }
 
   const bindContentRoot = (root: HTMLDivElement) => {
-    const child = root.firstElementChild
+    // Mobile's fixed history header precedes the virtualized content whose size drives bottom-follow.
+    const child = props.mobileHistory ? root.lastElementChild : root.firstElementChild
     props.setContentRef(child instanceof HTMLDivElement ? child : root)
   }
 
@@ -673,6 +701,18 @@ export function MessageTimeline(props: {
     connectListRoot(root)
   }
 
+  const handleNavigationGesture = (delta: number, target: EventTarget | null) => {
+    if (!props.mobileHeader || !delta || !listRoot) return
+    const nested = target instanceof Element ? target.closest("[data-scrollable]") : undefined
+    if (nested && nested !== listRoot) return
+    const now = Date.now()
+    const next = mobileNavigationSwipe(now - navigationGestureAt > 300 ? 0 : navigationGesture, delta)
+    navigationGesture = next.remaining
+    navigationGestureAt = now
+    if (next.direction === "expand") layout.mobileNavigation.expand()
+    if (next.direction === "collapse") layout.mobileNavigation.collapse()
+  }
+
   const handleListWheel = (event: WheelEvent & { currentTarget: HTMLDivElement }) => {
     const root = event.currentTarget
     const delta = normalizeWheelDelta({
@@ -681,14 +721,21 @@ export function MessageTimeline(props: {
       rootHeight: root.clientHeight,
     })
     if (!delta) return
+    handleNavigationGesture(delta, event.target)
     markBoundaryGesture({ root, target: event.target, delta, onMarkScrollGesture: props.onMarkScrollGesture })
   }
 
   const handleListTouchStart = (event: TouchEvent) => {
+    navigationGesture = 0
     touchGesture = event.touches[0]?.clientY
   }
 
   const handleListTouchMove = (event: TouchEvent & { currentTarget: HTMLDivElement }) => {
+    if (event.touches.length !== 1) {
+      touchGesture = undefined
+      navigationGesture = 0
+      return
+    }
     const next = event.touches[0]?.clientY
     const prev = touchGesture
     touchGesture = next
@@ -697,6 +744,7 @@ export function MessageTimeline(props: {
     const delta = prev - next
     if (!delta) return
 
+    handleNavigationGesture(delta, event.target)
     markBoundaryGesture({
       root: event.currentTarget,
       target: event.target,
@@ -707,6 +755,7 @@ export function MessageTimeline(props: {
 
   const handleListTouchEnd = () => {
     touchGesture = undefined
+    navigationGesture = 0
   }
 
   const handleListPointerDown = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
@@ -1097,6 +1146,9 @@ export function MessageTimeline(props: {
   function TimelineRowFrame(input: { row: FramedTimelineRow; children: JSX.Element }) {
     const anchor = () => {
       const row = input.row
+      if (props.mobileHistory && !messageByID().has(row.userMessageID)) {
+        return timelineRows()[messageRowIndex().get(row.userMessageID) ?? -1] === row
+      }
       return row._tag === "CommentStrip" || (row._tag === "UserMessage" && row.anchor)
     }
     const previousUserMessage = () => {
@@ -1597,6 +1649,20 @@ export function MessageTimeline(props: {
             </div>
           </div>
         </Show>
+        <Show when={props.mobileHistory}>
+          <div class="h-12 flex items-center justify-center">
+            <Show when={props.historyMore}>
+              <Button
+                variant="secondary"
+                size="small"
+                disabled={props.historyLoading}
+                onClick={() => void props.onLoadHistory()}
+              >
+                {language.t("common.loadMore")}
+              </Button>
+            </Show>
+          </div>
+        </Show>
         <Show when={scrollRoot()}>
           {(root) => (
             <Virtualizer
@@ -1606,7 +1672,7 @@ export function MessageTimeline(props: {
               scrollRef={root()}
               shift={props.historyShift}
               keepMounted={keepMounted()}
-              startMargin={64}
+              startMargin={props.mobileHistory ? 48 : 64}
               ref={(handle) => {
                 if (!handle) {
                   writeTimelineCache(virtualizerSessionKey, virtualizerRowKeys, virtualizer)
