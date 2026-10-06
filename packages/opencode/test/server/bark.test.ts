@@ -81,7 +81,10 @@ describe("Bark", () => {
     Global.Path.data = dir.path
     try {
       const get = "curl -X GET https://api.day.app/example-key/{{title}}/{{body}}?group=example&ttl=600"
-      expect(await Bark.setEndpoint(get)).toBe(true)
+      const example = "curl -X GET https://api.day.app/example-key/title/body?group=example&ttl=600"
+      await fs.writeFile(path.join(dir.path, "bark-endpoint"), example)
+      expect(await Bark.configured()).toEqual({ configured: true, endpoint: get })
+      expect(await Bark.setEndpoint(example)).toBe(true)
       expect(await Bark.configured()).toEqual({ configured: true, endpoint: get })
       const requests: { url: string; options?: RequestInit }[] = []
       const fetcher = async (url: string, options?: RequestInit) => {
@@ -265,7 +268,11 @@ describe("Bark", () => {
         method: "POST", headers: { authorization: `Basic ${btoa("opencode:bark-test-password")}` },
       })).json()).toEqual({ success: false, reason: "rate_limit" })
       expect(targets.at(-1)).toBe("https://push.example/send")
-      expect(await (await request("DELETE")).json()).toEqual({ configured: false, endpoint: "https://push.example/send" })
+      const sample = "curl -X GET 'https://api.day.app/test_device_123/title/body?group=example&ttl=600'"
+      const normalized = "curl -X GET 'https://api.day.app/test_device_123/{{title}}/{{body}}?group=example&ttl=600'"
+      expect(await (await request("PATCH", { endpoint: sample })).json()).toEqual({ configured: true, endpoint: normalized })
+      expect(await (await request("GET")).json()).toEqual({ configured: true, endpoint: normalized })
+      expect(await (await request("DELETE")).json()).toEqual({ configured: true, endpoint: normalized })
     } finally {
       globalThis.fetch = originalFetch
       await listener.stop()

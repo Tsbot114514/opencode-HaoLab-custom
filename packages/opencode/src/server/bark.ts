@@ -102,12 +102,26 @@ function parseCurl(value: string) {
   return { url, method, headers, body, redirect }
 }
 
+function normalizeEndpoint(value: string) {
+  const request = parseCurl(value)
+  if (request?.method !== "GET") return value
+  try {
+    const url = new URL(request.url.replace("{{token}}", "sample"))
+    const parts = url.pathname.split("/")
+    if (parts.length !== 4 || parts[2] !== "title" || parts[3] !== "body") return value
+    return value.replace(request.url, request.url.replace(/\/title\/body(?=[?#]|$)/, "/{{title}}/{{body}}"))
+  } catch {
+    return value
+  }
+}
+
 async function readEndpoint() {
   const target = endpointFile()
-  const value = await fs.readFile(target, "utf8").catch((error: NodeJS.ErrnoException) => {
+  const stored = await fs.readFile(target, "utf8").catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return defaultEndpoint
     throw error
   })
+  const value = normalizeEndpoint(stored)
   if (!validEndpoint(value)) throw new Error("Invalid Bark endpoint configuration")
   if (value !== defaultEndpoint && !secured.has(target)) {
     if (process.platform === "win32") await protectKey(target)
@@ -118,12 +132,13 @@ async function readEndpoint() {
 }
 
 export async function setEndpoint(value: string) {
-  if (!validEndpoint(value)) return false
+  const endpoint = normalizeEndpoint(value)
+  if (!validEndpoint(endpoint)) return false
   const target = endpointFile()
   const temp = `${target}.${randomUUID()}.tmp`
   try {
     await fs.mkdir(path.dirname(target), { recursive: true })
-    await fs.writeFile(temp, value, { flag: "wx", mode: 0o600 })
+    await fs.writeFile(temp, endpoint, { flag: "wx", mode: 0o600 })
     await protectKey(temp)
     await fs.rename(temp, target)
     secured.add(target)

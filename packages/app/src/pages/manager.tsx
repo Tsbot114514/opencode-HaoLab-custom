@@ -31,6 +31,7 @@ import { compareMessages } from "@/utils/message-order"
 const managerSessionID = "ses_manager_agent"
 const managerTitle = "管理agent"
 const defaultProxyPrefix = "http://127.0.0.1:"
+const barkGetTemplate = "curl -X GET 'https://api.day.app/{{token}}/{{title}}/{{body}}'"
 
 type ProxyConfig = {
   enabled: boolean
@@ -272,12 +273,12 @@ export default function ManagerPage() {
     }
   }
 
-  const saveBarkEndpoint = async () => {
-    if (bark.saving || !bark.endpoint.trim()) return
+  const saveBarkEndpoint = async (template = bark.endpoint) => {
+    if (bark.saving || !template.trim()) return
     const key = server.key
     setBark({ saving: true, message: "" })
     try {
-      const result = await sdk.client.global.notifications.bark.update({ endpoint: bark.endpoint.trim() }, { throwOnError: false })
+      const result = await sdk.client.global.notifications.bark.update({ endpoint: template.trim() }, { throwOnError: false })
       if (server.key !== key) return
       if (!result.response.ok || !result.data?.endpoint) throw new Error("Bark request configuration failed")
       setBark({ endpoint: result.data.endpoint, configured: result.data.configured, message: "推送请求已保存到当前服务器。" })
@@ -507,14 +508,19 @@ export default function ManagerPage() {
           value={bark.endpoint}
           onInput={(event) => setBark("endpoint", event.currentTarget.value)}
           rows={3}
-          placeholder="curl -X GET 'https://api.day.app/{{token}}/{{title}}/{{body}}?group=example&ttl=600'"
+          placeholder={barkGetTemplate}
           aria-label="Bark 推送 curl 请求"
           autocomplete="off"
           class="mt-3 w-full resize-y rounded-lg border border-v2-border-border-base bg-v2-background-bg-deep px-3 py-2 font-mono text-11-regular text-v2-text-text-base"
         />
-        <Button variant="secondary" size="small" class="mt-2" disabled={bark.saving || bark.loading || !bark.endpoint.trim()} onClick={() => void saveBarkEndpoint()}>
-          保存推送请求
-        </Button>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <Button variant="secondary" size="small" disabled={bark.saving || bark.loading} onClick={() => void saveBarkEndpoint(barkGetTemplate)}>
+            使用 Bark GET 模板
+          </Button>
+          <Button variant="secondary" size="small" disabled={bark.saving || bark.loading || !bark.endpoint.trim()} onClick={() => void saveBarkEndpoint()}>
+            保存推送请求
+          </Button>
+        </div>
         <input
           type="password"
           value={bark.key}
